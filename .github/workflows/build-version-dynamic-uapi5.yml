@@ -1,0 +1,276 @@
+name: Version Test - Dynamic SukiSU Version + UAPI 5
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+
+      # 1. 签出本仓库（只用来拿这两个 patch 文件，放仓库根目录）
+      - name: Checkout Patches
+        uses: actions/checkout@v4
+        with:
+          path: patches
+          fetch-depth: 1
+
+      # 2. 拉取官方 LineageOS 内核源码
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_oneplus_sm8350
+          ref: lineage-23.2
+          path: kernel_source
+          fetch-depth: 1
+
+      # 3. 拉取官方 Proton-Clang 工具链
+      - name: Setup Proton-Clang Toolchain
+        run: |
+          mkdir -p toolchain
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> $GITHUB_PATH
+
+      # 4. 应用 SUSFS + KernelSU hook 内核侧 patch（对 lineage-23.2 当前 HEAD 已验证零 fuzz 干净应用）
+      #    必须在下面 "Integrate SukiSU Ultra" 之前打，因为这个 patch 里也改了
+      #    drivers/Makefile（插入 obj-$(CONFIG_KSU) += kernelsu/），先打它，
+      #    setup.sh 自带的 grep 幂等检查会发现已经存在就跳过，不会重复插入。
+      - name: Apply SUSFS kernel-side patch
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          echo "========================================"
+          echo "Applying SUSFS + KernelSU hook patch"
+          echo "========================================"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/full-project-kernel-vs-lineage23.2-sm8350.patch"
+          echo "[+] fs/susfs.c / include/linux/susfs*.h 等文件已就位"
+
+      # 5. Integrate SukiSU Ultra（先保留成功项目的原始补丁，只单独测试动态版本号 + UAPI 5）
+      - name: Integrate SukiSU Ultra
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          echo "========================================"
+          echo "Installing SukiSU Ultra (official, pinned commit)"
+          echo "========================================"
+          rm -rf /tmp/SukiSU-Ultra
+          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
+
+          echo "========================================"
+          echo "Cleaning DTS changes"
+          echo "========================================"
+          git checkout -- arch/arm64/boot/dts/ || true
+          # 固定到 e2912817，和下面的 bugfix4 patch 基线精确对应，不用最新 tag/分支头
+          bash /tmp/SukiSU-Ultra/kernel/setup.sh e2912817f4e1b194e582a06e0b5eacf6a3fb7083
+          ls -ld drivers/kernelsu
+          readlink -f drivers/kernelsu
+          grep -n -C 3 "kernelsu" drivers/Makefile || true
+          grep -n -C 3 "kernelsu" drivers/Kconfig || true
+
+          echo "========================================"
+          echo "SukiSU Makefile"
+          echo "========================================"
+          grep -nE '^(obj-|kernelsu-y)' drivers/kernelsu/Makefile
+
+          echo "========================================"
+          echo "Applying bugfix4 patch to SukiSU-Ultra driver source"
+          echo "========================================"
+          # 注意：drivers/kernelsu 只是 setup.sh 建的软链接，指向 KernelSU/kernel，
+          # 在它里面打 -p1 会因为少了一层 "kernel/" 目录而找不到文件，必须回到
+          # KernelSU 这个 clone 的仓库根目录（kernel_source/KernelSU）打。
+          # 已去掉 kpm.c 那个 hunk（不需要 KPM 功能），其余 7 个文件零 fuzz 干净应用。
+          cd KernelSU
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/sukisu-builtin-current-vs-e2912817-nokpm.patch"
+
+          echo "========================================"
+          echo "Applying version-only test patch (dynamic KSU_VERSION + UAPI 5)"
+          echo "========================================"
+          # Strict preflight: exact contexts only, no fuzz and no partial application.
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/version-dynamic-uapi5.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/version-dynamic-uapi5.patch"
+          grep -nE '^(VERSION_BASE|VERSION_OFFSET|KSU_VERSION[[:space:]]*:|KSU_VERSION_FULL)' kernel/Makefile
+          grep -F 'DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 5);' kernel/include/uapi/supercall.h
+          if grep -Eq '^KSU_VERSION[[:space:]]*:?=[[:space:]]*40900$' kernel/Makefile; then
+            echo "ERROR: KSU_VERSION is still hard-pinned to 40900"
+            exit 1
+          fi
+          echo "[+] Version-only overlay applied; no SUSFS/manager fixes from the old project were merged in this test."
+          cd ..
+
+      # 6. 构建集成内核
+      - name: Build Integrated Kernel
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          CLANG_DIR="${GITHUB_WORKSPACE}/toolchain/proton-clang"
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          rm -rf "${OUT_DIR}"
+          mkdir -p "${OUT_DIR}"
+
+          echo "========================================"
+          echo "1. 指定一加9 (lahaina-qgki) 配置文件路径"
+          echo "========================================"
+          DEFCONFIG_FILE="arch/arm64/configs/vendor/lahaina-qgki_defconfig"
+          DEFCONFIG_TARGET="vendor/lahaina-qgki_defconfig"
+
+          if [ ! -f "${DEFCONFIG_FILE}" ]; then
+            echo "ERROR: 未找到配置文件 ${DEFCONFIG_FILE}！"
+            exit 1
+          fi
+          echo "指定配置文件: ${DEFCONFIG_FILE}"
+
+          echo "========================================"
+          echo "2. 注入 SukiSU + SUSFS 及其核心依赖 Config 到 defconfig"
+          echo "========================================"
+          # 必须先追加到源 defconfig 文件，然后再执行 make
+          cat << 'EOF' >> "${DEFCONFIG_FILE}"
+
+          # SukiSU / Security Configurations
+          CONFIG_NET=y
+          CONFIG_RPS=y
+          CONFIG_KSU=y
+          CONFIG_KSU_SPOOF_CPU=y
+          CONFIG_KSU_SUCOMPAT=y
+          CONFIG_KSU_SULOG=y
+          # SUSFS：由"直接关闭"改为按包内 config/susfs.config 的开关全开
+          CONFIG_BOOT_CONFIG=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_SECCOMP=y
+          CONFIG_SECCOMP_FILTER=y
+          CONFIG_SECURITY=y
+          CONFIG_SECURITY_SELINUX=y
+          CONFIG_SECURITYFS=y
+          # CONFIG_IOMMU_DEBUG is not set
+          # CONFIG_IOMMU_DEBUGFS is not set
+          # CONFIG_MEM_SHARE_QMI_SERVICE is not set
+          EOF
+
+          MAKE_ARGS=(
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            CC=clang
+            KCFLAGS="-Wno-unused-function"
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LOCALVERSION=-RONOVA
+            O="${OUT_DIR}"
+          )
+
+          echo "========================================"
+          echo "3. 生成包含注入 Config 的最终 .config"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" "${DEFCONFIG_TARGET}"
+
+          echo "========================================"
+          echo "4. 执行 olddefconfig 与核心配置强校验"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" olddefconfig
+
+          echo "========================================"
+          echo "验证最终 .config 中的 seccomp 开关"
+          echo "========================================"
+          for cfg in CONFIG_SECCOMP CONFIG_SECCOMP_FILTER; do
+            if ! grep -q "^${cfg}=y$" "${OUT_DIR}/.config"; then
+              echo "ERROR: ${cfg} was requested but is not enabled in final .config"
+              grep -E '^(CONFIG_SECCOMP|CONFIG_SECCOMP_FILTER|# CONFIG_SECCOMP)' "${OUT_DIR}/.config" || true
+              exit 1
+            fi
+            grep -n "^${cfg}=y$" "${OUT_DIR}/.config"
+          done
+
+          # 校验 KSU / SUSFS 是否成功开启
+          grep -E '^CONFIG_KSU(=|_)' "${OUT_DIR}/.config" || true
+          if ! grep -q '^CONFIG_KSU_SUSFS=y' "${OUT_DIR}/.config"; then
+              echo "❌ ERROR: CONFIG_KSU_SUSFS 没有生效，检查 defconfig 注入是否被其他配置覆盖！"
+              exit 1
+          else
+              echo "✅ SUCCESS: CONFIG_KSU_SUSFS 已启用！"
+          fi
+          # 校验 KSU_DISABLE_MANAGER 是否【处于关闭状态】
+          if grep -q '^CONFIG_KSU_DISABLE_MANAGER=y' "${OUT_DIR}/.config"; then
+              echo "❌ ERROR: CONFIG_KSU_DISABLE_MANAGER 被开启了（管理器被禁用了）！"
+              exit 1
+          else
+              echo "✅ SUCCESS: CONFIG_KSU_DISABLE_MANAGER 未开启，管理器已保证启用！"
+          fi
+
+          echo "========================================"
+          echo "5. Kbuild 准备"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" -j1 prepare
+          make "${MAKE_ARGS[@]}" -j1 scripts
+
+          echo "========================================"
+          echo "6. 开启全核并发编译"
+          echo "========================================"
+
+          make "${MAKE_ARGS[@]}" -j"$(nproc)"
+
+       # 7. 打包 AnyKernel3
+      - name: Pack with AnyKernel3
+        shell: bash
+        run: |
+          set -e
+          cd "${GITHUB_WORKSPACE}"
+          git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
+          cd AnyKernel3
+          rm -rf .git README.md *placeholder
+          sed -i -E 's/^[[:space:]]*do\.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(BLOCK|block)=.*/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(IS_SLOT_DEVICE|is_slot_device)=.*/IS_SLOT_DEVICE=1;/' anykernel.sh
+          echo "========================================"
+          echo "提取内核镜像产物"
+          echo "========================================"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          if [ -f "${OUT_DIR}/arch/arm64/boot/dtb" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/dtb" ./
+            echo "[+] 已提取 dtb"
+          fi
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" ./
+            echo "[+] 已提取 Image.gz-dtb"
+          elif [ -f "${OUT_DIR}/arch/arm64/boot/Image" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image" ./
+            echo "[+] 已提取 Image"
+          else
+            echo "[-] 致命错误：未找到支持的内核镜像文件！"
+            exit 1
+          fi
+          echo "========================================"
+          echo "检查 AnyKernel3 文件"
+          echo "========================================"
+          test -f anykernel.sh
+          ls -lh
+          echo "========================================"
+          echo "生成可刷入 ZIP"
+          echo "========================================"
+          cd "${GITHUB_WORKSPACE}/AnyKernel3"
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip" . \
+            -x ".git/*"
+          echo "========================================"
+          echo "ZIP 已生成"
+          echo "========================================"
+          ls -lh "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip"
+
+      # 8. 上传真正的 AnyKernel3 ZIP
+      - name: Upload Kernel Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-SUSFS-Kernel
+          path: SukiSU-SUSFS-Kernel-OP9.zip
+          if-no-files-found: error
