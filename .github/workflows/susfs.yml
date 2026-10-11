@@ -139,6 +139,7 @@ jobs:
           CONFIG_SECURITY=y
           CONFIG_SECURITY_SELINUX=y
           CONFIG_SECURITYFS=y
+          CONFIG_PROC_FS=y
           # Disable unnecessary debug/config options
           # CONFIG_IOMMU_DEBUG is not set
           # CONFIG_IOMMU_DEBUGFS is not set
