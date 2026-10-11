@@ -51,7 +51,7 @@
 -// 2: allowlist v4 root profile flag
 -DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);
 +// Manager compatibility probe build: advertise requested UAPI 5
-+DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 5);
++DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);
  
  /* Magic numbers for reboot hook to install fd */
  DECLARE(__u32, KSU_INSTALL_MAGIC1, 0xDEADBEEF);
