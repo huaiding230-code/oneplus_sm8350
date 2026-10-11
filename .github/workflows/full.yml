@@ -1,0 +1,287 @@
+
+name: Integrated SukiSU Ultra
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      # 1. Checkout 工作流仓库，读取根目录的 5.4.3.patch
+      - name: Checkout Workflow Repository
+        uses: actions/checkout@v4
+
+      # 2. 扩展构建空间
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+
+      # 3. 拉取官方 LineageOS 内核
+      - name: Checkout Official LineageOS Kernel
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_oneplus_sm8350
+          ref: lineage-23.2
+          path: kernel_source
+          fetch-depth: 1
+
+      # 4. 拉取 Proton-Clang
+      - name: Setup Proton-Clang Toolchain
+        run: |
+          set -euo pipefail
+          mkdir -p toolchain
+          git clone --depth=1 \
+            https://github.com/shs-sssh/proton-clang.git \
+            toolchain/proton-clang
+          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> "$GITHUB_PATH"
+
+      # 5. 检查并应用 full-project patch，集成官方 SukiSU 源码
+      - name: Integrate Full Patch and Official SukiSU
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH="${GITHUB_WORKSPACE}/5.4.3.patch"
+          KERNEL="${GITHUB_WORKSPACE}/kernel_source"
+          SUKISU="/tmp/SukiSU-Ultra"
+
+          echo "========================================"
+          echo "Checking patch file"
+          echo "========================================"
+          test -f "$PATCH"
+          ls -lh "$PATCH"
+
+          cd "$KERNEL"
+
+          echo "========================================"
+          echo "Lineage kernel baseline"
+          echo "========================================"
+          git log -1 --format='%H %s'
+
+          echo "========================================"
+          echo "Checking patch compatibility"
+          echo "========================================"
+          if ! git apply --check --ignore-whitespace "$PATCH"; then
+            echo "ERROR: 5.4.3.patch does not apply cleanly to LineageOS 23.2."
+            echo "Review the conflicting files before adapting the patch."
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "Applying full-project patch"
+          echo "========================================"
+          git apply --ignore-whitespace "$PATCH"
+
+          echo "========================================"
+          echo "Checking SUSFS files"
+          echo "========================================"
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+
+          echo "========================================"
+          echo "Fetching official SukiSU-Ultra"
+          echo "========================================"
+          rm -rf "$SUKISU"
+          git clone \
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra.git \
+            "$SUKISU"
+
+          # 使用 full patch 对应的 builtin 基线
+          git -C "$SUKISU" checkout --detach \
+            e2912817f4e1b194e582a06e0b5eacf6a3fb7083
+
+          echo "SukiSU commit:"
+          git -C "$SUKISU" log -1 --format='%H %s'
+
+          echo "========================================"
+          echo "Installing SukiSU kernel source"
+          echo "========================================"
+          test -f "$SUKISU/kernel/Kconfig"
+          test -f "$SUKISU/kernel/Makefile"
+
+          rm -rf drivers/kernelsu
+          mkdir -p drivers/kernelsu
+          cp -a "$SUKISU/kernel/." drivers/kernelsu/
+
+          echo "========================================"
+          echo "Verifying integration"
+          echo "========================================"
+          grep -n 'drivers/kernelsu/Kconfig' drivers/Kconfig
+          grep -n 'kernelsu/' drivers/Makefile
+          grep -n 'CONFIG_KSU_SUSFS' drivers/kernelsu/Kconfig | head -30 || true
+          test -f drivers/kernelsu/ksu.c
+          test -f drivers/kernelsu/supercall/dispatch.c
+
+          echo "========================================"
+          echo "Integration completed"
+          echo "========================================"
+
+      # 6. 构建内核
+      - name: Build Integrated Kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+
+          CLANG_DIR="${GITHUB_WORKSPACE}/toolchain/proton-clang"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+
+          rm -rf "$OUT_DIR"
+          mkdir -p "$OUT_DIR"
+
+          DEFCONFIG_FILE="arch/arm64/configs/vendor/lahaina-qgki_defconfig"
+          DEFCONFIG_TARGET="vendor/lahaina-qgki_defconfig"
+
+          if [ ! -f "$DEFCONFIG_FILE" ]; then
+            echo "ERROR: Missing $DEFCONFIG_FILE"
+            exit 1
+          fi
+
+          MAKE_ARGS=(
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            CC=clang
+            KCFLAGS="-Wno-unused-function"
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LOCALVERSION=-RONOVA
+            O="$OUT_DIR"
+          )
+
+          echo "========================================"
+          echo "1. Generating defconfig"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" "$DEFCONFIG_TARGET"
+
+          echo "========================================"
+          echo "2. Enabling SukiSU and SUSFS"
+          echo "========================================"
+
+          scripts/config --file "$OUT_DIR/.config" \
+            --enable KALLSYMS \
+            --enable KALLSYMS_ALL \
+            --enable BOOT_CONFIG \
+            --enable KSU \
+            --enable KSU_FEATURE_ADBROOT \
+            --enable KSU_SUSFS \
+            --enable KSU_SUSFS_SUS_PATH \
+            --enable KSU_SUSFS_SUS_MOUNT \
+            --enable KSU_SUSFS_SUS_KSTAT \
+            --enable KSU_SUSFS_SPOOF_UNAME \
+            --enable KSU_SUSFS_ENABLE_LOG \
+            --enable KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            --enable KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            --enable KSU_SUSFS_SUS_MAP \
+            --enable SECCOMP \
+            --enable SECCOMP_FILTER \
+            --enable SECURITY \
+            --enable SECURITYFS \
+            --enable SECURITY_SELINUX \
+            --enable PROC_FS
+
+          make "${MAKE_ARGS[@]}" olddefconfig
+
+          echo "========================================"
+          echo "3. Verifying final configuration"
+          echo "========================================"
+          grep -E '^(CONFIG_KSU=|CONFIG_KSU_FEATURE_ADBROOT=|CONFIG_KSU_SUSFS|CONFIG_BOOT_CONFIG=)' \
+            "$OUT_DIR/.config" || true
+
+          for CONFIG in \
+            CONFIG_KSU \
+            CONFIG_BOOT_CONFIG \
+            CONFIG_KSU_SUSFS \
+            CONFIG_KSU_SUSFS_SUS_PATH \
+            CONFIG_KSU_SUSFS_SUS_MOUNT \
+            CONFIG_KSU_SUSFS_SUS_KSTAT \
+            CONFIG_KSU_SUSFS_SPOOF_UNAME \
+            CONFIG_KSU_SUSFS_ENABLE_LOG \
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+            CONFIG_KSU_SUSFS_SUS_MAP
+          do
+            if ! grep -qx "${CONFIG}=y" "$OUT_DIR/.config"; then
+              echo "ERROR: ${CONFIG} is not enabled"
+              exit 1
+            fi
+          done
+
+          echo "========================================"
+          echo "4. Preparing kernel"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" -j2 prepare
+          make "${MAKE_ARGS[@]}" -j2 scripts
+
+          echo "========================================"
+          echo "5. Building kernel"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" -j"$(nproc)"
+
+          echo "========================================"
+          echo "Checking kernel image"
+          echo "========================================"
+          find "$OUT_DIR/arch/arm64/boot" \
+            -maxdepth 1 -type f \
+            \( -name Image -o -name Image.gz-dtb -o -name dtb \) \
+            -ls
+
+      # 7. 打包 AnyKernel3
+      - name: Pack with AnyKernel3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "${GITHUB_WORKSPACE}"
+          git clone --depth=1 \
+            https://github.com/shs-sssh/AnyKernel3.git AnyKernel3
+
+          cd AnyKernel3
+          rm -rf .git README.md *placeholder
+
+          sed -i -E \
+            's/^[[:space:]]*do\.devicecheck=.*/do.devicecheck=0/' \
+            anykernel.sh
+
+          sed -i -E \
+            's/^[[:space:]]*(BLOCK|block)=.*/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/' \
+            anykernel.sh
+
+          sed -i -E \
+            's/^[[:space:]]*(IS_SLOT_DEVICE|is_slot_device)=.*/IS_SLOT_DEVICE=1;/' \
+            anykernel.sh
+
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          IMAGE_DIR="${OUT_DIR}/arch/arm64/boot"
+
+          if [ -f "${IMAGE_DIR}/dtb" ]; then
+            cp "${IMAGE_DIR}/dtb" ./
+          fi
+
+          if [ -f "${IMAGE_DIR}/Image.gz-dtb" ]; then
+            cp "${IMAGE_DIR}/Image.gz-dtb" ./
+          elif [ -f "${IMAGE_DIR}/Image" ]; then
+            cp "${IMAGE_DIR}/Image" ./
+          else
+            echo "ERROR: Kernel image not found"
+            exit 1
+          fi
+
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-Kernel-OP9.zip" . \
+            -x ".git/*"
+
+          ls -lh "${GITHUB_WORKSPACE}/SukiSU-Kernel-OP9.zip"
+
+      # 8. 上传刷机包
+      - name: Upload Kernel Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Kernel-OP9
+          path: SukiSU-Kernel-OP9.zip
+          if-no-files-found: error
