@@ -208,6 +208,67 @@ jobs:
           else
               echo "✅ SUCCESS: CONFIG_KSU_DISABLE_MANAGER 未开启，管理器已保证启用！"
           fi
+          ```yaml
+      # Remove the -dirty suffix from kernel version
+      - name: Disable dirty version suffix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("kernel_source/scripts/setlocalversion")
+          lines = p.read_text().splitlines(keepends=True)
+
+          # Locate the specific git status check.
+          matches = [
+              i for i, line in enumerate(lines)
+              if "git --no-optional-locks status -uno --porcelain 2>/dev/null" in line
+          ]
+
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"ERROR: expected exactly one dirty-check block, found {len(matches)}"
+              )
+
+          anchor = matches[0]
+
+          # Find the beginning of this block.
+          start = anchor
+          while start >= 0 and lines[start].strip() != "if {":
+              start -= 1
+
+          if start < 0:
+              raise SystemExit("ERROR: could not locate the beginning of the block")
+
+          # Find printf '%s' -dirty and the corresponding closing fi.
+          dirty_line = next(
+              (i for i in range(anchor, len(lines))
+               if "printf '%s' -dirty" in lines[i]),
+              None
+          )
+
+          if dirty_line is None:
+              raise SystemExit("ERROR: could not locate the -dirty output")
+
+          end = next(
+              (i for i in range(dirty_line + 1, len(lines))
+               if lines[i].strip() == "fi"),
+              None
+          )
+
+          if end is None:
+              raise SystemExit("ERROR: could not locate the closing fi")
+
+          del lines[start:end + 1]
+          p.write_text("".join(lines))
+
+          print("SUCCESS: removed the -dirty suffix block")
+          PY
+
+          git -C kernel_source diff --check
+          git -C kernel_source diff -- scripts/setlocalversion
 
           echo "========================================"
           echo "5. Kbuild 准备"
