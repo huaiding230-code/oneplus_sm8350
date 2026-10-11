@@ -183,19 +183,6 @@ jobs:
           else
               echo "✅ SUCCESS: CONFIG_KSU_DISABLE_MANAGER 未开启，管理器已保证启用！"
           fi
-           # Disable the -dirty version suffix
-          FILE="kernel_source/scripts/setlocalversion"
-          
-          if ! sed -n '117,122p' "$FILE" | grep -Fq 'git --no-optional-locks status -uno --porcelain 2>/dev/null' ||
-             ! sed -n '117,122p' "$FILE" | grep -Fq "printf '%s' -dirty"; then
-              echo "ERROR: lines 117-122 do not match the expected -dirty block"
-              exit 1
-          fi
-          
-          sed -i '117,122s/^/# /' "$FILE"
-          
-          git -C kernel_source diff --check
-          git -C kernel_source diff -- scripts/setlocalversion
 
           echo "========================================"
           echo "5. Kbuild 准备"
