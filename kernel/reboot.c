@@ -323,9 +323,14 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	int ret = 0;
 	
 #ifdef CONFIG_KSU
-    if (system_state == SYSTEM_RUNNING) {
-        ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
-    }
+    /* SukiSU's documented descriptor handshake, not a reboot request. */
+    if ((unsigned int)magic1 == 0xDEADBEEF &&
+        ((unsigned int)magic2 == 0xCAFEBABE
+#ifdef CONFIG_KSU_SUSFS
+         || (unsigned int)magic2 == 0xFAFAFAFA
+#endif
+        ))
+        return ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);
 #endif
 	
 	/* We only trust the superuser with rebooting the system. */
