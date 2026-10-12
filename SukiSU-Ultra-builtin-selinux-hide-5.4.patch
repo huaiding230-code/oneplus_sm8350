@@ -375,16 +375,12 @@ diff --git a/kernel/ksu.c b/kernel/ksu.c
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -153,6 +153,12 @@
- {
-     struct selinux_policy *pol, *old_pol;
-     struct policydb *db;
-+
+@@ -144,1 +144,7 @@
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +    /* Capture the original policy before applying any KernelSU/SUSFS rules. */
 +    if (ksu_selinux_hide_snapshot_legacy())
 +        pr_warn("selinux_hide: original policy snapshot unavailable; feature cannot be enabled\n");
 +#endif
- 
-     if (!getenforce()) {
-         pr_info("SELinux permissive or disabled, apply rules!\n");
++
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+
