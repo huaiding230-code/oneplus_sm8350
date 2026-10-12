@@ -85,7 +85,7 @@ jobs:
           # KernelSU 这个 clone 的仓库根目录（kernel_source/KernelSU）打。
           # 已去掉 kpm.c 那个 hunk（不需要 KPM 功能），其余 7 个文件零 fuzz 干净应用。
           cd KernelSU
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/sukisu-builtin-current-vs-e2912817-nokpm.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/sukisu-builtin-current-vs-e2912817-nokpm-nopin.patch"
           echo "[+] bugfix4 patch applied (kpm.c excluded)"
           cd ..
 
