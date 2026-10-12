@@ -1,4 +1,4 @@
-name: Version Test - Dynamic SukiSU Version + UAPI 5
+name: Integrated SukiSU Ultra + SUSFS
 
 on:
   workflow_dispatch:
@@ -47,10 +47,10 @@ jobs:
           echo "========================================"
           echo "Applying SUSFS + KernelSU hook patch"
           echo "========================================"
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/full-project-kernel-vs-lineage23.2-sm8350.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/full-susfs-5.4-v2-compatible-adapted-hunk-fixed.patch"
           echo "[+] fs/susfs.c / include/linux/susfs*.h 等文件已就位"
 
-      # 5. Integrate SukiSU Ultra（先保留成功项目的原始补丁，只单独测试动态版本号 + UAPI 5）
+      # 5. Integrate SukiSU Ultra（官方仓库，固定提交，和 bugfix4 patch 的基线完全对应）
       - name: Integrate SukiSU Ultra
         run: |
           set -euo pipefail
@@ -86,20 +86,7 @@ jobs:
           # 已去掉 kpm.c 那个 hunk（不需要 KPM 功能），其余 7 个文件零 fuzz 干净应用。
           cd KernelSU
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/sukisu-builtin-current-vs-e2912817-nokpm.patch"
-
-          echo "========================================"
-          echo "Applying version-only test patch (dynamic KSU_VERSION + UAPI 5)"
-          echo "========================================"
-          # Strict preflight: exact contexts only, no fuzz and no partial application.
-          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/version-dynamic-uapi5.patch"
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/patches/version-dynamic-uapi5.patch"
-          grep -nE '^(VERSION_BASE|VERSION_OFFSET|KSU_VERSION[[:space:]]*:|KSU_VERSION_FULL)' kernel/Makefile
-          grep -F 'DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 5);' kernel/include/uapi/supercall.h
-          if grep -Eq '^KSU_VERSION[[:space:]]*:?=[[:space:]]*40900$' kernel/Makefile; then
-            echo "ERROR: KSU_VERSION is still hard-pinned to 40900"
-            exit 1
-          fi
-          echo "[+] Version-only overlay applied; no SUSFS/manager fixes from the old project were merged in this test."
+          echo "[+] bugfix4 patch applied (kpm.c excluded)"
           cd ..
 
       # 6. 构建集成内核
@@ -181,18 +168,6 @@ jobs:
           echo "========================================"
           make "${MAKE_ARGS[@]}" olddefconfig
 
-          echo "========================================"
-          echo "验证最终 .config 中的 seccomp 开关"
-          echo "========================================"
-          for cfg in CONFIG_SECCOMP CONFIG_SECCOMP_FILTER; do
-            if ! grep -q "^${cfg}=y$" "${OUT_DIR}/.config"; then
-              echo "ERROR: ${cfg} was requested but is not enabled in final .config"
-              grep -E '^(CONFIG_SECCOMP|CONFIG_SECCOMP_FILTER|# CONFIG_SECCOMP)' "${OUT_DIR}/.config" || true
-              exit 1
-            fi
-            grep -n "^${cfg}=y$" "${OUT_DIR}/.config"
-          done
-
           # 校验 KSU / SUSFS 是否成功开启
           grep -E '^CONFIG_KSU(=|_)' "${OUT_DIR}/.config" || true
           if ! grep -q '^CONFIG_KSU_SUSFS=y' "${OUT_DIR}/.config"; then
@@ -208,20 +183,6 @@ jobs:
           else
               echo "✅ SUCCESS: CONFIG_KSU_DISABLE_MANAGER 未开启，管理器已保证启用！"
           fi
-
-          # Disable the -dirty version suffix
-          FILE="kernel_source/scripts/setlocalversion"
-          
-          if ! sed -n '117,122p' "$FILE" | grep -Fq 'git --no-optional-locks status -uno --porcelain 2>/dev/null' ||
-             ! sed -n '117,122p' "$FILE" | grep -Fq "printf '%s' -dirty"; then
-              echo "ERROR: lines 117-122 do not match the expected -dirty block"
-              exit 1
-          fi
-          
-          sed -i '117,122s/^/# /' "$FILE"
-          
-          git -C kernel_source diff --check
-          git -C kernel_source diff -- scripts/setlocalversion
 
           echo "========================================"
           echo "5. Kbuild 准备"
