@@ -1603,7 +1603,7 @@ diff --git a/fs/read_write.c b/fs/read_write.c
  
  	if (!(file->f_mode & FMODE_READ))
  		return -EBADF;
-@@ -603,7 +616,17 @@
+@@ -603,8 +616,18 @@
  	return ret;
  }
  
