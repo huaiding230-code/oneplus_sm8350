@@ -217,7 +217,6 @@ jobs:
           CONFIG_KSU=y
           # 注意：在固定的官方 builtin 提交 e2912817 中，SUCOMPAT/SULOG 是
           # ksu.c 无条件编入的源码功能，不是 Kconfig 配置项；不要注入不存在的符号。
-          # CONFIG_KSU_SPOOF_CPU 也不由该提交的 Kconfig 定义，因此不在此设置。
           # SUSFS：启用当前源码/补丁树提供的功能开关。
           # 以下两个历史兼容项只有在本次 SUSFS patch 定义它们时才可能生效；后面会单独校验。
           # OPEN_REDIRECT 在 bugfix patch 中依赖 BROKEN，故有意保持关闭。
@@ -233,6 +232,7 @@ jobs:
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_KSU_SPOOF_CPU=y
           CONFIG_SECCOMP=y
           CONFIG_SECCOMP_FILTER=y
           CONFIG_SECURITY=y
