@@ -1,12 +1,7 @@
 diff --git a/kernel/feature/kernel_umount.c b/kernel/feature/kernel_umount.c
 --- a/kernel/feature/kernel_umount.c
 +++ b/kernel/feature/kernel_umount.c
-@@ -5,6 +5,14 @@ static int kernel_umount_feature_get(u64 *value)
- static int kernel_umount_feature_get(u64 *value)
-     *value = ksu_kernel_umount_enabled ? 1 : 0;
-     return 0;
- }
-+
+@@ -1,1 +1,9 @@
 +static int kernel_umount_feature_set(u64 value)
 +{
 +    bool enable = value != 0;
@@ -14,7 +9,7 @@ diff --git a/kernel/feature/kernel_umount.c b/kernel/feature/kernel_umount.c
 +    pr_info("kernel_umount: set to %d\n", enable);
 +    return 0;
 +}
- 
++
  static const struct ksu_feature_handler kernel_umount_handler = {
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index db57137..d0bcd7b 100644
