@@ -392,9 +392,9 @@ index bf26618..b05c6f8 100644
  // 100. GET_FULL_VERSION - Get full version string
  static int do_get_full_version(void __user *arg)
  {
-@@ -973,6 +983,12 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
-         .perm_check = only_root,
-         .allow_su_session = true
+@@ -979,6 +989,12 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
+         .handler = do_get_full_version,
+         .perm_check = always_allow
      },
 +    {
 +        .cmd = KSU_IOCTL_SET_SPOOF_CPU,
@@ -402,6 +402,6 @@ index bf26618..b05c6f8 100644
 +        .handler = do_set_spoof_cpu,
 +        .perm_check = only_root
 +    },
-     {
-         .cmd = KSU_IOCTL_GET_FULL_VERSION,
-         .name = "GET_FULL_VERSION",
+     { 
+         .cmd = KSU_IOCTL_HOOK_TYPE,
+         .name = "GET_HOOK_TYPE",
