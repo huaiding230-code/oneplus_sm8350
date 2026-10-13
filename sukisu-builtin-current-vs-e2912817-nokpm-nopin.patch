@@ -72,28 +72,6 @@
  }
  
  extern void ext4_unregister_sysfs(struct super_block *sb);
-@@ -216,7 +218,9 @@
-             char buf[16];
-             if (check_argv(*argv, 1, "second_stage", buf, sizeof(buf))) {
-                 pr_info("/system/bin/init second_stage executed\n");
--                ksu_selinux_hide_handle_second_stage();
-+                #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-+    ksu_selinux_hide_handle_second_stage();
-+#endif
-                 apply_kernelsu_rules();
-                 cache_sid();
-                 setup_ksu_cred();
-@@ -288,7 +292,9 @@
-         char buf[16];
-         if (!init_second_stage_executed && check_argv(*argv, 1, "second_stage", buf, sizeof(buf))) {
-             pr_info("/system/bin/init second_stage executed\n");
--            ksu_selinux_hide_handle_second_stage();
-+            #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-+    ksu_selinux_hide_handle_second_stage();
-+#endif
-             apply_kernelsu_rules();
-             cache_sid();
-             setup_ksu_cred();
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
 @@ -254,6 +254,10 @@
