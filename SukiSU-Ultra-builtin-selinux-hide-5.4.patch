@@ -342,8 +342,8 @@ diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
 diff --git a/kernel/ksu.c b/kernel/ksu.c
 --- a/kernel/ksu.c
 +++ b/kernel/ksu.c
-@@ -30,9 +30,7 @@
- #include "feature/kernel_umount.h"
+@@ -31,9 +31,7 @@
+ #include "feature/cpu_spoof.h"
  #include "feature/sucompat.h"
  #include "feature/sulog.h"
 -#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
@@ -352,8 +352,8 @@ diff --git a/kernel/ksu.c b/kernel/ksu.c
  #include "runtime/ksud.h"
  #include "sulog/event.h"
  #include "sulog/fd.h"
-@@ -81,9 +79,7 @@
- #include "feature/kernel_umount.c"
+@@ -83,9 +81,7 @@
+ #include "feature/cpu_spoof.c"
  #include "feature/sucompat.c"
  #include "feature/sulog.c"
 -#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
