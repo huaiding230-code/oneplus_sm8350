@@ -109,6 +109,19 @@ jobs:
           echo "[+] SukiSU SELinux hide patch applied"
           cd ..
 
+          echo "Verifying 5.4 SELinux-hide second-stage initialization path"
+          SELINUX_RUNTIME="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel/runtime/ksud.c"
+          STAGE_CALLS=$(grep -Fc 'ksu_selinux_hide_handle_second_stage();' "${SELINUX_RUNTIME}" || true)
+          if [ "${STAGE_CALLS}" -lt 2 ]; then
+            echo "ERROR: expected both second-stage call sites in ${SELINUX_RUNTIME}; found ${STAGE_CALLS}"
+            exit 1
+          fi
+          if grep -B3 'ksu_selinux_hide_handle_second_stage();' "${SELINUX_RUNTIME}" | grep -q 'KERNEL_VERSION(5, 10, 0)'; then
+            echo "ERROR: second-stage SELinux-hide initialization is still version-gated away on Linux 5.4"
+            exit 1
+          fi
+          echo "[+] 5.4 second-stage callback present and not gated out"
+
       # 6. 构建集成内核
       - name: Build Integrated Kernel
         run: |
@@ -145,17 +158,21 @@ jobs:
           CONFIG_KSU_SPOOF_CPU=y
           CONFIG_KSU_SUCOMPAT=y
           CONFIG_KSU_SULOG=y
-          # SUSFS：由"直接关闭"改为按包内 config/susfs.config 的开关全开
+          # SUSFS：启用当前源码/补丁树提供的功能开关。
+          # 以下两个历史兼容项只有在本次 SUSFS patch 定义它们时才可能生效；后面会单独校验。
+          # OPEN_REDIRECT 在 bugfix patch 中依赖 BROKEN，故有意保持关闭。
           CONFIG_BOOT_CONFIG=y
           CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
           CONFIG_KSU_SUSFS_SPOOF_UNAME=y
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          CONFIG_KSU_SUSFS_SUS_MAP=y
           CONFIG_SECCOMP=y
           CONFIG_SECCOMP_FILTER=y
           CONFIG_SECURITY=y
@@ -188,14 +205,46 @@ jobs:
           echo "========================================"
           make "${MAKE_ARGS[@]}" olddefconfig
 
-          # 校验 KSU / SUSFS 是否成功开启
+          # 校验 KSU / SUSFS 功能位；不能只检查总开关，否则子功能被 olddefconfig 丢弃时仍会误报成功。
           grep -E '^CONFIG_KSU(=|_)' "${OUT_DIR}/.config" || true
-          if ! grep -q '^CONFIG_KSU_SUSFS=y' "${OUT_DIR}/.config"; then
-              echo "❌ ERROR: CONFIG_KSU_SUSFS 没有生效，检查 defconfig 注入是否被其他配置覆盖！"
+          REQUIRED_KSU_CONFIGS=(
+            CONFIG_KSU
+            CONFIG_KSU_SUCOMPAT
+            CONFIG_KSU_SULOG
+            CONFIG_KSU_SUSFS
+            CONFIG_KSU_SUSFS_SUS_PATH
+            CONFIG_KSU_SUSFS_SUS_MAP
+            CONFIG_KSU_SUSFS_SUS_MOUNT
+            CONFIG_KSU_SUSFS_SUS_KSTAT
+            CONFIG_KSU_SUSFS_SPOOF_UNAME
+            CONFIG_KSU_SUSFS_ENABLE_LOG
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          )
+          for cfg in "${REQUIRED_KSU_CONFIGS[@]}"; do
+            if ! grep -qx "${cfg}=y" "${OUT_DIR}/.config"; then
+              echo "❌ ERROR: ${cfg} is not enabled after olddefconfig; refusing to build a silently degraded kernel."
               exit 1
-          else
-              echo "✅ SUCCESS: CONFIG_KSU_SUSFS 已启用！"
+            fi
+            echo "✅ ${cfg}=y"
+          done
+          # Older SUSFS patch sets define these two optional symbols, but the pinned SukiSU Kconfig may not.
+          # Distinguish "defined but disabled" from "not provided by this patch tree".
+          for cfg in CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT CONFIG_KSU_SUSFS_TRY_UMOUNT; do
+            if grep -Fqx "${cfg}=y" "${OUT_DIR}/.config"; then
+              echo "✅ ${cfg}=y"
+            elif grep -Fqx "# ${cfg} is not set" "${OUT_DIR}/.config"; then
+              echo "❌ ERROR: ${cfg} exists but is disabled after olddefconfig."
+              exit 1
+            else
+              echo "⚠️ ${cfg} is not defined by the active Kconfig tree; this build cannot enable it as a config option."
+            fi
+          done
+          if grep -q '^CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' "${OUT_DIR}/.config"; then
+            echo "❌ ERROR: OPEN_REDIRECT should remain disabled while its Kconfig dependency is BROKEN."
+            exit 1
           fi
+          echo "ℹ️ CONFIG_KSU_SUSFS_OPEN_REDIRECT stays disabled intentionally (depends on BROKEN)."
           # 校验 KSU_DISABLE_MANAGER 是否【处于关闭状态】
           if grep -q '^CONFIG_KSU_DISABLE_MANAGER=y' "${OUT_DIR}/.config"; then
               echo "❌ ERROR: CONFIG_KSU_DISABLE_MANAGER 被开启了（管理器被禁用了）！"
