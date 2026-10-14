@@ -1,4 +1,4 @@
-name: Integrated SukiSU Ultra + SUSFS (UAPI5 test)
+name: Integrated SukiSU Ultra + SUSFS
 
 on:
   workflow_dispatch:
@@ -61,41 +61,21 @@ jobs:
           patch -p1 --fuzz=0 < "$PATCH"
           echo "[+] SELinuxFS selector patch applied"
 
-      # 5. Integrate SukiSU Ultra（官方仓库，固定提交，和 custom compatibility patch 的基线完全对应）
+      # 5. Integrate the current SukiSU Ultra builtin branch HEAD (no fixed SHA pin)
       - name: Integrate SukiSU Ultra
         run: |
           set -euo pipefail
           cd kernel_source
           echo "========================================"
-          echo "Installing SukiSU Ultra (official, pinned commit)"
+          echo "Installing latest SukiSU Ultra builtin branch"
           echo "========================================"
           rm -rf /tmp/SukiSU-Ultra
-          SUKISU_REF="6c284e957feaa9a388a9f1c37dc4ec80d95e434b"
+          git clone --branch builtin --single-branch https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
+          SUKISU_REF="$(git -C /tmp/SukiSU-Ultra rev-parse HEAD)"
+          echo "Resolved current builtin HEAD: ${SUKISU_REF}"
 
-          # 明确从官方 builtin 分支获取集成脚本，避免默认检出 main。
-          # 使用完整历史，以便校验并检出与补丁基线一致的固定提交。
-          git clone --branch builtin https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
-          if ! git -C /tmp/SukiSU-Ultra merge-base --is-ancestor "$SUKISU_REF" refs/remotes/origin/builtin; then
-            echo "ERROR: pinned SukiSU commit is not reachable from official builtin branch: $SUKISU_REF"
-            exit 1
-          fi
-          SUKISU_FULL_REF=$(git -C /tmp/SukiSU-Ultra rev-parse "${SUKISU_REF}^{commit}")
-          if [ "$SUKISU_FULL_REF" != "$SUKISU_REF" ]; then
-            echo "ERROR: ref did not resolve to the exact requested upstream commit"
-            echo "Requested: $SUKISU_REF"
-            echo "Resolved:  $SUKISU_FULL_REF"
-            exit 1
-          fi
-          git -C /tmp/SukiSU-Ultra checkout --detach "$SUKISU_FULL_REF"
-          SCRIPT_REF=$(git -C /tmp/SukiSU-Ultra rev-parse HEAD)
-          if [ "$SCRIPT_REF" != "$SUKISU_FULL_REF" ]; then
-            echo "ERROR: setup script repository is not at the pinned builtin commit"
-            exit 1
-          fi
-          echo "Pinned SukiSU builtin full commit: $SUKISU_FULL_REF"
-
-          # 官方 setup.sh 内部的 clone 也未指定分支；明确改为 builtin，
-          # 防止它先从 main 建立 KernelSU，再依赖后续 checkout 才回到固定提交。
+          # Force setup.sh's inner clone to the builtin branch. Resolve HEAD once
+          # above so both clones use the same current branch revision in this run.
           sed -i 's#git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU#git clone --branch builtin https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU#' /tmp/SukiSU-Ultra/kernel/setup.sh
           if ! grep -Fq 'git clone --branch builtin https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU' /tmp/SukiSU-Ultra/kernel/setup.sh; then
             echo "ERROR: could not force setup.sh's KernelSU clone to the builtin branch"
@@ -105,74 +85,64 @@ jobs:
           echo "========================================"
           echo "Cleaning DTS changes"
           echo "========================================"
-          git checkout -- arch/arm64/boot/dts/
-          # 固定到 6c284e957，和下面的 custom compatibility patch 基线精确对应，不用最新 tag/分支头。
-          # setup.sh 内部会创建 kernel_source/KernelSU，因此随后还要验证那个仓库的实际 HEAD。
-          bash /tmp/SukiSU-Ultra/kernel/setup.sh "$SUKISU_FULL_REF"
+          git checkout -- arch/arm64/boot/dts/ || true
+          bash /tmp/SukiSU-Ultra/kernel/setup.sh "$SUKISU_REF"
           ACTUAL_SUKISU_REF=$(git -C KernelSU rev-parse HEAD)
-          if [ "$ACTUAL_SUKISU_REF" != "$SUKISU_FULL_REF" ]; then
-            echo "ERROR: setup.sh did not install the pinned SukiSU builtin commit"
-            echo "Expected: $SUKISU_FULL_REF"
+          if [ "$ACTUAL_SUKISU_REF" != "$SUKISU_REF" ]; then
+            echo "ERROR: setup.sh did not install the resolved builtin HEAD"
+            echo "Expected: $SUKISU_REF"
             echo "Actual:   $ACTUAL_SUKISU_REF"
             exit 1
           fi
-          echo "[+] Integrated exact SukiSU builtin commit: $ACTUAL_SUKISU_REF"
+          echo "[+] Integrated current SukiSU builtin HEAD: $ACTUAL_SUKISU_REF"
           ls -ld drivers/kernelsu
           readlink -f drivers/kernelsu
-          if grep -n -C 3 "kernelsu" drivers/Makefile; then :; fi
-          if grep -n -C 3 "kernelsu" drivers/Kconfig; then :; fi
+          grep -n -C 3 "kernelsu" drivers/Makefile || true
+          grep -n -C 3 "kernelsu" drivers/Kconfig || true
 
           echo "========================================"
           echo "SukiSU Makefile"
           echo "========================================"
           grep -nE '^(obj-|kernelsu-y)' drivers/kernelsu/Makefile
 
-          echo "========================================"
-          echo "Applying custom compatibility patch to SukiSU-Ultra driver source"
-          echo "========================================"
-          # drivers/kernelsu 指向 KernelSU/kernel；这里回到 KernelSU 仓库根目录，
-          # 以 kernel/... 路径应用针对精确提交 6c284e957 的重对齐补丁。
-          # 先 dry-run，再以零 fuzz 应用；任何上下文不匹配都直接失败。
+          # Apply only the SukiSU-specific patches; do not change the LineageOS
+          # SELinuxFS or SUSFS patches in this workflow.
           cd KernelSU
-          COMPAT_PATCH="${GITHUB_WORKSPACE}/sukisu-builtin-6c284e957-nokpm-nopin-cpu-spoof.patch"
-          test -f "$COMPAT_PATCH"
-          patch --dry-run -p1 --fuzz=0 < "$COMPAT_PATCH"
-          patch -p1 --fuzz=0 < "$COMPAT_PATCH"
-          # 把新增源文件纳入 git diff 的 whitespace 校验，但不提交源码。
-          git add -N kernel/feature/cpu_spoof.c kernel/feature/cpu_spoof.h
-          git diff --check
-          echo "[+] CPU-spoof / SUSFS compatibility patch applied cleanly to pinned builtin source"
-          if ! grep -Fq 'static int kernel_umount_feature_set(u64 value)' kernel/feature/kernel_umount.c; then
-            echo "ERROR: pinned upstream source is missing kernel_umount_feature_set()"
-            exit 1
-          fi
-
-          # SELinux hide patch is for the SukiSU builtin source layout. Check exact
-          # context first; do not force fuzz or silently continue on a baseline mismatch.
-          SELINUX_HIDE_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-selinux-hide-5.4-rebased-after-cpu.patch"
+          CPU_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-cpu-spoof-latest.patch"
+          SELINUX_HIDE_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-selinux-hide-latest.patch"
+          test -f "$CPU_PATCH"
           test -f "$SELINUX_HIDE_PATCH"
-          echo "Preflighting SukiSU SELinux hide patch against the integrated KernelSU tree"
+          echo "Preflighting SukiSU CPU Spoof patch against resolved builtin HEAD"
+          patch --dry-run -p1 --fuzz=0 < "$CPU_PATCH"
+          patch -p1 --fuzz=0 < "$CPU_PATCH"
+          echo "[+] SukiSU CPU Spoof patch applied"
+          echo "Preflighting SukiSU SELinux Hide patch against CPU-spoof-patched source"
           patch --dry-run -p1 --fuzz=0 < "$SELINUX_HIDE_PATCH"
           patch -p1 --fuzz=0 < "$SELINUX_HIDE_PATCH"
-          git add -N kernel/feature/selinux_hide.c kernel/feature/selinux_hide.h
-          git diff --check
-          echo "[+] Rebased SukiSU SELinux hide patch applied cleanly after CPU/SUSFS compatibility patch"
+          echo "[+] SukiSU SELinux Hide patch applied"
 
-          # Test-only UAPI5 overlay. This is deliberately isolated from the stable package.
-          # On pinned builtin 6c284e957, UAPI3 scoped SU-session FD and UAPI5
-          # EVENT_SERVICES start/skip return semantics already exist in kernel code.
-          # This overlay only raises the protocol marker to 5 and declares BUNDLED.
-          # Keep this overlay test-only; stable build remains UAPI 2.
-          UAPI5_PATCH="${GITHUB_WORKSPACE}/sukisu-uapi5-compat-rebased.patch"
-          test -f "$UAPI5_PATCH"
-          echo "Preflighting test-only UAPI5 patch"
-          patch --dry-run -p1 --fuzz=0 < "$UAPI5_PATCH"
-          patch -p1 --fuzz=0 < "$UAPI5_PATCH"
-          echo "[+] Test-only UAPI5 marker/BUNDLED overlay applied"
+          # This workflow only builds Linux 5.4. pol/old_pol are used solely
+          # by the >= 5.10 branch, so remove their declaration rather than keep
+          # an unnecessary compatibility guard that can drift out of sync.
+          RULES_C="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel/selinux/rules.c"
+          RULES_FN="$(sed -n '/^void apply_kernelsu_rules(void)/,/^}/p' "$RULES_C")"
+          if printf '%s\n' "$RULES_FN" | grep -Fq 'struct selinux_policy *pol, *old_pol;'; then
+            echo "ERROR: Linux 5.4 apply_kernelsu_rules() still declares unused pol/old_pol"
+            exit 1
+          fi
+          echo "[+] no unused selinux_policy variables in Linux 5.4 apply_kernelsu_rules()"
+
+          KSU_KERNEL_DIR="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel"
+          UMOUNT_SETTER_COUNT=$(grep -Fc 'static int kernel_umount_feature_set(u64 value)' "${KSU_KERNEL_DIR}/feature/kernel_umount.c" || true)
+          if [ "$UMOUNT_SETTER_COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one kernel_umount_feature_set(); found ${UMOUNT_SETTER_COUNT}"
+            exit 1
+          fi
+          echo "[+] kernel_umount_feature_set() occurs exactly once"
           cd ..
 
-          # SUCOMPAT and SULOG are not Kconfig symbols in the pinned official builtin
-          # commit; Kconfig silently drops such unknown CONFIG_ lines. They are built
+          # SUCOMPAT and SULOG are not Kconfig symbols in the current official builtin
+          # source; Kconfig silently drops such unknown CONFIG_ lines. They are built
           # into kernel/ksu.c instead, so verify the actual source inclusion/init path.
           KSU_KERNEL_DIR="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel"
           KSU_UNITY="${KSU_KERNEL_DIR}/ksu.c"
@@ -194,7 +164,7 @@ jobs:
             fi
           done
           if ! grep -Fq 'bool ksu_su_compat_enabled __read_mostly = true;' "${KSU_KERNEL_DIR}/feature/sucompat.c"; then
-            echo "ERROR: SU compatibility is not enabled by default in the pinned source"
+            echo "ERROR: SU compatibility is not enabled by default in the current source"
             exit 1
           fi
           echo "[+] SUCOMPAT source is built in and enabled by default"
@@ -202,11 +172,7 @@ jobs:
 
           echo "Verifying 5.4 SELinux-hide second-stage initialization path"
           SELINUX_RUNTIME="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel/runtime/ksud.c"
-          if grep -Fq 'ksu_selinux_hide_handle_second_stage();' "${SELINUX_RUNTIME}"; then
-            STAGE_CALLS=$(grep -Fc 'ksu_selinux_hide_handle_second_stage();' "${SELINUX_RUNTIME}")
-          else
-            STAGE_CALLS=0
-          fi
+          STAGE_CALLS=$(grep -Fc 'ksu_selinux_hide_handle_second_stage();' "${SELINUX_RUNTIME}" || true)
           if [ "${STAGE_CALLS}" -lt 2 ]; then
             echo "ERROR: expected both second-stage call sites in ${SELINUX_RUNTIME}; found ${STAGE_CALLS}"
             exit 1
@@ -250,11 +216,11 @@ jobs:
           CONFIG_NET=y
           CONFIG_RPS=y
           CONFIG_KSU=y
-          # 注意：在固定的官方 builtin 提交 6c284e957 中，SUCOMPAT/SULOG 是
-          # ksu.c 无条件编入的源码功能，不是 Kconfig 配置项；不要注入不存在的符号。
+          # SUCOMPAT/SULOG 在当前官方 builtin 源码中由 ksu.c 编入，
+          # 不是 Kconfig 配置项；不要注入不存在的符号。
           # SUSFS：启用当前源码/补丁树提供的功能开关。
           # 以下两个历史兼容项只有在本次 SUSFS patch 定义它们时才可能生效；后面会单独校验。
-          # OPEN_REDIRECT 在 bugfix patch 中依赖 BROKEN，故有意保持关闭。
+          # OPEN_REDIRECT 在 SukiSU CPU Spoof patch 中依赖 BROKEN，故有意保持关闭。
           CONFIG_BOOT_CONFIG=y
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
@@ -267,12 +233,12 @@ jobs:
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          CONFIG_KSU_SPOOF_CPU=y
           CONFIG_SECCOMP=y
           CONFIG_SECCOMP_FILTER=y
           CONFIG_SECURITY=y
           CONFIG_SECURITY_SELINUX=y
           CONFIG_SECURITYFS=y
+          # CPU Spoof is compiled into ksu.c by the SukiSU patch; it has no Kconfig symbol.
           # CPU Spoof: required for resolving kernel data symbols
           CONFIG_DEBUG_KERNEL=y
           CONFIG_KALLSYMS=y
@@ -315,7 +281,8 @@ jobs:
           do
             if ! grep -q "^${CONFIG}=y$" "${OUT_DIR}/.config"; then
               echo "ERROR: ${CONFIG} 未在最终 .config 中启用！"
-              if grep -E '^(CONFIG_DEBUG_KERNEL|CONFIG_KALLSYMS|CONFIG_KALLSYMS_ALL)=|^# CONFIG_(DEBUG_KERNEL|KALLSYMS|KALLSYMS_ALL) is not set' "${OUT_DIR}/.config"; then :; fi
+              grep -E '^(CONFIG_DEBUG_KERNEL|CONFIG_KALLSYMS|CONFIG_KALLSYMS_ALL)=|^# CONFIG_(DEBUG_KERNEL|KALLSYMS|KALLSYMS_ALL) is not set' \
+                "${OUT_DIR}/.config" || true
               exit 1
             fi
           done
@@ -325,10 +292,9 @@ jobs:
           echo "SUCCESS: CPU Spoof 所需的 Kallsyms 配置已启用。"
 
           # 校验 KSU / SUSFS 功能位；不能只检查总开关，否则子功能被 olddefconfig 丢弃时仍会误报成功。
-          if grep -E '^CONFIG_KSU(=|_)' "${OUT_DIR}/.config"; then :; fi
+          grep -E '^CONFIG_KSU(=|_)' "${OUT_DIR}/.config" || true
           REQUIRED_KSU_CONFIGS=(
             CONFIG_KSU
-            CONFIG_KSU_SPOOF_CPU
             CONFIG_KSU_FEATURE_ADBROOT
             CONFIG_KSU_SUSFS
             CONFIG_KSU_SUSFS_SUS_PATH
@@ -347,7 +313,7 @@ jobs:
             fi
             echo "✅ ${cfg}=y"
           done
-          # Older SUSFS patch sets define these two optional symbols, but the pinned SukiSU Kconfig may not.
+          # Older SUSFS patch sets define these optional symbols, but the current SukiSU Kconfig may not.
           # Distinguish "defined but disabled" from "not provided by this patch tree".
           for cfg in CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT CONFIG_KSU_SUSFS_TRY_UMOUNT; do
             if grep -Fqx "${cfg}=y" "${OUT_DIR}/.config"; then
@@ -423,17 +389,17 @@ jobs:
           echo "生成可刷入 ZIP"
           echo "========================================"
           cd "${GITHUB_WORKSPACE}/AnyKernel3"
-          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9-UAPI5-TEST.zip" . \
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip" . \
             -x ".git/*"
           echo "========================================"
           echo "ZIP 已生成"
           echo "========================================"
-          ls -lh "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9-UAPI5-TEST.zip"
+          ls -lh "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip"
 
       # 8. 上传真正的 AnyKernel3 ZIP
       - name: Upload Kernel Zip Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SukiSU-SUSFS-Kernel-UAPI5-TEST
-          path: SukiSU-SUSFS-Kernel-OP9-UAPI5-TEST.zip
+          name: SukiSU-SUSFS-Kernel
+          path: SukiSU-SUSFS-Kernel-OP9.zip
           if-no-files-found: error
