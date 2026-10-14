@@ -1,0 +1,394 @@
+name: Integrated SukiSU Ultra + SUSFS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+
+      # 1. 签出当前仓库：workflow 和所有 patch 文件都放在仓库根目录
+      - name: Checkout Patch Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 2. 拉取官方 LineageOS 内核源码
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_oneplus_sm8350
+          ref: lineage-23.2
+          path: kernel_source
+          fetch-depth: 1
+
+      # 3. 拉取官方 Proton-Clang 工具链
+      - name: Setup Proton-Clang Toolchain
+        run: |
+          mkdir -p toolchain
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> $GITHUB_PATH
+
+      # 4. 应用 SUSFS + KernelSU hook 内核侧 patch（对 lineage-23.2 当前 HEAD 已验证零 fuzz 干净应用）
+      #    必须在下面 "Integrate SukiSU Ultra" 之前打，因为这个 patch 里也改了
+      #    drivers/Makefile（插入 obj-$(CONFIG_KSU) += kernelsu/），先打它，
+      #    setup.sh 自带的 grep 幂等检查会发现已经存在就跳过，不会重复插入。
+      - name: Apply SUSFS kernel-side patch
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          echo "========================================"
+          echo "Applying SUSFS + KernelSU hook patch"
+          echo "========================================"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/full-susfs-5.4-v2-compatible-adapted-hunk-fixed.patch"
+          echo "[+] fs/susfs.c / include/linux/susfs*.h 等文件已就位"
+
+      # 4.1 应用 SELinuxFS 5.4 适配补丁（补丁文件位于当前仓库根目录）
+      - name: Apply SELinux hide kernel-side patch
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          PATCH="${GITHUB_WORKSPACE}/LineageOS-sm8350-selinuxfs-hide-5.4.patch"
+          test -f "$PATCH"
+          echo "Preflighting SELinuxFS patch against LineageOS lineage-23.2"
+          patch --dry-run -p1 --fuzz=0 < "$PATCH"
+          patch -p1 --fuzz=0 < "$PATCH"
+          echo "[+] SELinuxFS selector patch applied"
+
+      # 5. Integrate the current SukiSU Ultra builtin branch HEAD (no fixed SHA pin)
+      - name: Integrate SukiSU Ultra
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          echo "========================================"
+          echo "Installing latest SukiSU Ultra builtin branch"
+          echo "========================================"
+          rm -rf /tmp/SukiSU-Ultra
+          git clone --branch builtin --single-branch https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
+          SUKISU_REF="$(git -C /tmp/SukiSU-Ultra rev-parse HEAD)"
+          echo "Resolved current builtin HEAD: ${SUKISU_REF}"
+
+          # Force setup.sh's inner clone to the builtin branch. Resolve HEAD once
+          # above so both clones use the same current branch revision in this run.
+          sed -i 's#git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU#git clone --branch builtin https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU#' /tmp/SukiSU-Ultra/kernel/setup.sh
+          if ! grep -Fq 'git clone --branch builtin https://github.com/SukiSU-Ultra/SukiSU-Ultra KernelSU' /tmp/SukiSU-Ultra/kernel/setup.sh; then
+            echo "ERROR: could not force setup.sh's KernelSU clone to the builtin branch"
+            exit 1
+          fi
+
+          echo "========================================"
+          echo "Cleaning DTS changes"
+          echo "========================================"
+          git checkout -- arch/arm64/boot/dts/ || true
+          bash /tmp/SukiSU-Ultra/kernel/setup.sh "$SUKISU_REF"
+          ACTUAL_SUKISU_REF=$(git -C KernelSU rev-parse HEAD)
+          if [ "$ACTUAL_SUKISU_REF" != "$SUKISU_REF" ]; then
+            echo "ERROR: setup.sh did not install the resolved builtin HEAD"
+            echo "Expected: $SUKISU_REF"
+            echo "Actual:   $ACTUAL_SUKISU_REF"
+            exit 1
+          fi
+          echo "[+] Integrated current SukiSU builtin HEAD: $ACTUAL_SUKISU_REF"
+          ls -ld drivers/kernelsu
+          readlink -f drivers/kernelsu
+          grep -n -C 3 "kernelsu" drivers/Makefile || true
+          grep -n -C 3 "kernelsu" drivers/Kconfig || true
+
+          echo "========================================"
+          echo "SukiSU Makefile"
+          echo "========================================"
+          grep -nE '^(obj-|kernelsu-y)' drivers/kernelsu/Makefile
+
+          # Apply only the SukiSU-specific patches; do not change the LineageOS
+          # SELinuxFS or SUSFS patches in this workflow.
+          cd KernelSU
+          CPU_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-cpu-spoof-latest.patch"
+          SELINUX_HIDE_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-selinux-hide-latest.patch"
+          test -f "$CPU_PATCH"
+          test -f "$SELINUX_HIDE_PATCH"
+          echo "Preflighting SukiSU CPU Spoof patch against resolved builtin HEAD"
+          patch --dry-run -p1 --fuzz=0 < "$CPU_PATCH"
+          patch -p1 --fuzz=0 < "$CPU_PATCH"
+          echo "[+] SukiSU CPU Spoof patch applied"
+          echo "Preflighting SukiSU SELinux Hide patch against CPU-spoof-patched source"
+          patch --dry-run -p1 --fuzz=0 < "$SELINUX_HIDE_PATCH"
+          patch -p1 --fuzz=0 < "$SELINUX_HIDE_PATCH"
+          echo "[+] SukiSU SELinux Hide patch applied"
+
+          KSU_KERNEL_DIR="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel"
+          UMOUNT_SETTER_COUNT=$(grep -Fc 'static int kernel_umount_feature_set(u64 value)' "${KSU_KERNEL_DIR}/feature/kernel_umount.c" || true)
+          if [ "$UMOUNT_SETTER_COUNT" -ne 1 ]; then
+            echo "ERROR: expected exactly one kernel_umount_feature_set(); found ${UMOUNT_SETTER_COUNT}"
+            exit 1
+          fi
+          echo "[+] kernel_umount_feature_set() occurs exactly once"
+          cd ..
+
+          # SUCOMPAT and SULOG are not Kconfig symbols in the current official builtin
+          # source; Kconfig silently drops such unknown CONFIG_ lines. They are built
+          # into kernel/ksu.c instead, so verify the actual source inclusion/init path.
+          KSU_KERNEL_DIR="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel"
+          KSU_UNITY="${KSU_KERNEL_DIR}/ksu.c"
+          echo "Verifying built-in SUCOMPAT and SULOG source features"
+          for src in feature/sucompat.c feature/sucompat.h feature/sulog.c feature/sulog.h; do
+            if [ ! -f "${KSU_KERNEL_DIR}/${src}" ]; then
+              echo "ERROR: required built-in SukiSU source is missing: ${src}"
+              exit 1
+            fi
+          done
+          for marker in \
+            '#include "feature/sucompat.c"' \
+            '#include "feature/sulog.c"' \
+            'ksu_sucompat_init();' \
+            'ksu_sulog_init();'; do
+            if ! grep -Fq "${marker}" "${KSU_UNITY}"; then
+              echo "ERROR: expected built-in SukiSU feature wiring is missing: ${marker}"
+              exit 1
+            fi
+          done
+          if ! grep -Fq 'bool ksu_su_compat_enabled __read_mostly = true;' "${KSU_KERNEL_DIR}/feature/sucompat.c"; then
+            echo "ERROR: SU compatibility is not enabled by default in the current source"
+            exit 1
+          fi
+          echo "[+] SUCOMPAT source is built in and enabled by default"
+          echo "[+] SULOG source is built in and registered at initialization (runtime feature defaults off until enabled by manager)"
+
+          echo "Verifying 5.4 SELinux-hide second-stage initialization path"
+          SELINUX_RUNTIME="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel/runtime/ksud.c"
+          STAGE_CALLS=$(grep -Fc 'ksu_selinux_hide_handle_second_stage();' "${SELINUX_RUNTIME}" || true)
+          if [ "${STAGE_CALLS}" -lt 2 ]; then
+            echo "ERROR: expected both second-stage call sites in ${SELINUX_RUNTIME}; found ${STAGE_CALLS}"
+            exit 1
+          fi
+          if grep -B3 'ksu_selinux_hide_handle_second_stage();' "${SELINUX_RUNTIME}" | grep -q 'KERNEL_VERSION(5, 10, 0)'; then
+            echo "ERROR: second-stage SELinux-hide initialization is still version-gated away on Linux 5.4"
+            exit 1
+          fi
+          echo "[+] 5.4 second-stage callback present and not gated out"
+
+      # 6. 构建集成内核
+      - name: Build Integrated Kernel
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          CLANG_DIR="${GITHUB_WORKSPACE}/toolchain/proton-clang"
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          rm -rf "${OUT_DIR}"
+          mkdir -p "${OUT_DIR}"
+
+          echo "========================================"
+          echo "1. 指定一加9 (lahaina-qgki) 配置文件路径"
+          echo "========================================"
+          DEFCONFIG_FILE="arch/arm64/configs/vendor/lahaina-qgki_defconfig"
+          DEFCONFIG_TARGET="vendor/lahaina-qgki_defconfig"
+
+          if [ ! -f "${DEFCONFIG_FILE}" ]; then
+            echo "ERROR: 未找到配置文件 ${DEFCONFIG_FILE}！"
+            exit 1
+          fi
+          echo "指定配置文件: ${DEFCONFIG_FILE}"
+
+          echo "========================================"
+          echo "2. 注入 SukiSU + SUSFS 及其核心依赖 Config 到 defconfig"
+          echo "========================================"
+          # 必须先追加到源 defconfig 文件，然后再执行 make
+          cat << 'EOF' >> "${DEFCONFIG_FILE}"
+
+          # SukiSU / Security Configurations
+          CONFIG_NET=y
+          CONFIG_RPS=y
+          CONFIG_KSU=y
+          # SUCOMPAT/SULOG 在当前官方 builtin 源码中由 ksu.c 编入，
+          # 不是 Kconfig 配置项；不要注入不存在的符号。
+          # SUSFS：启用当前源码/补丁树提供的功能开关。
+          # 以下两个历史兼容项只有在本次 SUSFS patch 定义它们时才可能生效；后面会单独校验。
+          # OPEN_REDIRECT 在 SukiSU CPU Spoof patch 中依赖 BROKEN，故有意保持关闭。
+          CONFIG_BOOT_CONFIG=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_SECCOMP=y
+          CONFIG_SECCOMP_FILTER=y
+          CONFIG_SECURITY=y
+          CONFIG_SECURITY_SELINUX=y
+          CONFIG_SECURITYFS=y
+          # CPU Spoof is compiled into ksu.c by the SukiSU patch; it has no Kconfig symbol.
+          # CPU Spoof: required for resolving kernel data symbols
+          CONFIG_DEBUG_KERNEL=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          # CONFIG_IOMMU_DEBUG is not set
+          # CONFIG_IOMMU_DEBUGFS is not set
+          # CONFIG_MEM_SHARE_QMI_SERVICE is not set
+          EOF
+
+          MAKE_ARGS=(
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            CC=clang
+            KCFLAGS="-Wno-unused-function"
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LOCALVERSION=-RONOVA
+            O="${OUT_DIR}"
+          )
+
+          echo "========================================"
+          echo "3. 生成包含注入 Config 的最终 .config"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" "${DEFCONFIG_TARGET}"
+
+          echo "========================================"
+          echo "4. 执行 olddefconfig 与核心配置强校验"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" olddefconfig
+          
+          echo "========================================"
+          echo "验证 CPU Spoof 所需的 Kallsyms 配置"
+          echo "========================================"
+
+          for CONFIG in \
+            CONFIG_DEBUG_KERNEL \
+            CONFIG_KALLSYMS \
+            CONFIG_KALLSYMS_ALL
+          do
+            if ! grep -q "^${CONFIG}=y$" "${OUT_DIR}/.config"; then
+              echo "ERROR: ${CONFIG} 未在最终 .config 中启用！"
+              grep -E '^(CONFIG_DEBUG_KERNEL|CONFIG_KALLSYMS|CONFIG_KALLSYMS_ALL)=|^# CONFIG_(DEBUG_KERNEL|KALLSYMS|KALLSYMS_ALL) is not set' \
+                "${OUT_DIR}/.config" || true
+              exit 1
+            fi
+          done
+
+          grep -E '^CONFIG_(DEBUG_KERNEL|KALLSYMS|KALLSYMS_ALL)=y$' \
+            "${OUT_DIR}/.config"
+          echo "SUCCESS: CPU Spoof 所需的 Kallsyms 配置已启用。"
+
+          # 校验 KSU / SUSFS 功能位；不能只检查总开关，否则子功能被 olddefconfig 丢弃时仍会误报成功。
+          grep -E '^CONFIG_KSU(=|_)' "${OUT_DIR}/.config" || true
+          REQUIRED_KSU_CONFIGS=(
+            CONFIG_KSU
+            CONFIG_KSU_FEATURE_ADBROOT
+            CONFIG_KSU_SUSFS
+            CONFIG_KSU_SUSFS_SUS_PATH
+            CONFIG_KSU_SUSFS_SUS_MAP
+            CONFIG_KSU_SUSFS_SUS_MOUNT
+            CONFIG_KSU_SUSFS_SUS_KSTAT
+            CONFIG_KSU_SUSFS_SPOOF_UNAME
+            CONFIG_KSU_SUSFS_ENABLE_LOG
+            CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
+            CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+          )
+          for cfg in "${REQUIRED_KSU_CONFIGS[@]}"; do
+            if ! grep -qx "${cfg}=y" "${OUT_DIR}/.config"; then
+              echo "❌ ERROR: ${cfg} is not enabled after olddefconfig; refusing to build a silently degraded kernel."
+              exit 1
+            fi
+            echo "✅ ${cfg}=y"
+          done
+          # Older SUSFS patch sets define these optional symbols, but the current SukiSU Kconfig may not.
+          # Distinguish "defined but disabled" from "not provided by this patch tree".
+          for cfg in CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT CONFIG_KSU_SUSFS_TRY_UMOUNT; do
+            if grep -Fqx "${cfg}=y" "${OUT_DIR}/.config"; then
+              echo "✅ ${cfg}=y"
+            elif grep -Fqx "# ${cfg} is not set" "${OUT_DIR}/.config"; then
+              echo "❌ ERROR: ${cfg} exists but is disabled after olddefconfig."
+              exit 1
+            else
+              echo "⚠️ ${cfg} is not defined by the active Kconfig tree; this build cannot enable it as a config option."
+            fi
+          done
+          if grep -q '^CONFIG_KSU_SUSFS_OPEN_REDIRECT=y' "${OUT_DIR}/.config"; then
+            echo "❌ ERROR: OPEN_REDIRECT should remain disabled while its Kconfig dependency is BROKEN."
+            exit 1
+          fi
+          echo "ℹ️ CONFIG_KSU_SUSFS_OPEN_REDIRECT stays disabled intentionally (depends on BROKEN)."
+          # 校验 KSU_DISABLE_MANAGER 是否【处于关闭状态】
+          if grep -q '^CONFIG_KSU_DISABLE_MANAGER=y' "${OUT_DIR}/.config"; then
+              echo "❌ ERROR: CONFIG_KSU_DISABLE_MANAGER 被开启了（管理器被禁用了）！"
+              exit 1
+          else
+              echo "✅ SUCCESS: CONFIG_KSU_DISABLE_MANAGER 未开启，管理器已保证启用！"
+          fi
+
+          echo "========================================"
+          echo "5. Kbuild 准备"
+          echo "========================================"
+          make "${MAKE_ARGS[@]}" -j1 prepare
+          make "${MAKE_ARGS[@]}" -j1 scripts
+
+          echo "========================================"
+          echo "6. 开启全核并发编译"
+          echo "========================================"
+
+          make "${MAKE_ARGS[@]}" -j"$(nproc)"
+
+       # 7. 打包 AnyKernel3
+      - name: Pack with AnyKernel3
+        shell: bash
+        run: |
+          set -e
+          cd "${GITHUB_WORKSPACE}"
+          git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
+          cd AnyKernel3
+          rm -rf .git README.md *placeholder
+          sed -i -E 's/^[[:space:]]*do\.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(BLOCK|block)=.*/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(IS_SLOT_DEVICE|is_slot_device)=.*/IS_SLOT_DEVICE=1;/' anykernel.sh
+          echo "========================================"
+          echo "提取内核镜像产物"
+          echo "========================================"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          if [ -f "${OUT_DIR}/arch/arm64/boot/dtb" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/dtb" ./
+            echo "[+] 已提取 dtb"
+          fi
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" ./
+            echo "[+] 已提取 Image.gz-dtb"
+          elif [ -f "${OUT_DIR}/arch/arm64/boot/Image" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image" ./
+            echo "[+] 已提取 Image"
+          else
+            echo "[-] 致命错误：未找到支持的内核镜像文件！"
+            exit 1
+          fi
+          echo "========================================"
+          echo "检查 AnyKernel3 文件"
+          echo "========================================"
+          test -f anykernel.sh
+          ls -lh
+          echo "========================================"
+          echo "生成可刷入 ZIP"
+          echo "========================================"
+          cd "${GITHUB_WORKSPACE}/AnyKernel3"
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip" . \
+            -x ".git/*"
+          echo "========================================"
+          echo "ZIP 已生成"
+          echo "========================================"
+          ls -lh "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip"
+
+      # 8. 上传真正的 AnyKernel3 ZIP
+      - name: Upload Kernel Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-SUSFS-Kernel
+          path: SukiSU-SUSFS-Kernel-OP9.zip
+          if-no-files-found: error
