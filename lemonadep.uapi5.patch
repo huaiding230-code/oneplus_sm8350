@@ -1,3 +1,20 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SukiSU Patch Maintainer
+Date: Wed, 14 Oct 2026 23:23:00 +0800
+Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
+
+Patch-Prepared: 2026-10-14
+Subject: [PATCH] SukiSU: enable test-only UAPI v5
+
+功能说明：
+- 将 KERNEL_SU_UAPI_VERSION 更新至 5。
+- 增加 BUNDLED build flag。
+- 由 UAPI v5 提供 EVENT_SERVICES start/skip result 测试接口相关版本支持。
+
+注意：
+仅供测试版工作流使用。构建稳定版时，跳过此补丁的应用步骤。
+
+---
 diff --git a/kernel/include/uapi/supercall.h b/kernel/include/uapi/supercall.h
 index 8274e3c..4932b41 100644
 --- a/kernel/include/uapi/supercall.h
