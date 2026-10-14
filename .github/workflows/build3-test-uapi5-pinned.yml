@@ -83,8 +83,7 @@ jobs:
 
           # setup.sh creates the KernelSU integration in kernel_source.
           bash /tmp/SukiSU-Ultra/kernel/setup.sh builtin
-          git -C KernelSU fetch --no-tags origin refs/heads/builtin
-          git -C KernelSU checkout --detach "$SUKISU_COMMIT"
+
           ACTUAL_COMMIT="$(git -C KernelSU rev-parse HEAD)"
           if [ "$ACTUAL_COMMIT" != "$SUKISU_COMMIT" ]; then
             echo "ERROR: KernelSU SHA mismatch: expected $SUKISU_COMMIT, got $ACTUAL_COMMIT"
