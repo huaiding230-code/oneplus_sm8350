@@ -1,3 +1,17 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
+
+功能说明：
+- 集成 SUSFS 到 Linux 5.4 内核，包括 SUS_PATH、SUS_MOUNT 等路径与挂载隐藏相关适配。
+- 接入 SukiSU/KernelSU 所需的内核 Hook，涉及文件路径、进程信息、目录遍历、stat/statfs、umount 等内核路径。
+- 集成 cmdline、bootconfig 等信息处理相关改动，以及 SUSFS 所需的内核头文件、配置和编译接线。
+- 添加 SELinux/SELinuxFS 隐藏功能所需的内核侧适配接口，配合 lemonadep.sukisu.patch 使用。
+
+说明：
+本补丁负责内核侧集成，不包含全部 SukiSU 功能实现。
+应在匹配的 Linux 5.4 内核源码上应用。
+
+---
 diff --git a/drivers/Makefile b/drivers/Makefile
 index aaef17c..daaf7f1 100644
 --- a/drivers/Makefile
