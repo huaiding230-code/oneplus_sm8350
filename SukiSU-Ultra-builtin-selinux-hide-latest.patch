@@ -391,7 +391,7 @@ index 6a35e8f..c9cb5d0 100644
      struct policydb *db;
 
  if (!getenforce()) {
-@@ -158,6 +158,12 @@ void apply_kernelsu_rules(void)
+@@ -158,6 +160,12 @@ void apply_kernelsu_rules(void)
          pr_info("SELinux permissive or disabled, apply rules!\n");
      }
  
