@@ -13,6 +13,11 @@ jobs:
           root-reserve-mb: 8192
           temp-reserve-mb: 2048
 
+      # 0. date
+      - name: Record build time
+        run: |
+          echo "BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_ENV"
+
       # 1. 签出当前仓库：workflow 和所有 patch 文件都放在仓库根目录
       - name: Checkout Patch Repository
         uses: actions/checkout@v4
