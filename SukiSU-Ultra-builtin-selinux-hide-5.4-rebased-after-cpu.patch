@@ -371,10 +371,18 @@ index 7ff7549..12037ef 100644
      ksu_kernel_umount_init();
  
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index 6a35e8f..c9cb5d0 100644
+index 6a35e8f..9474361 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -158,6 +158,12 @@ void apply_kernelsu_rules(void)
+@@ -152,5 +152,7 @@ void apply_kernelsu_rules(void)
+ void apply_kernelsu_rules(void)
+ {
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+     struct selinux_policy *pol, *old_pol;
++#endif
+     struct policydb *db;
+ 
+@@ -158,6 +160,12 @@ void apply_kernelsu_rules(void)
          pr_info("SELinux permissive or disabled, apply rules!\n");
      }
  
