@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/kernel_source"
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/kernel.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel.patch"
           echo "[+] kernel.patch applied"
 
       # 5. 固定检出 SukiSU builtin 提交并应用单一功能补丁
@@ -71,7 +71,7 @@ jobs:
             sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "${DRIVER_DIR}/Kconfig"
 
           cd "${KSU_REPO}"
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/sukisu.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu.patch"
           echo "[+] sukisu.patch applied (CPU Spoof, SELinux Hide, seccomp/driver-fd and shell-su/ADB-only)"
 
       # 测试版专用：UAPI v5。出稳定版时，把下面整个步骤注释掉即可；uapi5.patch 独立保留。
@@ -80,7 +80,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/kernel_source/KernelSU"
-          PATCH="${GITHUB_WORKSPACE}/uapi5.patch"
+          PATCH="${GITHUB_WORKSPACE}/lemonadep.uapi5.patch"
           patch --dry-run -p1 --fuzz=0 < "$PATCH"
           patch -p1 --fuzz=0 < "$PATCH"
           KSU_DIR="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel"
