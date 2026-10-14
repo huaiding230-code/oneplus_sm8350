@@ -1,0 +1,425 @@
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index db57137..a35f798 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -22,6 +22,16 @@ config KSU_DEBUG
+ 	help
+ 	  Enable KernelSU debug mode.
+ 
++config KSU_SPOOF_CPU
++	bool "SukiSU Ultra ARM64 CPU identity spoofing"
++	depends on KSU && ARM64
++	select KALLSYMS
++	select KALLSYMS_ALL
++	default n
++	help
++	  Enable runtime spoofing of ARM64 CPU identity and capability fields.
++	  Requires a matching userspace manager that supports KSU_IOCTL_SET_SPOOF_CPU.
++
+ config KPM
+     bool "Enable SukiSU KPM"
+     depends on KSU && 64BIT
+@@ -103,6 +113,7 @@ config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+ 	  - Effective on all processes.
+ 
+ config KSU_SUSFS_OPEN_REDIRECT
++	depends on BROKEN
+ 	bool "Enable to redirect a path to be opened with another path"
+ 	depends on KSU_SUSFS
+ 	default y
+diff --git a/kernel/feature/cpu_spoof.c b/kernel/feature/cpu_spoof.c
+new file mode 100644
+index 0000000..ae51139
+--- /dev/null
++++ b/kernel/feature/cpu_spoof.c
+@@ -0,0 +1,234 @@
++// SPDX-License-Identifier: GPL-2.0
++#include <linux/kernel.h>
++#include <linux/types.h>
++#include <linux/cpumask.h>
++#include <linux/percpu.h>
++#include <linux/jiffies.h>
++#include <linux/delay.h>
++#include <linux/clocksource.h>
++#include <linux/errno.h>
++#include <linux/kallsyms.h>
++#include <linux/version.h>
++#include "cpu_spoof.h"
++#include "klog.h"
++
++#if defined(CONFIG_ARM64) || defined(__aarch64__)
++#include <asm/cpu.h>
++#include <asm/cputype.h>
++#include <asm/cpufeature.h>
++#include <vdso/datapage.h>
++#include <vdso/clocksource.h>
++#ifndef MIDR_PARTNUM_SHIFT
++#define MIDR_PARTNUM_SHIFT 4
++#endif
++#ifndef MIDR_PARTNUM_MASK
++#define MIDR_PARTNUM_MASK (0xfff << MIDR_PARTNUM_SHIFT)
++#endif
++#ifndef MIDR_PARTNUM
++#define MIDR_PARTNUM(midr) (((midr) & MIDR_PARTNUM_MASK) >> MIDR_PARTNUM_SHIFT)
++#endif
++#ifndef ARM_CPU_PART_NEOVERSE_N1
++#define ARM_CPU_PART_NEOVERSE_N1 0xd0c
++#endif
++#ifndef ARM_CPU_PART_CORTEX_A76
++#define ARM_CPU_PART_CORTEX_A76 0xd0b
++#endif
++#ifndef QCOM_CPU_PART_KRYO_4XX_GOLD
++#define QCOM_CPU_PART_KRYO_4XX_GOLD 0x804
++#endif
++#ifndef CS_HRES_COARSE
++#define CS_HRES_COARSE 0
++#endif
++#ifndef CS_RAW
++#define CS_RAW 1
++#endif
++#ifndef ARM64_WORKAROUND_1418040
++#define ARM64_WORKAROUND_1418040 37
++#endif
++#endif
++
++/*
++ * This code is linked into vmlinux by the builtin SukiSU integration.
++ * kallsyms_lookup_name() is therefore callable without module exports. Data
++ * symbols require CONFIG_KALLSYMS_ALL=y to be present in the lookup table.
++ */
++static unsigned long ksu_cpu_spoof_lookup_symbol(const char *name)
++{
++#ifdef CONFIG_KALLSYMS
++    return kallsyms_lookup_name(name);
++#else
++    return 0;
++#endif
++}
++
++int ksu_set_spoof_cpu(const struct ksu_set_spoof_cpu_cmd *cmd)
++{
++    if (!cmd)
++        return -EINVAL;
++
++    /* Check both the logical CPU range and its possible-CPU mask bit. */
++    if (cmd->cpu_index >= nr_cpu_ids || !cpu_possible(cmd->cpu_index)) {
++        pr_warn("ksu: set_spoof_cpu invalid cpu_index %u\n", cmd->cpu_index);
++        return -EINVAL;
++    }
++
++#if defined(CONFIG_ARM64) || defined(__aarch64__)
++    /* Update the cached MIDR for the requested logical CPU. */
++    {
++        unsigned long cpu_data_base = ksu_cpu_spoof_lookup_symbol("cpu_data");
++        struct cpuinfo_arm64 *info;
++
++        if (!cpu_data_base) {
++            pr_err("ksu: set_spoof_cpu cannot resolve 'cpu_data'; check CONFIG_KALLSYMS_ALL\n");
++            return -ENOENT;
++        }
++
++        info = per_cpu_ptr((struct cpuinfo_arm64 *)cpu_data_base, cmd->cpu_index);
++        if (!info)
++            return -EINVAL;
++        info->reg_midr = cmd->midr;
++    }
++
++    /* These fields are system-wide, so change them once when CPU 0 is set. */
++    if (cmd->cpu_index == 0) {
++        unsigned long *lpj = (unsigned long *)ksu_cpu_spoof_lookup_symbol("loops_per_jiffy");
++
++        /*
++         * This ABI passes BogoMIPS as a whole number (the caller sends 38,
++         * not 3800 hundredths).  Linux computes BogoMIPS as
++         * loops_per_jiffy * HZ / 500000, so reverse that formula directly.
++         * A zero value means "unspecified"; never set the global calibration
++         * to zero just because the userspace profile omitted the field.
++         */
++        if (cmd->bogomips && lpj) {
++            unsigned long new_lpj =
++                ((unsigned long)cmd->bogomips * 500000UL) / HZ;
++
++            if (new_lpj) {
++                pr_info("ksu: set_spoof_cpu current loops_per_jiffy: %lu\n",
++                        READ_ONCE(*lpj));
++                WRITE_ONCE(*lpj, new_lpj);
++                pr_info("ksu: set_spoof_cpu updated loops_per_jiffy: %lu (BogoMIPS target: %u)\n",
++                        READ_ONCE(*lpj), cmd->bogomips);
++            } else {
++                pr_warn("ksu: set_spoof_cpu rejected zero loops_per_jiffy result\n");
++            }
++        } else if (!lpj) {
++            pr_warn("ksu: set_spoof_cpu failed to resolve 'loops_per_jiffy'\n");
++        } else {
++            pr_info("ksu: set_spoof_cpu BogoMIPS not specified; leaving loops_per_jiffy unchanged\n");
++        }
++
++        /*
++         * Linux 5.4 arm64 exposes the native AArch64 ELF_HWCAP mask through
++         * one scalar "elf_hwcap" symbol; it has no separate native
++         * "elf_hwcap2" symbol.  A zero mask means the caller did not provide
++         * a spoof profile, so leave the hardware-derived mask unchanged.
++         */
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++        if (cmd->hwcap) {
++            unsigned long *elf_hwcap =
++                (unsigned long *)ksu_cpu_spoof_lookup_symbol("elf_hwcap");
++
++            if (elf_hwcap) {
++                pr_info("ksu: set_spoof_cpu current elf_hwcap: 0x%lx\n",
++                        READ_ONCE(*elf_hwcap));
++                WRITE_ONCE(*elf_hwcap, (unsigned long)cmd->hwcap);
++                pr_info("ksu: set_spoof_cpu updated elf_hwcap: 0x%lx\n",
++                        READ_ONCE(*elf_hwcap));
++            } else {
++                pr_warn("ksu: set_spoof_cpu failed to resolve 'elf_hwcap'; check CONFIG_KALLSYMS_ALL\n");
++            }
++        } else {
++            pr_info("ksu: set_spoof_cpu HWCAP not specified; leaving native elf_hwcap unchanged\n");
++        }
++        if (cmd->hwcap2) {
++            pr_warn("ksu: set_spoof_cpu HWCAP2 override is unsupported on Linux 5.4 arm64; keeping native features\n");
++        }
++#else
++        if (cmd->hwcap || cmd->hwcap2)
++            pr_warn("ksu: set_spoof_cpu HWCAP override is only implemented for pre-5.10 arm64 scalar elf_hwcap\n");
++#endif
++
++        /* Align vDSO clock modes only for parts outside the known list. */
++        {
++            unsigned int part = MIDR_PARTNUM(cmd->midr);
++
++            if (part != ARM_CPU_PART_NEOVERSE_N1 && part != ARM_CPU_PART_CORTEX_A76 &&
++                part != QCOM_CPU_PART_KRYO_4XX_GOLD) {
++                struct vdso_data **vdso_data_ptr =
++                    (struct vdso_data **)ksu_cpu_spoof_lookup_symbol("vdso_data");
++
++                if (vdso_data_ptr && *vdso_data_ptr) {
++                    struct vdso_data *vdso = *vdso_data_ptr;
++
++                    /* The generic vDSO data symbol is an array indexed by clock base. */
++                    pr_info("ksu: set_spoof_cpu found 'vdso_data' (coarse clock_mode: %d)\n",
++                            READ_ONCE(vdso[CS_HRES_COARSE].clock_mode));
++                    WRITE_ONCE(vdso[CS_HRES_COARSE].clock_mode,
++                               VDSO_CLOCKMODE_ARCHTIMER);
++                    WRITE_ONCE(vdso[CS_RAW].clock_mode, VDSO_CLOCKMODE_ARCHTIMER);
++                } else {
++                    pr_warn("ksu: set_spoof_cpu failed to resolve 'vdso_data'\n");
++                }
++
++                /*
++                 * Linux 5.4's struct clocksource has no vdso_clock_mode member.
++                 * The live vDSO mode above and ARM architected-timer default
++                 * below remain active; the extra clocksource write is used only
++                 * on kernels that contain that member.
++                 */
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
++                {
++                    struct clocksource **curr_cs_ptr =
++                        (struct clocksource **)ksu_cpu_spoof_lookup_symbol("curr_clocksource");
++
++                    if (curr_cs_ptr && *curr_cs_ptr) {
++                        struct clocksource *cs = *curr_cs_ptr;
++
++                        pr_info("ksu: set_spoof_cpu found active clocksource '%s' (vdso_clock_mode: %d)\n",
++                                cs->name ? cs->name : "unknown", cs->vdso_clock_mode);
++                        cs->vdso_clock_mode = VDSO_CLOCKMODE_ARCHTIMER;
++                    } else {
++                        pr_warn("ksu: set_spoof_cpu failed to resolve 'curr_clocksource'\n");
++                    }
++                }
++#endif
++
++                {
++                    enum vdso_clock_mode *vd_default =
++                        (enum vdso_clock_mode *)ksu_cpu_spoof_lookup_symbol("vdso_default");
++
++                    if (vd_default) {
++                        *vd_default = VDSO_CLOCKMODE_ARCHTIMER;
++                    } else {
++                        pr_warn("ksu: set_spoof_cpu failed to resolve 'vdso_default'\n");
++                    }
++                }
++
++                {
++                    unsigned long *caps = (unsigned long *)ksu_cpu_spoof_lookup_symbol("cpu_hwcaps");
++
++                    if (!caps)
++                        caps = (unsigned long *)ksu_cpu_spoof_lookup_symbol("system_cpucaps");
++                    if (caps) {
++                        pr_info("ksu: set_spoof_cpu ARM64_WORKAROUND_1418040 before: %d\n",
++                                test_bit(ARM64_WORKAROUND_1418040, caps));
++                        clear_bit(ARM64_WORKAROUND_1418040, caps);
++                        pr_info("ksu: set_spoof_cpu ARM64_WORKAROUND_1418040 after: %d\n",
++                                test_bit(ARM64_WORKAROUND_1418040, caps));
++                    } else {
++                        pr_warn("ksu: set_spoof_cpu failed to resolve 'cpu_hwcaps'/'system_cpucaps'\n");
++                    }
++                }
++            }
++        }
++    }
++#else
++    return -EOPNOTSUPP;
++#endif
++
++    pr_info("KernelSU: CPU %u cached identity updated (MIDR: 0x%08x)\n",
++            cmd->cpu_index, cmd->midr);
++    return 0;
++}
+diff --git a/kernel/feature/cpu_spoof.h b/kernel/feature/cpu_spoof.h
+new file mode 100644
+index 0000000..ab745b9
+--- /dev/null
++++ b/kernel/feature/cpu_spoof.h
+@@ -0,0 +1,6 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __KSU_H_CPU_SPOOF
++#define __KSU_H_CPU_SPOOF
++#include "include/uapi/supercall.h"
++int ksu_set_spoof_cpu(const struct ksu_set_spoof_cpu_cmd *cmd);
++#endif /* __KSU_H_CPU_SPOOF */
+diff --git a/kernel/include/uapi/supercall.h b/kernel/include/uapi/supercall.h
+index ee9f525..8274e3c 100644
+--- a/kernel/include/uapi/supercall.h
++++ b/kernel/include/uapi/supercall.h
+@@ -158,6 +158,15 @@ struct ksu_list_try_umount_cmd {
+     __u32 buf_size; // Buffer size provided by userspace
+ };
+ 
++/* Runtime CPU identity spoofing parameters (KSU_IOCTL_SET_SPOOF_CPU). */
++struct ksu_set_spoof_cpu_cmd {
++    __u32 cpu_index; /* Target logical CPU index */
++    __u32 midr;      /* MIDR value, e.g. 0x413fd0c1 */
++    __u32 bogomips;  /* Whole-number BogoMIPS target; 0 leaves calibration unchanged */
++    __u64 hwcap;     /* Native AArch64 ELF_HWCAP mask; 0 leaves it unchanged */
++    __u64 hwcap2;    /* No native HWCAP2 symbol on Linux 5.4 arm64 */
++};
++
+ DECLARE(__u8, KSU_UMOUNT_WIPE, 0); /* ignore everything and wipe list */
+ DECLARE(__u8, KSU_UMOUNT_ADD, 1); /* add entry (path + flags) */
+ DECLARE(__u8, KSU_UMOUNT_DEL, 2); /* delete entry, strcmp */
+@@ -223,6 +232,7 @@ DECLARE(__u32, KSU_IOCTL_GET_FULL_VERSION, _IOC(_IOC_READ, 'K', 100, 0));
+ DECLARE(__u32, KSU_IOCTL_HOOK_TYPE, _IOC(_IOC_READ, 'K', 101, 0));
+ DECLARE(__u32, KSU_IOCTL_ENABLE_KPM, _IOC(_IOC_READ, 'K', 102, 0));
+ DECLARE(__u32, KSU_IOCTL_LIST_TRY_UMOUNT, _IOC(_IOC_READ | _IOC_WRITE, 'K', 103, 0));
++DECLARE(__u32, KSU_IOCTL_SET_SPOOF_CPU, _IOC(_IOC_WRITE, 'K', 105, 0));
+ DECLARE(__u32, KSU_IOCTL_KPM, _IOC(_IOC_READ | _IOC_WRITE, 'K', 200, 0));
+ 
+ #endif
+diff --git a/kernel/ksu.c b/kernel/ksu.c
+index ba495d5..7ff7549 100644
+--- a/kernel/ksu.c
++++ b/kernel/ksu.c
+@@ -28,6 +28,9 @@
+ #include "infra/event_queue.h"
+ #include "feature/adb_root.h"
+ #include "feature/kernel_umount.h"
++#ifdef CONFIG_KSU_SPOOF_CPU
++#include "feature/cpu_spoof.h"
++#endif
+ #include "feature/sucompat.h"
+ #include "feature/sulog.h"
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+@@ -79,6 +82,9 @@
+ #include "feature/adb_root.c"
+ #endif
+ #include "feature/kernel_umount.c"
++#ifdef CONFIG_KSU_SPOOF_CPU
++#include "feature/cpu_spoof.c"
++#endif
+ #include "feature/sucompat.c"
+ #include "feature/sulog.c"
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+diff --git a/kernel/runtime/ksud.c b/kernel/runtime/ksud.c
+index eed56f9..08d4eed 100644
+--- a/kernel/runtime/ksud.c
++++ b/kernel/runtime/ksud.c
+@@ -54,7 +54,9 @@ void on_post_fs_data(void)
+     ksu_observer_init();
+     // sanity check, this may influence the performance
+     stop_input_hook();
++    #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+     ksu_selinux_hide_handle_post_fs_data();
++#endif
+ }
+ 
+ extern void ext4_unregister_sysfs(struct super_block *sb);
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 3d5b86e..6a35e8f 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -255,6 +255,10 @@ do_stop_machine:
+ out_flush:
+     smp_mb();
+     reset_avc_cache();
++#ifdef CONFIG_KSU_SUSFS
++    /* Both 5.4 policy-update paths reach here after releasing policy locks. */
++    susfs_set_batch_sid();
++#endif
+ #endif
+ }
+ 
+diff --git a/kernel/sulog/event.c b/kernel/sulog/event.c
+index e45f01f..e98675f 100644
+--- a/kernel/sulog/event.c
++++ b/kernel/sulog/event.c
+@@ -142,7 +142,7 @@ static __u32 ksu_sulog_flatten_argv(struct user_arg_ptr *argv_user, char *dst, _
+             return ksu_sulog_copy_empty_string(dst);
+ 
+         copied =
+-            strncpy_from_user_nofault(arg, (const void __user *)untagged_addr((unsigned long)arg_user), sizeof(arg));
++            ksu_strncpy_from_user_nofault(arg, (const void __user *)untagged_addr((unsigned long)arg_user), sizeof(arg));
+         if (copied <= 0)
+             return ksu_sulog_copy_empty_string(dst);
+ 
+@@ -374,7 +374,11 @@ static struct ksu_sulog_pending_event *ksu_sulog_capture_grant_root(const struct
+     struct ksu_sulog_event *event;
+ 
+     // This is actually stupid fix
++    #ifdef CONFIG_KSU_SUSFS
+     #define USER_ARG_NULL user_arg_null_ptr()
++    #else
++    #define USER_ARG_NULL (*user_arg_null_ptr())
++    #endif
+ 
+     pending = ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, USER_ARG_NULL, gfp);
+     if (!pending)
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index bf26618..553e244 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -774,6 +774,18 @@ static int list_try_umount(void __user *arg)
+     return ret;
+ }
+ 
++#ifdef CONFIG_KSU_SPOOF_CPU
++/* 105. SET_SPOOF_CPU - Update CPU identity/capability information */
++static int do_set_spoof_cpu(void __user *arg)
++{
++    struct ksu_set_spoof_cpu_cmd cmd;
++
++    if (copy_from_user(&cmd, arg, sizeof(cmd)))
++        return -EFAULT;
++    return ksu_set_spoof_cpu(&cmd);
++}
++#endif
++
+ // 100. GET_FULL_VERSION - Get full version string
+ static int do_get_full_version(void __user *arg)
+ {
+@@ -979,6 +991,14 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
+         .handler = do_get_full_version,
+         .perm_check = always_allow
+     },
++#ifdef CONFIG_KSU_SPOOF_CPU
++    {
++        .cmd = KSU_IOCTL_SET_SPOOF_CPU,
++        .name = "SET_SPOOF_CPU",
++        .handler = do_set_spoof_cpu,
++        .perm_check = only_root
++    },
++#endif
+     { 
+         .cmd = KSU_IOCTL_HOOK_TYPE,
+         .name = "GET_HOOK_TYPE",
