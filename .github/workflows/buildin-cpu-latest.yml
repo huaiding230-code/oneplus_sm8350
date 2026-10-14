@@ -108,7 +108,7 @@ jobs:
           # Apply only the SukiSU-specific patches; do not change the LineageOS
           # SELinuxFS or SUSFS patches in this workflow.
           cd KernelSU
-          CPU_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-cpu-spoof-latest.patch"
+          CPU_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-selinux-hide-5.4-fixed.patch"
           SELINUX_HIDE_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-selinux-hide-latest.patch"
           test -f "$CPU_PATCH"
           test -f "$SELINUX_HIDE_PATCH"
