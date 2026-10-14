@@ -1,0 +1,38 @@
+diff --git a/kernel/include/uapi/supercall.h b/kernel/include/uapi/supercall.h
+index 8274e3c..dce3284 100644
+--- a/kernel/include/uapi/supercall.h
++++ b/kernel/include/uapi/supercall.h
+@@ -13,7 +13,10 @@
+ #endif
+ 
+ // 2: allowlist v4 root profile flag
+-DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);
++// 3: scoped su-session driver fd
++// 4: add KSU_GET_INFO_FLAG_BUNDLED
++// 5: EVENT_SERVICES result semantics for this test protocol
++DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 5);
+ 
+ /* Magic numbers for reboot hook to install fd */
+ DECLARE(__u32, KSU_INSTALL_MAGIC1, 0xDEADBEEF);
+@@ -33,6 +36,7 @@ DECLARE(__u32, KSU_GET_INFO_FLAG_LKM, (1U << 0));
+ DECLARE(__u32, KSU_GET_INFO_FLAG_MANAGER, (1U << 1));
+ DECLARE(__u32, KSU_GET_INFO_FLAG_LATE_LOAD, (1U << 2));
+ DECLARE(__u32, KSU_GET_INFO_FLAG_PR_BUILD, (1U << 3));
++DECLARE(__u32, KSU_GET_INFO_FLAG_BUNDLED, (1U << 4));
+ 
+ struct ksu_get_info_cmd {
+     __u32 version; /* Output: KERNEL_SU_VERSION */
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index 97368ae..0763c31 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -20,6 +20,9 @@ static int do_get_info(void __user *arg)
+     if (is_manager()) {
+         cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
+     }
++#ifndef MODULE
++    cmd.flags |= KSU_GET_INFO_FLAG_BUNDLED;
++#endif
+ 
+     cmd.features = KSU_FEATURE_MAX;
+     cmd.uapi_version = KERNEL_SU_UAPI_VERSION;
