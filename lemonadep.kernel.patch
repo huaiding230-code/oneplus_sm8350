@@ -1,4 +1,9 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SukiSU Patch Maintainer
+Date: Wed, 14 Oct 2026 23:23:00 +0800
+Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
+
+Patch-Prepared: 2026-10-14
 Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 
 功能说明：
