@@ -1,3 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SukiSU Patch Maintainer
+Date: Wed, 14 Oct 2026 23:23:00 +0800
+Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
+
+Patch-Prepared: 2026-10-14
+Subject: [PATCH] SukiSU: add CPU spoof, SELinux hide and shell/seccomp features
+
+功能说明：
+- CPU Spoof：添加 CPU 信息伪装相关功能及接口。
+- SELinux Hide：适配 Linux 5.4，包含 SELinux 状态与策略快照、隐藏相关处理。
+- Shell SU ADB-only：添加仅限 ADB 会话相关场景的 Shell SU 功能限制。
+- Seccomp Filter / Driver-FD：添加 seccomp filter 缓存与白名单处理，为管理器的 Driver-FD 请求保留所需的 reboot syscall 通路。
+- 集成对应的 Feature/UAPI、LSM Hook、SELinux 规则及 SukiSU 内部调用路径。
+- 禁用当前未纳入稳定配置的 SUSFS OPEN_REDIRECT 功能，避免意外启用。
+
+说明：
+本补丁负责 SukiSU 侧的功能实现与适配，需配合 kernel.patch 使用。
+UAPI v5 测试接口单独放在 uapi5.patch 中，不包含在本补丁内。
+
+---
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index db57137..d0bcd7b 100644
 --- a/kernel/Kconfig
