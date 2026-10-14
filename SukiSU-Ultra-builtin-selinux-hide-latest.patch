@@ -9,11 +9,12 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 index 31b2de8..2d95fb9 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -1,5 +1,9 @@
+@@ -1,5 +1,10 @@
  #include <linux/cpu.h>
  #include <linux/memory.h>
 +#include <linux/mm.h>
 +#include <linux/highmem.h>
++#include <linux/vmalloc.h>
 +#include <linux/cred.h>
 +#include <linux/user_namespace.h>
  #include <asm-generic/errno-base.h>
@@ -381,17 +382,12 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 index 6a35e8f..c9cb5d0 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -152,6 +152,8 @@
- 
- void apply_kernelsu_rules(void)
+@@ -153,4 +153,3 @@ void apply_kernelsu_rules(void)
  {
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-     struct selinux_policy *pol, *old_pol;
-+#endif
+-    struct selinux_policy *pol, *old_pol;
      struct policydb *db;
-
- if (!getenforce()) {
-@@ -158,6 +160,12 @@ void apply_kernelsu_rules(void)
+ 
+@@ -158,6 +158,12 @@ void apply_kernelsu_rules(void)
          pr_info("SELinux permissive or disabled, apply rules!\n");
      }
  
