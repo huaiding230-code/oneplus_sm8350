@@ -374,14 +374,16 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 index 6a35e8f..9474361 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -152,5 +152,7 @@ void apply_kernelsu_rules(void)
+@@ -152,6 +152,8 @@
+ 
  void apply_kernelsu_rules(void)
  {
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
      struct selinux_policy *pol, *old_pol;
 +#endif
      struct policydb *db;
- 
+
+ if (!getenforce()) {
 @@ -158,6 +160,12 @@ void apply_kernelsu_rules(void)
          pr_info("SELinux permissive or disabled, apply rules!\n");
      }
