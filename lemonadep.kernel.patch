@@ -1603,7 +1603,7 @@ diff --git a/fs/read_write.c b/fs/read_write.c
  
  	if (!(file->f_mode & FMODE_READ))
  		return -EBADF;
-@@ -603,7 +616,17 @@
+@@ -617,8 +630,18 @@ ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
  	return ret;
  }
  
