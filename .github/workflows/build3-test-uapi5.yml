@@ -61,69 +61,60 @@ jobs:
           patch -p1 --fuzz=0 < "$PATCH"
           echo "[+] SELinuxFS selector patch applied"
 
-      # 5. Integrate SukiSU Ultra（官方仓库，固定提交，和 bugfix4 patch 的基线完全对应）
-      - name: Integrate SukiSU Ultra
-        run: |
-          set -euo pipefail
-          cd kernel_source
-          echo "========================================"
-          echo "Installing SukiSU Ultra (official, pinned commit)"
-          echo "========================================"
-          rm -rf /tmp/SukiSU-Ultra
-          git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
-
-          echo "========================================"
-          echo "Cleaning DTS changes"
-          echo "========================================"
-          git checkout -- arch/arm64/boot/dts/ || true
-          # 固定到 e2912817，和下面的 bugfix4 patch 基线精确对应，不用最新 tag/分支头
-          bash /tmp/SukiSU-Ultra/kernel/setup.sh e2912817f4e1b194e582a06e0b5eacf6a3fb7083
-          ls -ld drivers/kernelsu
-          readlink -f drivers/kernelsu
-          grep -n -C 3 "kernelsu" drivers/Makefile || true
-          grep -n -C 3 "kernelsu" drivers/Kconfig || true
-
-          echo "========================================"
-          echo "SukiSU Makefile"
-          echo "========================================"
-          grep -nE '^(obj-|kernelsu-y)' drivers/kernelsu/Makefile
-
-          echo "========================================"
-          echo "Applying bugfix4 patch to SukiSU-Ultra driver source"
-          echo "========================================"
-          # 注意：drivers/kernelsu 只是 setup.sh 建的软链接，指向 KernelSU/kernel，
-          # 在它里面打 -p1 会因为少了一层 "kernel/" 目录而找不到文件，必须回到
-          # KernelSU 这个 clone 的仓库根目录（kernel_source/KernelSU）打。
-          # 已去掉 kpm.c 那个 hunk（不需要 KPM 功能），其余 7 个文件零 fuzz 干净应用。
-          cd KernelSU
-          git apply --check "${GITHUB_WORKSPACE}/sukisu-builtin-current-vs-e2912817-nokpm-nopin.patch"
-          git apply "${GITHUB_WORKSPACE}/sukisu-builtin-current-vs-e2912817-nokpm-nopin.patch"
-          echo "[+] bugfix4 patch applied (kpm.c excluded)"
-
-          # SELinux hide patch is for the SukiSU builtin source layout. Check exact
-          # context first; do not force fuzz or silently continue on a baseline mismatch.
-          SELINUX_HIDE_PATCH="${GITHUB_WORKSPACE}/SukiSU-Ultra-builtin-selinux-hide-5.4.patch"
-          test -f "$SELINUX_HIDE_PATCH"
-          echo "Preflighting SukiSU SELinux hide patch against the integrated KernelSU tree"
-          git apply --recount --check "$SELINUX_HIDE_PATCH"
-          git apply --recount "$SELINUX_HIDE_PATCH"
-          echo "[+] SukiSU SELinux hide patch applied"
-          cd ..
-
-      # TEST ONLY: the stable workflow is a separate file and is not changed.
-      # Apply after both SukiSU patches because the CPU-spoof patch and UAPI bridge
-      # both touch include/uapi/supercall.h and supercall/dispatch.c.
-      - name: Apply UAPI5 test compatibility patch
+      # 5. Integrate SukiSU Ultra builtin: resolve the latest builtin SHA once,
+      #    detach to that exact SHA, log it, and never silently fall back to main.
+      - name: Integrate latest SukiSU builtin and apply stable patches
         shell: bash
         run: |
           set -euo pipefail
-          cd "${GITHUB_WORKSPACE}/kernel_source/KernelSU"
-          PATCH="${GITHUB_WORKSPACE}/sukisu-test-uapi-compat.patch"
-          test -f "$PATCH"
-          echo "Preflighting UAPI5 test patch against the already-patched SukiSU tree"
-          git apply --recount --check "$PATCH"
-          git apply --recount "$PATCH"
-          echo "[+] UAPI5 test compatibility patch applied"
+          cd kernel_source
+          git checkout -- arch/arm64/boot/dts/ || true
+          rm -rf /tmp/SukiSU-Ultra
+          git clone --no-checkout https://github.com/SukiSU-Ultra/SukiSU-Ultra.git /tmp/SukiSU-Ultra
+          git -C /tmp/SukiSU-Ultra fetch --no-tags origin refs/heads/builtin
+          SUKISU_COMMIT="$(git -C /tmp/SukiSU-Ultra rev-parse FETCH_HEAD)"
+          test -n "$SUKISU_COMMIT"
+          echo "Resolved SukiSU builtin commit: $SUKISU_COMMIT"
+          git -C /tmp/SukiSU-Ultra checkout --detach "$SUKISU_COMMIT"
+          bash /tmp/SukiSU-Ultra/kernel/setup.sh builtin
+          git -C KernelSU fetch --no-tags origin refs/heads/builtin
+          git -C KernelSU checkout --detach "$SUKISU_COMMIT"
+          ACTUAL_COMMIT="$(git -C KernelSU rev-parse HEAD)"
+          if [ "$ACTUAL_COMMIT" != "$SUKISU_COMMIT" ]; then
+            echo "ERROR: SukiSU SHA mismatch: expected $SUKISU_COMMIT, got $ACTUAL_COMMIT"
+            exit 1
+          fi
+          echo "[+] SukiSU builtin SHA pinned for this run: $ACTUAL_COMMIT"
+
+          cd KernelSU
+          CPU_PATCH="${GITHUB_WORKSPACE}/sukisu-cpu-spoof-stable-rebased.patch"
+          SELINUX_PATCH="${GITHUB_WORKSPACE}/sukisu-selinux-hide-5.4-stable-rebased.patch"
+          UAPI_PATCH="${GITHUB_WORKSPACE}/sukisu-uapi5-compat-rebased.patch"
+          test -f "$CPU_PATCH"
+          test -f "$SELINUX_PATCH"
+          test -f "$UAPI_PATCH"
+
+          echo "Preflight/apply stable CPU spoof patch"
+          git apply --check "$CPU_PATCH"
+          git apply "$CPU_PATCH"
+
+          echo "Preflight/apply stable SELinux hide 5.4 patch after CPU spoof"
+          git apply --recount --check "$SELINUX_PATCH"
+          git apply --recount "$SELINUX_PATCH"
+
+          echo "Verify expected UAPI-v2 baseline already has services/scoped-FD implementation"
+          grep -q 'DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 2);' kernel/include/uapi/supercall.h
+          grep -q 'EVENT_SERVICES' kernel/include/uapi/supercall.h
+          grep -q 'ksu_install_su_fd' kernel/supercall/supercall.h
+          grep -q 'ksu_install_su_fd' kernel/feature/sucompat.c
+
+          echo "Preflight/apply UAPI5-only compatibility patch after both stable patches"
+          git apply --check "$UAPI_PATCH"
+          git apply "$UAPI_PATCH"
+          grep -q 'DECLARE(__u32, KERNEL_SU_UAPI_VERSION, 5);' kernel/include/uapi/supercall.h
+          grep -q 'KSU_GET_INFO_FLAG_BUNDLED' kernel/include/uapi/supercall.h
+          echo "[+] Stable patches and UAPI5 test patch applied in order"
+          cd ..
 
       # 6. 构建集成内核
       - name: Build Integrated Kernel
