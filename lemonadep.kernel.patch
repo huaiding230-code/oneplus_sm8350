@@ -1,3 +1,22 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: SukiSU Patch Maintainer
+Date: Wed, 14 Oct 2026 23:23:00 +0800
+Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
+
+Patch-Prepared: 2026-10-14
+Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
+
+功能说明：
+- 集成 SUSFS 到 Linux 5.4 内核，包括 SUS_PATH、SUS_MOUNT 等路径与挂载隐藏相关适配。
+- 接入 SukiSU/KernelSU 所需的内核 Hook，涉及文件路径、进程信息、目录遍历、stat/statfs、umount 等内核路径。
+- 集成 cmdline、bootconfig 等信息处理相关改动，以及 SUSFS 所需的内核头文件、配置和编译接线。
+- 添加 SELinux/SELinuxFS 隐藏功能所需的内核侧适配接口，配合 lemonadep.sukisu.patch 使用。
+
+说明：
+本补丁负责内核侧集成，不包含全部 SukiSU 功能实现。
+应在匹配的 Linux 5.4 内核源码上应用。
+
+---
 # ============================================================================
 # 文件说明：SUSFS + KernelSU/SukiSU 内核侧集成补丁（kernel.patch）
 # 目标平台：OnePlus 9 / SM8350；LineageOS 23.2；Linux 5.4；SukiSU builtin
@@ -6,7 +25,7 @@
 # 更新基线：2026-10-14 的精简版 kernel.patch（原有补丁内容完整保留）
 # 上游来源：本次用户提供的 susfs-50-only.patch，以及配套差异说明“粘贴的文本 (1)(2).txt”。
 # 上游对应文件：kernel_patches/50_add_susfs_in_gki-android12-5.10.patch（SUSFS Linux 5.10 补丁）。
-#
+# 
 # 本次更新内容：只选择性移植 SELinux setprocattr/current 的隐藏策略预校验，
 # 在 security/selinux/hooks.c 的 selinux_setprocattr() 中，当普通应用 UID >= 10000
 # 且 ksu_selinux_hide_running 为 true 时，先以 fake_state 调用
@@ -1629,7 +1648,7 @@ diff --git a/fs/read_write.c b/fs/read_write.c
  
  	if (!(file->f_mode & FMODE_READ))
  		return -EBADF;
-@@ -603,7 +616,17 @@
+@@ -592,8 +605,18 @@ ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
  	return ret;
  }
  
