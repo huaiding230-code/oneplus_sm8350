@@ -6087,31 +6087,31 @@ index f1e1b14..fe25d25 100644
 diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
 --- a/security/selinux/hooks.c
 +++ b/security/selinux/hooks.c
-@@ -103,7 +103,12 @@
- #ifdef CONFIG_QCOM_RTIC
+@@ -107,6 +107,11 @@
  struct selinux_state selinux_state __rticdata;
  #else
  struct selinux_state selinux_state;
- #endif
- 
++#endif
++
 +#ifdef CONFIG_KSU_SUSFS
 +extern struct selinux_state fake_state;
 +extern bool ksu_selinux_hide_running __read_mostly;
-+#endif
-+
+ #endif
+ 
  /* SECMARK reference count */
-@@ -6111,3 +6116,8 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
+@@ -6474,6 +6479,11 @@
+ 	u32 mysid = current_sid(), sid = 0, ptsid;
  	int error;
  	char *str = value;
 +#ifdef CONFIG_KSU_SUSFS
 +	bool should_check_current = (likely(!strcmp(name, "current") &&
-+						 current_uid().val >= 10000 &&
-+						 ksu_selinux_hide_running));
++					     current_uid().val >= 10000 &&
++					     ksu_selinux_hide_running));
 +#endif
+ 
  	/*
-@@ -6141,8 +6151,16 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
- 	if (size && str[0] && str[0] != '\n') {
- 		if (str[size-1] == '\n') {
+ 	 * Basic control over ability to set these attributes at all.
+@@ -6509,6 +6519,14 @@
  			str[size-1] = 0;
  			size--;
  		}
@@ -6126,7 +6126,6 @@ diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
  		error = security_context_to_sid(&selinux_state, value, size,
  						&sid, GFP_KERNEL);
  		if (error == -EINVAL && !strcmp(name, "fscreate")) {
-
 diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 --- a/security/selinux/selinuxfs.c
 +++ b/security/selinux/selinuxfs.c
