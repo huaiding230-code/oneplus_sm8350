@@ -1,22 +1,29 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: SukiSU Patch Maintainer
-Date: Wed, 14 Oct 2026 23:23:00 +0800
-Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
+# ============================================================================
+# 文件说明：SUSFS + KernelSU/SukiSU 内核侧集成补丁（kernel.patch）
+# 目标平台：OnePlus 9 / SM8350；LineageOS 23.2；Linux 5.4；SukiSU builtin
+#
+# 更新日期：2026-10-15
+# 更新基线：2026-10-14 的精简版 kernel.patch（原有补丁内容完整保留）
+# 上游来源：本次用户提供的 susfs-50-only.patch，以及配套差异说明“粘贴的文本 (1)(2).txt”。
+# 上游对应文件：kernel_patches/50_add_susfs_in_gki-android12-5.10.patch（SUSFS Linux 5.10 补丁）。
+#
+# 本次更新内容：只选择性移植 SELinux setprocattr/current 的隐藏策略预校验，
+# 在 security/selinux/hooks.c 的 selinux_setprocattr() 中，当普通应用 UID >= 10000
+# 且 ksu_selinux_hide_running 为 true 时，先以 fake_state 调用
+# security_context_to_sid() 验证写入的上下文；验证失败即返回错误，避免应用使用
+# 仅存在于被修改后的真实 SELinux policy、却不存在于隐藏策略快照中的上下文。
+#
+# 未移植内容及原因：没有整段同步上游 fs/exec.c 与 security/selinux/selinuxfs.c 的
+# Linux 5.10 专用改动，因为本补丁目标是 Linux 5.4，相关静态键、状态锁/状态页字段、
+# sucompat 回调接口与当前 builtin 适配不完全一致。其余原 kernel.patch 改动均保留。
+# sukisu.patch 与 uapi5.patch 不属于本文件的更新范围，本次未修改。
+#
+# 验证边界：本文件已做补丁格式/统计解析检查；未在完整 SM8350 源码树中执行
+# git apply --check，也未进行 ARM64 内核编译。最终以目标仓库零 fuzz 试应用和编译结果为准。
+# 后续更新提示：下一次更新请核对 SUSFS 上游该 5.10 patch 的版本/提交或文件差异，
+# 再以本文件为当前基线重新审查每个 hunk，勿把面向 Linux 5.10 的改动直接整包移植到 5.4。
+# ============================================================================
 
-Patch-Prepared: 2026-10-14
-Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
-
-功能说明：
-- 集成 SUSFS 到 Linux 5.4 内核，包括 SUS_PATH、SUS_MOUNT 等路径与挂载隐藏相关适配。
-- 接入 SukiSU/KernelSU 所需的内核 Hook，涉及文件路径、进程信息、目录遍历、stat/statfs、umount 等内核路径。
-- 集成 cmdline、bootconfig 等信息处理相关改动，以及 SUSFS 所需的内核头文件、配置和编译接线。
-- 添加 SELinux/SELinuxFS 隐藏功能所需的内核侧适配接口，配合 lemonadep.sukisu.patch 使用。
-
-说明：
-本补丁负责内核侧集成，不包含全部 SukiSU 功能实现。
-应在匹配的 Linux 5.4 内核源码上应用。
-
----
 diff --git a/drivers/Makefile b/drivers/Makefile
 index aaef17c..daaf7f1 100644
 --- a/drivers/Makefile
@@ -1622,7 +1629,7 @@ diff --git a/fs/read_write.c b/fs/read_write.c
  
  	if (!(file->f_mode & FMODE_READ))
  		return -EBADF;
-@@ -617,8 +630,18 @@ ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
+@@ -603,7 +616,17 @@
  	return ret;
  }
  
@@ -6057,6 +6064,49 @@ index f1e1b14..fe25d25 100644
  
  		spin_lock(&dentry->d_lock);
  		if (dentry->d_parent != parent)
+
+diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
+--- a/security/selinux/hooks.c
++++ b/security/selinux/hooks.c
+@@ -103,7 +103,12 @@
+ #ifdef CONFIG_QCOM_RTIC
+ struct selinux_state selinux_state __rticdata;
+ #else
+ struct selinux_state selinux_state;
+ #endif
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern struct selinux_state fake_state;
++extern bool ksu_selinux_hide_running __read_mostly;
++#endif
++
+ /* SECMARK reference count */
+@@ -6111,3 +6116,8 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
+ 	int error;
+ 	char *str = value;
++#ifdef CONFIG_KSU_SUSFS
++	bool should_check_current = (likely(!strcmp(name, "current") &&
++						 current_uid().val >= 10000 &&
++						 ksu_selinux_hide_running));
++#endif
+ 	/*
+@@ -6141,8 +6151,16 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
+ 	if (size && str[0] && str[0] != '\n') {
+ 		if (str[size-1] == '\n') {
+ 			str[size-1] = 0;
+ 			size--;
+ 		}
++#ifdef CONFIG_KSU_SUSFS
++		if (should_check_current) {
++			u32 tmp_sid = 0;
++			int fake_error = security_context_to_sid(&fake_state, value, size, &tmp_sid, GFP_KERNEL);
++			if (fake_error)
++				return fake_error;
++		}
++#endif
+ 		error = security_context_to_sid(&selinux_state, value, size,
+ 						&sid, GFP_KERNEL);
+ 		if (error == -EINVAL && !strcmp(name, "fscreate")) {
 
 diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 --- a/security/selinux/selinuxfs.c
