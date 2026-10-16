@@ -56,7 +56,7 @@ jobs:
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/kernel_source"
-          SUKISU_PIN="6c284e957feaa9a388a9f1c37dc4ec80d95e434b"
+          SUKISU_PIN="c95d6e2c76adb11b0e438e518e32ac4e31f5b1d0"
           KSU_REPO="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
           rm -rf "${KSU_REPO}"
           git clone --branch builtin --single-branch --no-checkout https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "${KSU_REPO}"
