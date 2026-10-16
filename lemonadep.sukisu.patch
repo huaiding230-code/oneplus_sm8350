@@ -1,17 +1,5 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: SukiSU Patch Maintainer
-Date: Fri, 16 Oct 2026 22:00:00 +0800
-Subject: [PATCH] SukiSU: rebase feature patch onto c95d6e2
-
-Rebased against SukiSU-Ultra commit:
-  c95d6e2c76adb11b0e438e518e32ac4e31f5b1d0
-
-Duplicate Shell SU and adbd SID changes already present in the base are omitted.
-UAPI/ ioctl context and SELinux-hide integration are updated for the newer source.
-
----
 diff --git a/kernel/Kconfig b/kernel/Kconfig
-index db5713792188d2d93aa01e6cc4f0a536b220bf04..d0bcd7b2fca13e0a144c4856b92bc44ef47f481c 100644
+index db57137..d0bcd7b 100644
 --- a/kernel/Kconfig
 +++ b/kernel/Kconfig
 @@ -103,6 +103,7 @@ config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
@@ -24,7 +12,7 @@ index db5713792188d2d93aa01e6cc4f0a536b220bf04..d0bcd7b2fca13e0a144c4856b92bc44e
  	default y
 diff --git a/kernel/feature/cpu_spoof.c b/kernel/feature/cpu_spoof.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ae511391c668a011e755cee805c7449124c62ef9
+index 0000000..ae51139
 --- /dev/null
 +++ b/kernel/feature/cpu_spoof.c
 @@ -0,0 +1,234 @@
@@ -264,7 +252,7 @@ index 0000000000000000000000000000000000000000..ae511391c668a011e755cee805c74491
 +}
 diff --git a/kernel/feature/cpu_spoof.h b/kernel/feature/cpu_spoof.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ab745b9a2c2ca1789988e9265bc40896355e5e79
+index 0000000..ab745b9
 --- /dev/null
 +++ b/kernel/feature/cpu_spoof.h
 @@ -0,0 +1,6 @@
@@ -275,7 +263,7 @@ index 0000000000000000000000000000000000000000..ab745b9a2c2ca1789988e9265bc40896
 +int ksu_set_spoof_cpu(const struct ksu_set_spoof_cpu_cmd *cmd);
 +#endif /* __KSU_H_CPU_SPOOF */
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index 31b2de8fa27c50d7e77677a1ba00c03e525366e9..ec88f017c1945ad714c38595b9f560d71cfa0517 100644
+index 31b2de8..ec88f01 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
 @@ -1,5 +1,10 @@
@@ -571,7 +559,7 @@ index 31b2de8fa27c50d7e77677a1ba00c03e525366e9..ec88f017c1945ad714c38595b9f560d7
  
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0)
 diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
-index 5a0437108a8bd041c761190cbfd017c564c3cd71..4507c4454341d5a6293675c5bad4934cd6fd2e67 100644
+index 5a04371..4507c44 100644
 --- a/kernel/feature/selinux_hide.h
 +++ b/kernel/feature/selinux_hide.h
 @@ -1,10 +1,18 @@
@@ -599,7 +587,7 @@ index 5a0437108a8bd041c761190cbfd017c564c3cd71..4507c4454341d5a6293675c5bad4934c
 +
 +#endif /* __KSU_H_SELINUX_HIDE */
 diff --git a/kernel/hook/lsm_hook.c b/kernel/hook/lsm_hook.c
-index 0c303ba09e85c236d6eb0ee6495ac291412e4dc9..e06b803bb30550e0467c9e2dc4722b0e1c2fcc4f 100644
+index 0c303ba..e06b803 100644
 --- a/kernel/hook/lsm_hook.c
 +++ b/kernel/hook/lsm_hook.c
 @@ -1,3 +1,8 @@
@@ -659,7 +647,7 @@ index 0c303ba09e85c236d6eb0ee6495ac291412e4dc9..e06b803bb30550e0467c9e2dc4722b0e
          ksu_install_fd();
          return 0;
 diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
-index a27a9aa8e03c31040f206376c5d777246350234f..697dce66c0eb551f89f76e624d64d2a9fb1f662c 100644
+index a27a9aa..697dce6 100644
 --- a/kernel/include/uapi/feature.h
 +++ b/kernel/include/uapi/feature.h
 @@ -6,9 +6,8 @@ enum ksu_feature_id {
@@ -674,7 +662,7 @@ index a27a9aa8e03c31040f206376c5d777246350234f..697dce66c0eb551f89f76e624d64d2a9
  
      KSU_FEATURE_MAX
 diff --git a/kernel/include/uapi/supercall.h b/kernel/include/uapi/supercall.h
-index b22818b4a8fa56309db11b5e267716d951191b71..598bae7e2ab202eaaaeb2eb58f02b910caa6f091 100644
+index b22818b..fe79110 100644
 --- a/kernel/include/uapi/supercall.h
 +++ b/kernel/include/uapi/supercall.h
 @@ -163,6 +163,15 @@ struct ksu_list_try_umount_cmd {
@@ -693,9 +681,12 @@ index b22818b4a8fa56309db11b5e267716d951191b71..598bae7e2ab202eaaaeb2eb58f02b910
  DECLARE(__u8, KSU_UMOUNT_WIPE, 0); /* ignore everything and wipe list */
  DECLARE(__u8, KSU_UMOUNT_ADD, 1); /* add entry (path + flags) */
  DECLARE(__u8, KSU_UMOUNT_DEL, 2); /* delete entry, strcmp */
-@@ -229,6 +238,7 @@ DECLARE(__u32, KSU_IOCTL_HOOK_TYPE, _IOC(_IOC_READ, 'K', 101, 0));
+@@ -227,8 +236,9 @@ DECLARE(__u32, KSU_IOCTL_DISABLE_ESCAPE_TO_ROOT, _IO('K', 21));
+ DECLARE(__u32, KSU_IOCTL_GET_FULL_VERSION, _IOC(_IOC_READ, 'K', 100, 0));
+ DECLARE(__u32, KSU_IOCTL_HOOK_TYPE, _IOC(_IOC_READ, 'K', 101, 0));
  DECLARE(__u32, KSU_IOCTL_ENABLE_KPM, _IOC(_IOC_READ, 'K', 102, 0));
- DECLARE(__u32, KSU_IOCTL_KPM, _IOWR('K', 106, ksu_manager_cmd));
+-DECLARE(__u32, KSU_IOCTL_KPM, _IOWR('K', 106, ksu_manager_cmd));
++DECLARE(__u32, KSU_IOCTL_MANAGER, _IOWR('K', 106, struct ksu_manager_cmd));
  DECLARE(__u32, KSU_IOCTL_LIST_TRY_UMOUNT, _IOC(_IOC_READ | _IOC_WRITE, 'K', 103, 0));
 +DECLARE(__u32, KSU_IOCTL_SET_SPOOF_CPU, _IOC(_IOC_WRITE, 'K', 105, 0));
  DECLARE(__u32, KSU_IOCTL_KPM, _IOC(_IOC_READ | _IOC_WRITE, 'K', 200, 0));
@@ -703,7 +694,7 @@ index b22818b4a8fa56309db11b5e267716d951191b71..598bae7e2ab202eaaaeb2eb58f02b910
  #endif
 diff --git a/kernel/infra/seccomp_cache.c b/kernel/infra/seccomp_cache.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..68bb2898fc8ec26f90a5e295f9a2ac98281cb6de
+index 0000000..68bb289
 --- /dev/null
 +++ b/kernel/infra/seccomp_cache.c
 @@ -0,0 +1,69 @@
@@ -778,7 +769,7 @@ index 0000000000000000000000000000000000000000..68bb2898fc8ec26f90a5e295f9a2ac98
 +}
 diff --git a/kernel/infra/seccomp_cache.h b/kernel/infra/seccomp_cache.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..916073f9bc203f58df5ee36f6a160e0299ab281f
+index 0000000..916073f
 --- /dev/null
 +++ b/kernel/infra/seccomp_cache.h
 @@ -0,0 +1,12 @@
@@ -795,7 +786,7 @@ index 0000000000000000000000000000000000000000..916073f9bc203f58df5ee36f6a160e02
 +
 +#endif
 diff --git a/kernel/ksu.c b/kernel/ksu.c
-index e7e6722a0b7a9cf131f520949d0c78b21ee126d2..4acb2a72ea162d43dd6236db4c2a654bd1fb5115 100644
+index e7e6722..4acb2a7 100644
 --- a/kernel/ksu.c
 +++ b/kernel/ksu.c
 @@ -30,11 +30,10 @@
@@ -840,8 +831,72 @@ index e7e6722a0b7a9cf131f520949d0c78b21ee126d2..4acb2a72ea162d43dd6236db4c2a654b
  
      ksu_kernel_umount_init();
  
+diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
+index c33ac74..50ed76a 100644
+--- a/kernel/manager/pkg_observer.c
++++ b/kernel/manager/pkg_observer.c
+@@ -19,7 +19,7 @@ static void ksu_track_throne_tw_func(struct callback_head *cb)
+     // Runs after exit_fs() if the task is exiting; path lookups would oops
+     if (current->flags & PF_EXITING)
+         return;
+-    track_throne(TRACK_THRONE_FORCE_SYNCHRONOUS);
++    track_throne(false);
+ }
+ 
+ // Never scan from the fsnotify handler: fsnotify_mark_srcu and the rename's dir
+@@ -41,7 +41,7 @@ static void ksu_defer_track_throne(void)
+         }
+     }
+     pr_warn("defer track_throne failed, run it inline\n");
+-    track_throne(TRACK_THRONE_FORCE_SYNCHRONOUS);
++    track_throne(false);
+ }
+ static KSU_DECL_FSNOTIFY_OPS(ksu_handle_generic_event)
+ {
+diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
+index 358f333..dc788bb 100644
+--- a/kernel/manager/throne_tracker.c
++++ b/kernel/manager/throne_tracker.c
+@@ -38,21 +38,23 @@ static int crown_manager(const char *apk, const char *apk_dir, struct list_head
+ {
+     struct list_head *list = (struct list_head *)uid_data;
+     struct uid_data *np;
++    char fallback_pkg[KSU_MAX_PACKAGE_NAME];
++    const char *builtin_pkg = KSU_PACKAGE_NAME;
+     bool builtin_present_this_call = false;
+     bool builtin_crowned_this_call = false;
+ 
+     if (sig_fallback) {
+-        char pkg[KSU_MAX_PACKAGE_NAME];
+-        if (get_pkg_from_apk_dir_path(pkg, apk_dir) < 0) {
++        if (get_pkg_from_apk_dir_path(fallback_pkg, apk_dir) < 0) {
+             pr_err("Failed to get package name from apk dir path: %s\n", apk_dir);
+             return 0;
+         }
++        builtin_pkg = fallback_pkg;
+ 
+-        pr_info("manager pkg: %s\n", pkg);
++        pr_info("manager pkg: %s\n", fallback_pkg);
+ 
+         list_for_each_entry (np, list, list) {
+-            if (strncmp(np->package, pkg, KSU_MAX_PACKAGE_NAME) == 0) {
+-                pr_info("Crowning manager: %s(uid=%d)\n", pkg, np->uid);
++            if (strncmp(np->package, fallback_pkg, KSU_MAX_PACKAGE_NAME) == 0) {
++                pr_info("Crowning manager: %s(uid=%d)\n", fallback_pkg, np->uid);
+                 ksu_set_manager_appid(np->uid);
+                 state->builtin_crowned = true;
+                 builtin_crowned_this_call = true;
+@@ -94,7 +96,7 @@ static int crown_manager(const char *apk, const char *apk_dir, struct list_head
+         return 0;
+ 
+     list_for_each_entry (np, list, list) {
+-        if (strncmp(np->package, pkg, KSU_MAX_PACKAGE_NAME) == 0)
++        if (strncmp(np->package, builtin_pkg, KSU_MAX_PACKAGE_NAME) == 0)
+             continue;
+         /*
+          * For dynamic managers the (package, uid) pair must match a
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index 3d5b86e919594c008d1ebf40e10655b7b012ec97..807c03258a288d8a9c359467279f96d37805e380 100644
+index 3d5b86e..807c032 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
 @@ -151,13 +151,21 @@ static int apply_kernelsu_rules_fn(void *ptr)
@@ -878,7 +933,7 @@ index 3d5b86e919594c008d1ebf40e10655b7b012ec97..807c03258a288d8a9c359467279f96d3
  }
  
 diff --git a/kernel/sulog/event.c b/kernel/sulog/event.c
-index e45f01fac4799c4955cb17019132c227706a9e98..e98675f17d149897e6e3bbb6b83e6dedf80a3dfa 100644
+index e45f01f..e98675f 100644
 --- a/kernel/sulog/event.c
 +++ b/kernel/sulog/event.c
 @@ -142,7 +142,7 @@ static __u32 ksu_sulog_flatten_argv(struct user_arg_ptr *argv_user, char *dst, _
@@ -903,7 +958,7 @@ index e45f01fac4799c4955cb17019132c227706a9e98..e98675f17d149897e6e3bbb6b83e6ded
      pending = ksu_sulog_capture(KSU_SULOG_EVENT_IOCTL_GRANT_ROOT, NULL, USER_ARG_NULL, gfp);
      if (!pending)
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index 36f603cb16b114303ece9ca1858f4e3f4477273b..257361388f65737bf90ca421ea1b71f409eaf724 100644
+index 36f603c..2573613 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
 @@ -780,6 +780,16 @@ static int list_try_umount(void __user *arg)
