@@ -19,7 +19,7 @@ diff --git a/kernel/include/uapi/supercall.h b/kernel/include/uapi/supercall.h
 index 8274e3c..4932b41 100644
 --- a/kernel/include/uapi/supercall.h
 +++ b/kernel/include/uapi/supercall.h
-@@ -13,7 +13,10 @@
+@@ -14,7 +14,10 @@
  #endif
  
  // 2: allowlist v4 root profile flag
@@ -31,7 +31,7 @@ index 8274e3c..4932b41 100644
  
  /* Magic numbers for reboot hook to install fd */
  DECLARE(__u32, KSU_INSTALL_MAGIC1, 0xDEADBEEF);
-@@ -33,6 +36,7 @@ DECLARE(__u32, KSU_GET_INFO_FLAG_LKM, (1U << 0));
+@@ -34,6 +37,7 @@ DECLARE(__u32, KSU_GET_INFO_FLAG_LKM, (1U << 0));
  DECLARE(__u32, KSU_GET_INFO_FLAG_MANAGER, (1U << 1));
  DECLARE(__u32, KSU_GET_INFO_FLAG_LATE_LOAD, (1U << 2));
  DECLARE(__u32, KSU_GET_INFO_FLAG_PR_BUILD, (1U << 3));
