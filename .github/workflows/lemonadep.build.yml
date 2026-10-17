@@ -48,6 +48,7 @@ jobs:
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/kernel_source"
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
           echo "[+] kernel.patch applied"
 
       # 5. 固定检出 SukiSU builtin 提交并应用单一功能补丁
