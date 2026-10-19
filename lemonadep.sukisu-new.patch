@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility and seccomp manager exception
 
-Baseline: uploaded SukiSU-Ultra builtin-new source zip
+Baseline: uploaded SukiSU-Ultra builtin-new source zip; commit 548fbf243f70d65f5b8afc45516af63c07fa1958
 
 Requires lemonadep.kernel-new.patch (includes the original kernel integration plus the seccomp-core exception).
 UAPI baseline: builtin-new already defines KERNEL_SU_UAPI_VERSION 6; no uapi5.patch is needed.

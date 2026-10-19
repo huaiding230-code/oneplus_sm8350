@@ -6417,7 +6417,7 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  #include <linux/seccomp.h>
  #include <linux/slab.h>
  #include <linux/syscalls.h>
-@@ -247,6 +248,10 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
+@@ -247,3 +248,7 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
  	if (WARN_ON(f == NULL))
  		return SECCOMP_RET_KILL_PROCESS;
  
@@ -6425,9 +6425,6 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
 +	if (ksu_seccomp_allow_reboot(sd))
 +		return SECCOMP_RET_ALLOW;
 +
- 	/*
- 	 * All filters in the list are evaluated and the lowest BPF return
- 	 * value always takes priority (ignoring the DATA).
 
 
 diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
