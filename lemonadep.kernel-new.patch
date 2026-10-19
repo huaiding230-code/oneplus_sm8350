@@ -6417,7 +6417,7 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  #include <linux/seccomp.h>
  #include <linux/slab.h>
  #include <linux/syscalls.h>
-@@ -247,6 +248,9 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
+@@ -247,6 +248,10 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
  	if (WARN_ON(f == NULL))
  		return SECCOMP_RET_KILL_PROCESS;
  
@@ -6434,7 +6434,7 @@ diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
 new file mode 100644
 --- /dev/null
 +++ b/include/linux/ksu_seccomp.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,21 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef _LINUX_KSU_SECCOMP_H
 +#define _LINUX_KSU_SECCOMP_H
