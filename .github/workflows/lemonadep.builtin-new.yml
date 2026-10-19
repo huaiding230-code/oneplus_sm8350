@@ -1,0 +1,266 @@
+name: Integrated SukiSU Ultra builtin-new + SUSFS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Maximize Build Space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+
+      # 0. date
+      - name: Record build time
+        run: |
+          echo "BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> "$GITHUB_ENV"
+
+      # 1. 签出当前仓库：workflow 和所有 patch 文件都放在仓库根目录
+      - name: Checkout Patch Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 2. 拉取官方 LineageOS 内核源码
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_oneplus_sm8350
+          ref: lineage-23.2
+          path: kernel_source
+          fetch-depth: 1
+
+      # 3. 拉取官方 Proton-Clang 工具链
+      - name: Setup Proton-Clang Toolchain
+        run: |
+          mkdir -p toolchain
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> $GITHUB_PATH
+
+      # 4. 应用内核侧集成补丁：SUSFS + 内核 Hook + SELinuxFS 适配，并包含 seccomp core 例外。
+      #    必须先于 SukiSU 源码接入，因为补丁会修改 drivers/Makefile。
+      - name: Apply kernel integration patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+          test -s "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          test -s "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
+          echo "[+] kernel-new.patch and binder-freezer-enable.patch applied"
+
+      # 5. 固定检出 SukiSU builtin-new 版本并应用 Linux 5.4 适配补丁
+      - name: Integrate pinned SukiSU builtin-new
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+          # Commit hash embedded in the provided builtin-new source archive.
+          SUKISU_PIN="5540dec541b65d12528a6dae85f55da0fae0ba2e"
+          KSU_REPO="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
+          rm -rf "${KSU_REPO}"
+          git clone --branch main --single-branch --no-checkout https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "${KSU_REPO}"
+          git -C "${KSU_REPO}" fetch origin "${SUKISU_PIN}" --depth=1
+          git -C "${KSU_REPO}" checkout --detach FETCH_HEAD
+          SUKISU_REF="$(git -C "${KSU_REPO}" rev-parse HEAD)"
+          test "${SUKISU_REF}" = "${SUKISU_PIN}"
+          echo "Using pinned SukiSU commit: ${SUKISU_REF}"
+          echo "SUKISU_REF=${SUKISU_REF}" >> "${GITHUB_ENV}"
+
+          # setup.sh would clone/pull independently; wire the already-pinned checkout directly.
+          DRIVER_DIR="${GITHUB_WORKSPACE}/kernel_source/drivers"
+          ln -sfn ../KernelSU/kernel "${DRIVER_DIR}/kernelsu"
+          grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' "${DRIVER_DIR}/Makefile" || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "${DRIVER_DIR}/Makefile"
+          grep -Fq 'source "drivers/kernelsu/Kconfig"' "${DRIVER_DIR}/Kconfig" || \
+            sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "${DRIVER_DIR}/Kconfig"
+
+          cd "${KSU_REPO}"
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          echo "[+] sukisu-new.patch applied to builtin-new source (UAPI v6; no uapi5.patch)"
+
+      # 6. 准备最终内核配置；配置检查统一放在单独的验证步骤
+      - name: Configure integrated kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+          CLANG_DIR="${GITHUB_WORKSPACE}/toolchain/proton-clang"
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          mkdir -p "${OUT_DIR}"
+          DEFCONFIG_FILE="arch/arm64/configs/vendor/lahaina-qgki_defconfig"
+          DEFCONFIG_TARGET="vendor/lahaina-qgki_defconfig"
+          test -f "${DEFCONFIG_FILE}"
+
+          cat << 'EOF' >> "${DEFCONFIG_FILE}"
+
+          # SukiSU / SUSFS configuration
+          CONFIG_NET=y
+          CONFIG_RPS=y
+          CONFIG_KSU=y
+          CONFIG_KSU_FEATURE_ADBROOT=y
+          CONFIG_BOOT_CONFIG=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          CONFIG_SECCOMP=y
+          CONFIG_SECCOMP_FILTER=y
+          CONFIG_SECURITY=y
+          CONFIG_SECURITY_SELINUX=y
+          CONFIG_SECURITYFS=y
+          # CPU Spoof resolves kernel data symbols at runtime.
+          CONFIG_DEBUG_KERNEL=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          EOF
+
+          MAKE_ARGS=(
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            CC=clang
+            KCFLAGS="-Wno-unused-function"
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LOCALVERSION=-RONOVA
+            O="${OUT_DIR}"
+          )
+          make "${MAKE_ARGS[@]}" "${DEFCONFIG_TARGET}"
+          make "${MAKE_ARGS[@]}" olddefconfig
+          echo "[+] Kernel configuration generated at ${OUT_DIR}/.config"
+
+      # 7. 仅做必要检验，避免版本变化时被过多文本匹配误拦截
+      - name: Verify SukiSU patches and required config
+        shell: bash
+        run: |
+          set -euo pipefail
+          KSU_DIR="${GITHUB_WORKSPACE}/kernel_source/KernelSU/kernel"
+          KSU_REPO="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
+          CONFIG="${GITHUB_WORKSPACE}/out/.config"
+
+          # Verify the installed SukiSU checkout is the exact pinned commit.
+          ACTUAL_REF="$(git -C "${GITHUB_WORKSPACE}/kernel_source/KernelSU" rev-parse HEAD)"
+          if [ "${ACTUAL_REF}" != "${SUKISU_REF}" ]; then
+            echo "ERROR: installed SukiSU revision differs from the pinned commit"
+            echo "Expected: ${SUKISU_REF}"
+            echo "Actual:   ${ACTUAL_REF}"
+            exit 1
+          fi
+
+          # Verify paths/symbols used by the builtin-new source layout.
+          test -s "${KSU_DIR}/extension/cpu_spoof.c"
+          test -s "${KSU_DIR}/feature/selinux_hide.c"
+          test -s "${KSU_DIR}/hook/setuid_hook.c"
+          test -s "${KSU_DIR}/feature/shell_su_adb_only.c"
+          grep -Fq 'ksu_extension_cpu_spoof_io' "${KSU_DIR}/extension/cpu_spoof.c"
+          grep -Fq '#include "extension/cpu_spoof.c"' "${KSU_DIR}/ksu.c"
+          grep -Fq 'ksu_selinux_hide_init();' "${KSU_DIR}/ksu.c"
+          grep -Fq 'ksu_selinux_hide_snapshot_legacy()' "${KSU_DIR}/selinux/rules.c"
+          grep -Fq 'ksu_seccomp_allow_reboot' "${KSU_DIR}/hook/setuid_hook.c"
+          grep -Fq '#define KERNEL_SU_UAPI_VERSION 6' "${KSU_DIR}/include/uapi/supercall.h"
+          grep -Fq 'KSU_GET_INFO_FLAG_BUNDLED' "${KSU_DIR}/include/uapi/supercall.h"
+          grep -Fq 'EVENT_SERVICES' "${KSU_DIR}/include/uapi/supercall.h"
+
+          # Check whitespace errors in the tracked SukiSU patch only.
+          git -C "${KSU_REPO}" diff --check
+
+          # Only verify configs needed for KernelSU/SUSFS path hiding and CPU data lookup.
+          for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
+            if ! grep -qx "${cfg}=y" "${CONFIG}"; then
+              echo "ERROR: required config ${cfg}=y is missing after olddefconfig"
+              exit 1
+            fi
+          done
+          echo "[+] Pinned SukiSU builtin-new revision, UAPI v6, adapted features and required config checks passed"
+
+      # 8. 编译内核
+      - name: Build integrated kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+          CLANG_DIR="${GITHUB_WORKSPACE}/toolchain/proton-clang"
+          export PATH="${CLANG_DIR}/bin:${PATH}"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          MAKE_ARGS=(
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            CC=clang
+            KCFLAGS="-Wno-unused-function"
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LOCALVERSION=-RONOVA
+            O="${OUT_DIR}"
+          )
+          make "${MAKE_ARGS[@]}" -j1 prepare
+          make "${MAKE_ARGS[@]}" -j1 scripts
+          make "${MAKE_ARGS[@]}" -j"$(nproc)"
+
+      # 9. 打包 AnyKernel3
+      - name: Pack with AnyKernel3
+        shell: bash
+        run: |
+          set -e
+          cd "${GITHUB_WORKSPACE}"
+          git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
+          cd AnyKernel3
+          rm -rf .git README.md *placeholder
+          sed -i -E 's/^[[:space:]]*do\.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(BLOCK|block)=.*/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(IS_SLOT_DEVICE|is_slot_device)=.*/IS_SLOT_DEVICE=1;/' anykernel.sh
+          echo "========================================"
+          echo "提取内核镜像产物"
+          echo "========================================"
+          OUT_DIR="${GITHUB_WORKSPACE}/out"
+          if [ -f "${OUT_DIR}/arch/arm64/boot/dtb" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/dtb" ./
+            echo "[+] 已提取 dtb"
+          fi
+          if [ -f "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image.gz-dtb" ./
+            echo "[+] 已提取 Image.gz-dtb"
+          elif [ -f "${OUT_DIR}/arch/arm64/boot/Image" ]; then
+            cp "${OUT_DIR}/arch/arm64/boot/Image" ./
+            echo "[+] 已提取 Image"
+          else
+            echo "[-] 致命错误：未找到支持的内核镜像文件！"
+            exit 1
+          fi
+          echo "========================================"
+          echo "检查 AnyKernel3 文件"
+          echo "========================================"
+          test -f anykernel.sh
+          ls -lh
+          echo "========================================"
+          echo "生成可刷入 ZIP"
+          echo "========================================"
+          cd "${GITHUB_WORKSPACE}/AnyKernel3"
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip" . \
+            -x ".git/*"
+          echo "========================================"
+          echo "ZIP 已生成"
+          echo "========================================"
+          ls -lh "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip"
+
+      # 10. 上传真正的 AnyKernel3 ZIP
+      - name: Upload Kernel Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-SUSFS-Kernel
+          path: SukiSU-SUSFS-Kernel-OP9.zip
+          if-no-files-found: error
