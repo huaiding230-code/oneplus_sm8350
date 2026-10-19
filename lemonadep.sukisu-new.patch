@@ -1,0 +1,280 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility and seccomp manager exception
+
+Baseline: uploaded SukiSU-Ultra builtin-new source zip
+
+Requires lemonadep.kernel-new.patch (includes the original kernel integration plus the seccomp-core exception).
+UAPI baseline: builtin-new already defines KERNEL_SU_UAPI_VERSION 6; no uapi5.patch is needed.
+
+---
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index d342d42..023d9cc 100644
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -179,6 +179,97 @@ extern struct selinux_state selinux_state;
+ #endif
+ 
+ static struct page *ksu_fake_status_page __read_mostly = nullptr;
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++/* Compatibility adapter for the Linux 5.4 selinux_state/selinux_ss layout. */
++#include <linux/highmem.h>
++#include <linux/user_namespace.h>
++#include <linux/vmalloc.h>
++#include <ss/policydb.h>
++#include <ss/services.h>
++
++struct selinux_state fake_state;
++bool ksu_selinux_hide_running __read_mostly = false;
++static struct selinux_ss fake_ss;
++static bool legacy_snapshot_ready;
++static DEFINE_MUTEX(legacy_snapshot_mutex);
++static bool legacy_fake_ss_initialized;
++
++static void ksu_legacy_update_running(void)
++{
++	bool ready = READ_ONCE(legacy_snapshot_ready) &&
++		READ_ONCE(legacy_fake_ss_initialized) &&
++		READ_ONCE(fake_ss.status_page);
++
++	WRITE_ONCE(ksu_selinux_hide_running,
++		ready && READ_ONCE(ksu_selinux_hide_enabled));
++}
++
++int ksu_selinux_hide_snapshot_legacy(void)
++{
++	struct policy_file fp;
++	void *data = nullptr;
++	size_t len = 0;
++	int ret;
++
++	mutex_lock(&legacy_snapshot_mutex);
++	if (legacy_snapshot_ready) {
++		mutex_unlock(&legacy_snapshot_mutex);
++		return 0;
++	}
++	if (!selinux_state.ss || !selinux_initialized(&selinux_state)) {
++		ret = -EAGAIN;
++		goto out;
++	}
++
++	/* Linux 5.4 takes state explicitly; serialize the untouched live policy. */
++	ret = security_read_policy(&selinux_state, &data, &len);
++	if (ret)
++		goto out;
++	if (!data || !len) {
++		ret = -EINVAL;
++		goto out;
++	}
++
++	fp.data = data;
++	fp.len = len;
++	ret = policydb_read(&fake_ss.policydb, &fp);
++	if (ret)
++		goto out;
++
++	rwlock_init(&fake_ss.policy_rwlock);
++	mutex_init(&fake_ss.status_lock);
++	fake_ss.sidtab = selinux_state.ss->sidtab;
++	fake_ss.latest_granting = selinux_state.ss->latest_granting;
++	fake_ss.map = selinux_state.ss->map;
++	fake_ss.status_page = ksu_fake_status_page;
++	legacy_fake_ss_initialized = true;
++	fake_state = selinux_state;
++	fake_state.ss = &fake_ss;
++	fake_state.initialized = true;
++	WRITE_ONCE(legacy_snapshot_ready, true);
++	pr_info("selinux_hide: saved original Linux 5.4 policydb (%zu bytes)\n", len);
++	ret = 0;
++out:
++	vfree(data);
++	mutex_unlock(&legacy_snapshot_mutex);
++	if (ret)
++		pr_warn("selinux_hide: Linux 5.4 policy snapshot failed: %d\n", ret);
++	ksu_legacy_update_running();
++	return ret;
++}
++
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state)
++{
++	if (READ_ONCE(ksu_selinux_hide_running) &&
++	    READ_ONCE(legacy_snapshot_ready) && READ_ONCE(fake_ss.status_page) &&
++	    from_kuid(&init_user_ns, current_uid()) >= 10000)
++		return &fake_state;
++	return state;
++}
++EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
++#endif /* LINUX_VERSION_CODE < 5.10 */
++
+ static int ksu_prepare_fake_status_page()
+ {
+ 	struct page *real_page = ksu_selinux_kernel_status_page();
+@@ -207,6 +298,11 @@ static int ksu_prepare_fake_status_page()
+ #endif
+ 
+ 	ksu_fake_status_page = new_page;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	if (legacy_fake_ss_initialized)
++		fake_ss.status_page = new_page;
++	ksu_legacy_update_running();
++#endif
+     
+ 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%d\n", fake_status->sequence);
+             
+@@ -347,7 +443,9 @@ static int selinux_hide_feature_set(u64 value)
+ 		ksu_selinux_hide_enabled = true;
+ 	else
+ 		ksu_selinux_hide_enabled = false;
+-
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	ksu_legacy_update_running();
++#endif
+ 	return ret;
+ }
+ 
+@@ -372,6 +470,9 @@ void __init ksu_selinux_hide_init()
+ 
+ void __exit ksu_selinux_hide_exit()
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	WRITE_ONCE(ksu_selinux_hide_running, false);
++#endif
+ 	ksu_unregister_feature_handler(KSU_FEATURE_SELINUX_HIDE);
+ }
+ 
+diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
+index 1706e6f..3e3f52c 100644
+--- a/kernel/feature/selinux_hide.h
++++ b/kernel/feature/selinux_hide.h
+@@ -16,8 +16,15 @@
+ #ifndef __KSU_H_SELINUX_HIDE
+ #define __KSU_H_SELINUX_HIDE
+ 
++#include <linux/version.h>
++
+ void ksu_selinux_hide_init();
+ void ksu_selinux_hide_exit();
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++int ksu_selinux_hide_snapshot_legacy(void);
++struct selinux_state;
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state);
++#endif
+ 
+ static int sepol_expected_argc(u32 cmd);
+ 
+diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index 9257980..485b5b1 100644
+--- a/kernel/hook/setuid_hook.c
++++ b/kernel/hook/setuid_hook.c
+@@ -1,3 +1,23 @@
++#include <asm/unistd.h>
++#include <linux/ksu_seccomp.h>
++
++/*
++ * Called by the Linux seccomp core before evaluating installed filters.
++ * Only the manager's exact reboot-based KernelSU FD request may pass; all
++ * other syscalls and reboot arguments remain subject to the inherited filter.
++ */
++bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
++{
++	if (!sd || sd->nr != __NR_reboot)
++		return false;
++
++	if ((__u32)sd->args[0] != KSU_INSTALL_MAGIC1 ||
++	    (__u32)sd->args[1] != KSU_INSTALL_MAGIC2)
++		return false;
++
++	return ksu_is_manager_appid_valid() && is_uid_manager(current_uid().val);
++}
++
+ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
+ {
+ 	if (!new || !old)
+@@ -13,10 +33,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+ 
+-	// we dont have those new fancy things upstream has
+-	// lets just do the original thing where we disable seccomp
+-	if (unlikely(is_uid_manager(new_uid)))
+-		goto install_ksu_fd;
++	// Preserve the manager's inherited seccomp filter. The kernel seccomp core
++	// exempts only the exact reboot-based KernelSU FD request.
++	if (unlikely(is_uid_manager(new_uid))) {
++		pr_info("install fd for manager: %d\n", new_uid);
++		ksu_install_fd();
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
++		return;
++	}
+ 
+ 	if (ksu_is_allow_uid_for_current(new_uid))
+ 		goto kill_seccomp;
+@@ -25,10 +49,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+ 	ksu_handle_umount(new, old);
+ 	return;
+ 
+-install_ksu_fd:
+-	pr_info("install fd for manager: %d\n", new_uid);
+-	ksu_install_fd();
+-
+ kill_seccomp:
+ 	disable_seccomp();
+ 	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
+diff --git a/kernel/manager/throne_tracker.c b/kernel/manager/throne_tracker.c
+index ce635de..b0955bf 100644
+--- a/kernel/manager/throne_tracker.c
++++ b/kernel/manager/throne_tracker.c
+@@ -54,21 +54,23 @@ static int crown_manager(const char *apk, const char *apk_dir, struct list_head
+ {
+ 	struct list_head *list = (struct list_head *)uid_data;
+ 	struct uid_data *np;
++	char fallback_pkg[KSU_MAX_PACKAGE_NAME];
++	const char *builtin_pkg = KSU_PACKAGE_NAME;
+ 	bool builtin_present_this_call = false;
+ 	bool builtin_crowned_this_call = false;
+ 
+ 	if (sig_fallback) {
+-		char pkg[KSU_MAX_PACKAGE_NAME];
+-		if (get_pkg_from_apk_dir_path(pkg, apk_dir) < 0) {
++		if (get_pkg_from_apk_dir_path(fallback_pkg, apk_dir) < 0) {
+ 			pr_err("Failed to get package name from apk dir path: %s\n", apk_dir);
+ 			return 0;
+ 		}
++		builtin_pkg = fallback_pkg;
+ 
+-		pr_info("manager pkg: %s\n", pkg);
++		pr_info("manager pkg: %s\n", fallback_pkg);
+ 
+ 		list_for_each_entry (np, list, list) {
+-			if (test_extra_pkgs(np->package) || strncmp(np->package, pkg, KSU_MAX_PACKAGE_NAME) == 0) {
+-				pr_info("Crowning manager: %s(uid=%d)\n", pkg, np->uid);
++			if (test_extra_pkgs(np->package) || strncmp(np->package, fallback_pkg, KSU_MAX_PACKAGE_NAME) == 0) {
++				pr_info("Crowning manager: %s(uid=%d)\n", fallback_pkg, np->uid);
+ 				ksu_set_manager_appid(np->uid);
+ 				state->builtin_crowned = true;
+ 				builtin_crowned_this_call = true;
+@@ -103,7 +105,7 @@ static int crown_manager(const char *apk, const char *apk_dir, struct list_head
+ 		return 0;
+ 
+ 	list_for_each_entry (np, list, list) {
+-		if (strncmp(np->package, KSU_PACKAGE_NAME, KSU_MAX_PACKAGE_NAME) == 0)
++		if (strncmp(np->package, builtin_pkg, KSU_MAX_PACKAGE_NAME) == 0)
+ 			continue;
+ 
+ 		if (ksu_dynamic_manager_verify_apk((char *)apk, np->package, np->uid)) {
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index a9d4f67..2e3ff39 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -151,6 +151,11 @@ static int apply_kernelsu_rules_fn(void *ptr)
+ void apply_kernelsu_rules()
+ {
+ 	struct policydb *db;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	/* Preserve the pre-KernelSU SELinux policy for the 5.4 selinuxfs view. */
++	if (ksu_selinux_hide_snapshot_legacy())
++		pr_warn("selinux_hide: original policy snapshot unavailable; compatibility view stays disabled\n");
++#endif
+ 
+ 	if (!getenforce()) {
+ 		pr_info("SELinux permissive or disabled, apply rules!\n");
