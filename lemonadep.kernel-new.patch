@@ -6321,7 +6321,7 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  	if (WARN_ON(f == NULL))
  		return SECCOMP_RET_KILL_PROCESS;
  
-+	/* Keep seccomp enabled; exempt only the exact KernelSU manager request. */
++	/* Keep seccomp enabled; exempt exact KSU requests and read-only SUSFS probes. */
 +	if (ksu_seccomp_allow_reboot(sd))
 +		return SECCOMP_RET_ALLOW;
 +
@@ -6341,8 +6341,8 @@ new file mode 100644
 +#include <linux/seccomp.h>
 +
 +/*
-+ * This callback is implemented by built-in SukiSU. It allows only the
-+ * manager's exact reboot-based FD-install request to pass seccomp filters.
++ * This callback is implemented by built-in SukiSU. It allows the manager's
++ * exact FD-install request and read-only SUSFS capability probes to pass.
 + */
 +#if IS_BUILTIN(CONFIG_KSU)
 +bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd);

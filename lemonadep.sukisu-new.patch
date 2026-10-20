@@ -164,34 +164,47 @@ index 1706e6f..3e3f52c 100644
  static int sepol_expected_argc(u32 cmd);
  
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
-index 9257980..485b5b1 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -1,3 +1,23 @@
+@@ -1,3 +1,37 @@
 +#include <asm/unistd.h>
 +#include <linux/ksu_seccomp.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
 +
 +/*
 + * Called by the Linux seccomp core before evaluating installed filters.
-+ * Only the manager's exact reboot-based KernelSU FD request may pass; all
-+ * other syscalls and reboot arguments remain subject to the inherited filter.
++ * Allow the exact KernelSU FD-install request and read-only SUSFS capability
++ * probes from the manager; all other syscalls and reboot arguments remain
++ * subject to the inherited filter. SUSFS mutation commands are not exempted.
 + */
 +bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
 +{
 +	if (!sd || sd->nr != __NR_reboot)
 +		return false;
 +
-+	if ((__u32)sd->args[0] != KSU_INSTALL_MAGIC1 ||
-+	    (__u32)sd->args[1] != KSU_INSTALL_MAGIC2)
++	if ((__u32)sd->args[0] != KSU_INSTALL_MAGIC1)
 +		return false;
 +
-+	return ksu_is_manager_appid_valid() && is_uid_manager(current_uid().val);
++	if ((__u32)sd->args[1] == KSU_INSTALL_MAGIC2)
++		return ksu_is_manager_appid_valid() && is_uid_manager(current_uid().val);
++
++#ifdef CONFIG_KSU_SUSFS
++	if ((__u32)sd->args[1] == SUSFS_MAGIC &&
++	    ((__u32)sd->args[2] == CMD_SUSFS_SHOW_VERSION ||
++	     (__u32)sd->args[2] == CMD_SUSFS_SHOW_ENABLED_FEATURES ||
++	     (__u32)sd->args[2] == CMD_SUSFS_SHOW_VARIANT))
++		return ksu_is_manager_appid_valid() && is_uid_manager(current_uid().val);
++#endif
++
++	return false;
 +}
 +
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +33,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -13,10 +47,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -200,7 +213,7 @@ index 9257980..485b5b1 100644
 -	if (unlikely(is_uid_manager(new_uid)))
 -		goto install_ksu_fd;
 +	// Preserve the manager's inherited seccomp filter. The kernel seccomp core
-+	// exempts only the exact reboot-based KernelSU FD request.
++	// exempts the exact KSU FD request and read-only SUSFS capability probes.
 +	if (unlikely(is_uid_manager(new_uid))) {
 +		pr_info("install fd for manager: %d\n", new_uid);
 +		ksu_install_fd();
@@ -210,7 +223,7 @@ index 9257980..485b5b1 100644
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +49,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -25,10 +63,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	ksu_handle_umount(new, old);
  	return;
  
