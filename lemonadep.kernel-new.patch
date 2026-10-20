@@ -6309,7 +6309,7 @@ new file mode 100644
 diff --git a/kernel/seccomp.c b/kernel/seccomp.c
 --- a/kernel/seccomp.c
 +++ b/kernel/seccomp.c
-@@ -22,6 +22,7 @@
+@@ -24,6 +24,7 @@
  #include <linux/prctl.h>
  #include <linux/sched.h>
  #include <linux/sched/task_stack.h>
@@ -6317,7 +6317,7 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  #include <linux/seccomp.h>
  #include <linux/slab.h>
  #include <linux/syscalls.h>
-@@ -247,3 +248,7 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
+@@ -371,6 +372,10 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
  	if (WARN_ON(f == NULL))
  		return SECCOMP_RET_KILL_PROCESS;
  
@@ -6325,8 +6325,9 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
 +	if (ksu_seccomp_allow_reboot(sd))
 +		return SECCOMP_RET_ALLOW;
 +
-
-
+ 	if (seccomp_cache_check_allow(f, sd))
+ 		return SECCOMP_RET_ALLOW;
+ 
 diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
 new file mode 100644
 --- /dev/null
