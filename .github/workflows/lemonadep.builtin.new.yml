@@ -1,0 +1,155 @@
+name: Integrated SukiSU Ultra builtin-new + SUSFS
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash   # 等价于 bash -eo pipefail，任何命令失败都会立刻停止
+    steps:
+      # 1. 腾出编译空间
+      - name: "1. Maximize Build Space"
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+
+      # 2. 签出当前仓库：workflow 和所有 patch 文件都在仓库根目录
+      - name: "2. Checkout Patch Repository"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # 3. 拉取 LineageOS 内核源码
+      - name: "3. Checkout Kernel Source"
+        uses: actions/checkout@v4
+        with:
+          repository: LineageOS/android_kernel_oneplus_sm8350
+          ref: lineage-23.2
+          path: kernel_source
+          fetch-depth: 1
+
+      # 4. 拉取 Proton-Clang 工具链（加入 PATH 后，后面步骤都能直接用 clang）
+      - name: "4. Setup Proton-Clang Toolchain"
+        run: |
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> "$GITHUB_PATH"
+
+      # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
+      #    必须先于 SukiSU 接入，因为会改 drivers/Makefile。
+      - name: "5. Apply kernel patches"
+        run: |
+          cd kernel_source
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
+
+      # 6. 固定 SukiSU builtin-new 提交（UAPI v6），接入内核并打 5.4 适配补丁
+      - name: "6. Integrate SukiSU"
+        run: |
+          KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
+          git init "$KSU"
+          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git 548fbf243f70d65f5b8afc45516af63c07fa1958
+          git -C "$KSU" checkout --detach FETCH_HEAD
+
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
+          grep -Fq 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+          grep -Fq 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig || \
+            sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          cd KernelSU
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+
+      # 7. 配置 + 检查 + 编译
+      - name: "7. Configure and build kernel"
+        run: |
+          cd kernel_source
+          OUT="${GITHUB_WORKSPACE}/out"
+          DEFCONFIG="arch/arm64/configs/vendor/lahaina-qgki_defconfig"
+
+          cat << 'EOF' >> "$DEFCONFIG"
+
+          # SukiSU / SUSFS
+          CONFIG_RPS=y
+          CONFIG_BOOT_CONFIG=y
+          CONFIG_KSU=y
+          CONFIG_KSU_FEATURE_ADBROOT=y
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MAP=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
+          CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
+          # CPU Spoof 需要在运行时解析内核符号
+          CONFIG_DEBUG_KERNEL=y
+          CONFIG_KALLSYMS=y
+          CONFIG_KALLSYMS_ALL=y
+          EOF
+
+          MAKE_ARGS=(
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            CC=clang
+            KCFLAGS="-Wno-unused-function"
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LOCALVERSION=-RONOVA
+            O="$OUT"
+          )
+
+          make "${MAKE_ARGS[@]}" vendor/lahaina-qgki_defconfig
+          make "${MAKE_ARGS[@]}" olddefconfig
+
+          # olddefconfig 会悄悄丢掉未定义的选项，编译前确认关键项还在，避免白编译一遍
+          for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
+                     CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_SUS_MOUNT \
+                     CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_OPEN_REDIRECT \
+                     CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
+                     CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
+                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
+            grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
+          done
+
+          # prepare/scripts 单线程先跑一遍，避免并行编译时的竞争问题
+          make "${MAKE_ARGS[@]}" -j1 prepare
+          make "${MAKE_ARGS[@]}" -j1 scripts
+          make "${MAKE_ARGS[@]}" -j"$(nproc)"
+
+      # 8. 打包 AnyKernel3
+      - name: "8. Pack with AnyKernel3"
+        run: |
+          git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
+          cd AnyKernel3
+          rm -rf .git README.md *placeholder
+          sed -i -E 's/^[[:space:]]*do\.devicecheck=.*/do.devicecheck=0/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(BLOCK|block)=.*/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/' anykernel.sh
+          sed -i -E 's/^[[:space:]]*(IS_SLOT_DEVICE|is_slot_device)=.*/IS_SLOT_DEVICE=1;/' anykernel.sh
+
+          BOOT="${GITHUB_WORKSPACE}/out/arch/arm64/boot"
+          cp "$BOOT/dtb" . 2>/dev/null || true
+          if [ -f "$BOOT/Image.gz-dtb" ]; then
+            cp "$BOOT/Image.gz-dtb" .
+          elif [ -f "$BOOT/Image" ]; then
+            cp "$BOOT/Image" .
+          else
+            echo "未找到内核镜像"; exit 1
+          fi
+
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip" . -x ".git/*"
+
+      # 9. 上传刷机包
+      - name: "9. Upload Kernel Zip Artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-SUSFS-Kernel
+          path: SukiSU-SUSFS-Kernel-OP9.zip
+          if-no-files-found: error
