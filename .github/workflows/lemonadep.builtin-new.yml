@@ -57,7 +57,7 @@ jobs:
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/kernel_source"
           # Commit hash embedded in the provided builtin-new source archive.
-          SUKISU_PIN="5540dec541b65d12528a6dae85f55da0fae0ba2e"
+          SUKISU_PIN="548fbf243f70d65f5b8afc45516af63c07fa1958"
           KSU_REPO="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
           rm -rf "${KSU_REPO}"
           git clone --branch main --single-branch --no-checkout https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "${KSU_REPO}"
