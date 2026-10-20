@@ -4,13 +4,14 @@ Date: Wed, 14 Oct 2026 23:23:00 +0800
 Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
 
 Patch-Prepared: 2026-10-14
+Patch-Updated: 2026-10-20
 Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 
 功能说明：
 - 集成 SUSFS 到 Linux 5.4 内核，包括 SUS_PATH、SUS_MOUNT 等路径与挂载隐藏相关适配。
 - 接入 SukiSU/KernelSU 所需的内核 Hook，涉及文件路径、进程信息、目录遍历、stat/statfs、umount 等内核路径。
 - 集成 cmdline、bootconfig 等信息处理相关改动，以及 SUSFS 所需的内核头文件、配置和编译接线。
-- 添加 SELinux/SELinuxFS 隐藏功能所需的内核侧适配接口，配合 lemonadep.sukisu.patch 使用。
+- 添加 SELinux/SELinuxFS 隐藏功能所需的内核侧适配接口，配合 lemonadep.sukisu-new.patch 使用。
 
 说明：
 本补丁负责内核侧集成，不包含全部 SukiSU 功能实现。
@@ -21,12 +22,16 @@ Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 # 文件说明：SUSFS + KernelSU/SukiSU 内核侧集成补丁（kernel.patch）
 # 目标平台：OnePlus 9 / SM8350；LineageOS 23.2；Linux 5.4；SukiSU builtin
 #
-# 更新日期：2026-10-15
-# 更新基线：2026-10-14 的精简版 kernel.patch（原有补丁内容完整保留）
+# 更新日期：2026-10-20
+# 更新基线：lemonadep.kernel-new.patch；保留既有 SUSFS 和 Linux 5.4 适配内容。
 # 上游来源：本次用户提供的 susfs-50-only.patch，以及配套差异说明“粘贴的文本 (1)(2).txt”。
 # 上游对应文件：kernel_patches/50_add_susfs_in_gki-android12-5.10.patch（SUSFS Linux 5.10 补丁）。
 # 
-# 本次更新内容：只选择性移植 SELinux setprocattr/current 的隐藏策略预校验，
+# 本次追加修复（2026-10-20）：针对与 SukiSU builtin-new 链接时的 undefined symbol。
+# 移除新版 SukiSU 已不再提供的旧式 input/read/vfs_fstat/setresuid 入口；
+# 将 sucompat 状态检查改为 lemonadep.sukisu-new.patch 提供的查询函数；
+# 补齐 susfs_is_current_ksu_domain() 定义，并增加 SELinux SID 的延迟解析。
+# 原有 SELinux setprocattr/current 隐藏策略预校验仍保留：
 # 在 security/selinux/hooks.c 的 selinux_setprocattr() 中，当普通应用 UID >= 10000
 # 且 ksu_selinux_hide_running 为 true 时，先以 fake_state 调用
 # security_context_to_sid() 验证写入的上下文；验证失败即返回错误，避免应用使用
@@ -35,10 +40,10 @@ Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 # 未移植内容及原因：没有整段同步上游 fs/exec.c 与 security/selinux/selinuxfs.c 的
 # Linux 5.10 专用改动，因为本补丁目标是 Linux 5.4，相关静态键、状态锁/状态页字段、
 # sucompat 回调接口与当前 builtin 适配不完全一致。其余原 kernel.patch 改动均保留。
-# sukisu.patch 与 uapi5.patch 不属于本文件的更新范围，本次未修改。
+# 与 lemonadep.sukisu-new.patch 配套使用；builtin-new 已使用 UAPI v6，不需要额外叠加 uapi5.patch。
 #
-# 验证边界：本文件已做补丁格式/统计解析检查；未在完整 SM8350 源码树中执行
-# git apply --check，也未进行 ARM64 内核编译。最终以目标仓库零 fuzz 试应用和编译结果为准。
+# 验证边界：本文件已通过 git apply --stat 格式解析；尚未在完整 SM8350 源码树中执行
+# git apply --check，也未进行 ARM64 内核编译。最终以目标仓库试应用和实际编译结果为准。
 # 后续更新提示：下一次更新请核对 SUSFS 上游该 5.10 patch 的版本/提交或文件差异，
 # 再以本文件为当前基线重新审查每个 hunk，勿把面向 Linux 5.10 的改动直接整包移植到 5.4。
 # ============================================================================
@@ -53,50 +58,6 @@ index aaef17c..daaf7f1 100644
  obj-$(CONFIG_COUNTER)		+= counter/
 +
 +obj-$(CONFIG_KSU) += kernelsu/
-diff --git a/drivers/input/input.c b/drivers/input/input.c
-index 45fdb9b..f7bc40a 100644
---- a/drivers/input/input.c
-+++ b/drivers/input/input.c
-@@ -21,6 +21,9 @@
- #include <linux/seq_file.h>
- #include <linux/poll.h>
- #include <linux/device.h>
-+#ifdef CONFIG_KSU_SUSFS
-+#include <linux/jump_label.h>
-+#endif
- #include <linux/mutex.h>
- #include <linux/rcupdate.h>
- #include "input-compat.h"
-@@ -375,11 +378,28 @@ static int input_get_disposition(struct input_dev *dev,
- 	return disposition;
- }
- 
-+#ifdef CONFIG_KSU_SUSFS
-+extern struct static_key_true ksu_is_input_hook_enabled;
-+#elif defined(CONFIG_KSU)
-+extern bool ksu_input_hook;
-+#endif
-+#if defined(CONFIG_KSU_SUSFS) || defined(CONFIG_KSU)
-+extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
-+#endif
-+
- static void input_handle_event(struct input_dev *dev,
- 			       unsigned int type, unsigned int code, int value)
- {
- 	int disposition = input_get_disposition(dev, type, code, &value);
- 
-+#ifdef CONFIG_KSU_SUSFS
-+	if (static_branch_unlikely(&ksu_is_input_hook_enabled))
-+		ksu_handle_input_handle_event(&type, &code, &value);
-+#elif defined(CONFIG_KSU)
-+	if (unlikely(ksu_input_hook))
-+		ksu_handle_input_handle_event(&type, &code, &value);
-+#endif
-+
- 	if (disposition != INPUT_IGNORE_EVENT && type != EV_SYN)
- 		add_input_randomness(type, code, value);
- 
-
 diff --git a/fs/Makefile b/fs/Makefile
 index 1c949ac..b3282ad 100644
 --- a/fs/Makefile
@@ -980,7 +941,7 @@ index 3f9f5fd..b9917cb 100644
 +#ifdef CONFIG_KSU
 +#ifdef CONFIG_KSU_SUSFS
 +extern int ksu_handle_faccessat(int *dfd, struct filename **filename_user, int *mode, int *flags);
-+extern bool ksu_su_compat_enabled;
++extern bool ksu_su_compat_is_enabled(void);
 +extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 +#else
 +extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
@@ -1010,7 +971,7 @@ index 3f9f5fd..b9917cb 100644
 +#ifdef CONFIG_KSU_SUSFS
 +	fname = getname_flags(filename, lookup_flags, NULL);
 +	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
-+	    ksu_su_compat_enabled && __ksu_is_allow_uid_for_current(current_uid().val))
++	    ksu_su_compat_is_enabled() && __ksu_is_allow_uid_for_current(current_uid().val))
 +		ksu_handle_faccessat(&dfd, &fname, &mode, NULL);
 +	/* filename_lookup consumes fname, including failure paths. */
 +	res = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
@@ -1618,55 +1579,6 @@ index 5b8d065..bc06375 100644
  	return mounts_open_common(inode, file, show_vfsstat);
  }
  
-diff --git a/fs/read_write.c b/fs/read_write.c
---- a/fs/read_write.c
-+++ b/fs/read_write.c
-@@ -25,6 +25,15 @@
- #include <linux/uaccess.h>
- #include <asm/unistd.h>
- 
-+#ifdef CONFIG_KSU_SUSFS
-+#include <linux/jump_label.h>
-+#endif
-+
-+#ifdef CONFIG_KSU
-+extern bool ksu_vfs_read_hook;
-+extern int ksu_handle_vfs_read(struct file **file, char __user **buf, size_t *count, loff_t **pos);
-+#endif
-+
- const struct file_operations generic_ro_fops = {
- 	.llseek		= generic_file_llseek,
- 	.read_iter	= generic_file_read_iter,
-@@ -446,6 +455,10 @@ EXPORT_SYMBOL_NS(kernel_read, ANDROID_GKI_VFS_EXPORT_ONLY);
- ssize_t vfs_read(struct file *file, char __user *buf, size_t count, loff_t *pos)
- {
- 	ssize_t ret;
-+#ifdef CONFIG_KSU
-+	if (unlikely(ksu_vfs_read_hook))
-+		ksu_handle_vfs_read(&file, &buf, &count, &pos);
-+#endif
- 
- 	if (!(file->f_mode & FMODE_READ))
- 		return -EBADF;
-@@ -592,8 +605,18 @@ ssize_t ksys_write(unsigned int fd, const char __user *buf, size_t count)
- 	return ret;
- }
- 
-+#ifdef CONFIG_KSU_SUSFS
-+extern struct static_key_true ksu_is_init_rc_hook_enabled;
-+extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);
-+#endif
-+
- SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
- {
-+#ifdef CONFIG_KSU_SUSFS
-+	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
-+		ksu_handle_sys_read(fd, &buf, &count);
-+#endif
-+
- 	return ksys_read(fd, buf, count);
- }
- 
 diff --git a/fs/readdir.c b/fs/readdir.c
 index 07a3b5b..1e4807d 100644
 --- a/fs/readdir.c
@@ -1981,7 +1893,7 @@ diff --git a/fs/stat.c b/fs/stat.c
 index 298eb77..9555f4b 100644
 --- a/fs/stat.c
 +++ b/fs/stat.c
-@@ -17,9 +17,29 @@
+@@ -17,9 +17,27 @@
  #include <linux/syscalls.h>
  #include <linux/pagemap.h>
  #include <linux/compat.h>
@@ -1996,7 +1908,7 @@ index 298eb77..9555f4b 100644
 +#ifdef CONFIG_KSU
 +#ifdef CONFIG_KSU_SUSFS
 +extern int ksu_handle_stat(int *dfd, struct filename **filename_user, int *flags);
-+extern bool ksu_su_compat_enabled;
++extern bool ksu_su_compat_is_enabled(void);
 +extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 +#else
 +extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
@@ -2005,13 +1917,11 @@ index 298eb77..9555f4b 100644
 +extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
 +extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask);
 +#endif
-+extern bool ksu_vfs_read_hook;
-+extern void ksu_handle_vfs_fstat(int fd, loff_t *size);
 +#endif
  
  /**
   * generic_fillattr - Fill in the basic attributes from the inode struct
-@@ -77,12 +97,28 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
+@@ -77,12 +95,28 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
  	if (IS_AUTOMOUNT(inode))
  		stat->attributes |= STATX_ATTR_AUTOMOUNT;
  
@@ -2040,18 +1950,7 @@ index 298eb77..9555f4b 100644
  }
  EXPORT_SYMBOL(vfs_getattr_nosec);
  
-@@ -144,6 +180,10 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
- 	if (f.file) {
- 		error = vfs_getattr(&f.file->f_path, stat,
- 				    request_mask, query_flags);
-+#ifdef CONFIG_KSU
-+		if (!error && unlikely(ksu_vfs_read_hook))
-+			ksu_handle_vfs_fstat(fd, &stat->size);
-+#endif
- 		fdput(f);
- 	}
- 	return error;
-@@ -171,6 +211,12 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+@@ -171,6 +205,12 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
  	struct path path;
  	int error = -EINVAL;
  	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
@@ -2064,14 +1963,14 @@ index 298eb77..9555f4b 100644
  
  	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
  		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
-@@ -184,7 +230,16 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+@@ -184,7 +224,16 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
  		lookup_flags |= LOOKUP_EMPTY;
  
  retry:
 +#ifdef CONFIG_KSU_SUSFS
 +	fname = getname_flags(filename, lookup_flags, NULL);
 +	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
-+	    ksu_su_compat_enabled && __ksu_is_allow_uid_for_current(current_uid().val))
++	    ksu_su_compat_is_enabled() && __ksu_is_allow_uid_for_current(current_uid().val))
 +		ksu_handle_stat(&dfd, &fname, &flags);
 +	/* filename_lookup consumes fname, including failure paths. */
 +	error = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
@@ -2243,7 +2142,7 @@ new file mode 100644
 index 0000000..336e2b1
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,1571 @@
+@@ -0,0 +1,1591 @@
 +#include <linux/version.h>
 +#include <linux/cred.h>
 +#include <linux/fs.h>
@@ -2271,11 +2170,31 @@ index 0000000..336e2b1
 +#include "fuse/fuse_i.h"
 +#include "mount.h"
 +
-+extern bool susfs_is_current_ksu_domain(void);
++extern bool is_ksu_domain(void);
 +extern void setup_selinux(const char *domain, struct cred *cred);
 +extern struct cred *ksu_cred;
 +extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
 +extern struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt);
++
++u32 susfs_ksu_sid;
++u32 susfs_priv_app_sid;
++
++bool susfs_is_current_ksu_domain(void)
++{
++	return is_ksu_domain();
++}
++
++void susfs_init_selinux_sids(void)
++{
++	u32 sid;
++	if (!READ_ONCE(susfs_ksu_sid) &&
++	    !security_secctx_to_secid("u:r:ksu:s0", sizeof("u:r:ksu:s0") - 1, &sid))
++		WRITE_ONCE(susfs_ksu_sid, sid);
++	if (!READ_ONCE(susfs_priv_app_sid) &&
++	    !security_secctx_to_secid("u:r:priv_app:s0:c512,c768",
++				       sizeof("u:r:priv_app:s0:c512,c768") - 1, &sid))
++		WRITE_ONCE(susfs_priv_app_sid, sid);
++}
 +
 +#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
 +DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
@@ -4969,28 +4888,7 @@ diff --git a/kernel/sys.c b/kernel/sys.c
 index 3ed05f0..3680f09 100644
 --- a/kernel/sys.c
 +++ b/kernel/sys.c
-@@ -617,6 +617,9 @@ SYSCALL_DEFINE1(setuid, uid_t, uid)
- 	return __sys_setuid(uid);
- }
- 
-+#ifdef CONFIG_KSU_SUSFS
-+extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
-+#endif
- 
- /*
-  * This function implements a generic ability to update ruid, euid,
-@@ -630,6 +633,10 @@ long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
- 	int retval;
- 	kuid_t kruid, keuid, ksuid;
- 
-+#ifdef CONFIG_KSU_SUSFS
-+	(void)ksu_handle_setresuid(ruid, euid, suid);
-+#endif
-+
- 	kruid = make_kuid(ns, ruid);
- 	keuid = make_kuid(ns, euid);
- 	ksuid = make_kuid(ns, suid);
-@@ -1240,12 +1247,20 @@ static int override_release(char __user *release, size_t len)
+@@ -1240,12 +1240,20 @@ static int override_release(char __user *release, size_t len)
  	return ret;
  }
  
@@ -5988,24 +5886,26 @@ diff --git a/security/selinux/avc.c b/security/selinux/avc.c
 index 7e1e6bc..b8e06c9 100644
 --- a/security/selinux/avc.c
 +++ b/security/selinux/avc.c
-@@ -41,6 +41,12 @@
+@@ -41,6 +41,13 @@
  #define avc_cache_stats_incr(field)	do {} while (0)
  #endif
  
 +#ifdef CONFIG_KSU_SUSFS
 +extern u32 susfs_ksu_sid;
 +extern u32 susfs_priv_app_sid;
++extern void susfs_init_selinux_sids(void);
 +extern struct static_key_false susfs_is_avc_log_spoofing_enabled;
 +#endif
 +
  struct avc_entry {
  	u32			ssid;
  	u32			tsid;
-@@ -719,6 +725,16 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
+@@ -719,6 +726,17 @@ static void avc_audit_post_callback(struct audit_buffer *ab, void *a)
  
  	rc = security_sid_to_context(sad->state, sad->tsid, &scontext,
  				     &scontext_len);
 +#ifdef CONFIG_KSU_SUSFS
++	susfs_init_selinux_sids();
 +	if (static_branch_likely(&susfs_is_avc_log_spoofing_enabled) && sad->tsid == susfs_ksu_sid) {
 +		if (rc)
 +			audit_log_format(ab, " tsid=%d", susfs_priv_app_sid);
@@ -6409,7 +6309,7 @@ new file mode 100644
 diff --git a/kernel/seccomp.c b/kernel/seccomp.c
 --- a/kernel/seccomp.c
 +++ b/kernel/seccomp.c
-@@ -24,6 +24,7 @@
+@@ -22,6 +22,7 @@
  #include <linux/prctl.h>
  #include <linux/sched.h>
  #include <linux/sched/task_stack.h>
@@ -6417,7 +6317,7 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  #include <linux/seccomp.h>
  #include <linux/slab.h>
  #include <linux/syscalls.h>
-@@ -371,6 +372,10 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
+@@ -247,3 +248,7 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
  	if (WARN_ON(f == NULL))
  		return SECCOMP_RET_KILL_PROCESS;
  
@@ -6425,9 +6325,8 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
 +	if (ksu_seccomp_allow_reboot(sd))
 +		return SECCOMP_RET_ALLOW;
 +
- 	if (seccomp_cache_check_allow(f, sd))
- 		return SECCOMP_RET_ALLOW;
- 
+
+
 diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
 new file mode 100644
 --- /dev/null

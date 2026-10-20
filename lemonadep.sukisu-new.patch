@@ -3,7 +3,8 @@ Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility, CPU spoof, and sec
 
 Baseline: uploaded SukiSU-Ultra builtin-new source zip; commit 548fbf243f70d65f5b8afc45516af63c07fa1958
 
-Includes the Linux 5.4 CPU-spoof compatibility guard; requires lemonadep.kernel-new.patch (kernel integration plus seccomp-core exception).
+Includes the Linux 5.4 CPU-spoof compatibility guard and a sucompat-state accessor required by the matching kernel patch; requires lemonadep.kernel-new.patch (kernel integration plus seccomp-core exception).
+Update 2026-10-20: adds ksu_su_compat_is_enabled() so kernel code does not reference SukiSU's file-local static variable directly.
 UAPI baseline: builtin-new already defines KERNEL_SU_UAPI_VERSION 6; no uapi5.patch is needed.
 
 ---
@@ -363,3 +364,18 @@ diff --git a/kernel/extension/cpu_spoof.c b/kernel/extension/cpu_spoof.c
  
  				{
  					enum vdso_clock_mode *vd_default =
+
+
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -10,4 +10,9 @@
+ static bool ksu_su_compat_enabled __read_mostly = true;
+ 
++bool ksu_su_compat_is_enabled(void)
++{
++	return READ_ONCE(ksu_su_compat_enabled);
++}
++
+ static char __user *sh_user_path(void)
+ {
