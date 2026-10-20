@@ -4,7 +4,7 @@ Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility, SUSFS dispatch/ini
 Baseline: uploaded SukiSU-Ultra builtin-new source zip; commit 548fbf243f70d65f5b8afc45516af63c07fa1958
 
 Includes the Linux 5.4 CPU-spoof compatibility guard, the sucompat-state accessor, SUSFS command dispatch through SUSFS_MAGIC, early susfs_init(), and the post-fs-data sdcard watcher startup. Requires lemonadep.kernel-new.patch (kernel integration plus seccomp-core exception).
-Update 2026-10-20: fixes missing SUSFS command routing and initialization; keeps the existing Linux 5.4 CPU-spoof and seccomp compatibility changes.
+Update 2026-10-20: fixes SUSFS command routing/initialization and reports the correct SUSFS inline-hook type for this in-tree SUSFS integration; keeps the existing Linux 5.4 CPU-spoof and seccomp compatibility changes.
 UAPI baseline: builtin-new already defines KERNEL_SU_UAPI_VERSION 6; no uapi5.patch is needed.
 
 ---
@@ -520,3 +520,15 @@ index 604cad9..41895ca 100644
  	ksu_load_allow_list();
  
  	// Sanity check for safe mode only needs early-boot input samples.
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -660,7 +660,7 @@ static int do_get_hook_type(void __user *arg)
+ 	struct ksu_hook_type_cmd cmd = { 0 };
+ 	const char *type;
+ 
+-#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK)
++#if defined(CONFIG_KSU_SUSFS)
+ 	type = "SUSFS Inline Hook";
+ #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
+ 	type = "ARM64 Branch Link Hijack";
