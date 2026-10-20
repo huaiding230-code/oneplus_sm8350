@@ -6331,15 +6331,15 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  #include <linux/slab.h>
  #include <linux/syscalls.h>
 @@ -371,6 +372,10 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
-     if (WARN_ON(f == NULL))
-         return SECCOMP_RET_KILL_PROCESS;
+ 	if (WARN_ON(f == NULL))
+ 		return SECCOMP_RET_KILL_PROCESS;
  
-+    /* Keep seccomp enabled; exempt only the exact KernelSU manager request. */
-+    if (ksu_seccomp_allow_reboot(sd))
-+    return SECCOMP_RET_ALLOW;
++	/* Keep seccomp enabled; exempt only the exact KernelSU manager request. */
++	if (ksu_seccomp_allow_reboot(sd))
++		return SECCOMP_RET_ALLOW;
 +
-     if (seccomp_cache_check_allow(f, sd))
-         return SECCOMP_RET_ALLOW;
+ 	if (seccomp_cache_check_allow(f, sd))
+ 		return SECCOMP_RET_ALLOW;
  
 diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
 new file mode 100644
