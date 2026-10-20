@@ -1,5 +1,5 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility, SUSFS dispatch/init, and seccomp exception
+Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility, SUSFS dispatch/init, and root SUSFS probe exception
 
 Baseline: uploaded SukiSU-Ultra builtin-new source zip; commit 548fbf243f70d65f5b8afc45516af63c07fa1958
 
@@ -166,7 +166,7 @@ index 1706e6f..3e3f52c 100644
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -1,3 +1,37 @@
+@@ -1,3 +1,44 @@
 +#include <asm/unistd.h>
 +#include <linux/ksu_seccomp.h>
 +#ifdef CONFIG_KSU_SUSFS
@@ -176,7 +176,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 +/*
 + * Called by the Linux seccomp core before evaluating installed filters.
 + * Allow the exact KernelSU FD-install request and read-only SUSFS capability
-+ * probes from the manager; all other syscalls and reboot arguments remain
++ * probes from UID 0; all other syscalls and reboot arguments remain
 + * subject to the inherited filter. SUSFS mutation commands are not exempted.
 + */
 +bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
@@ -194,8 +194,15 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 +	if ((__u32)sd->args[1] == SUSFS_MAGIC &&
 +	    ((__u32)sd->args[2] == CMD_SUSFS_SHOW_VERSION ||
 +	     (__u32)sd->args[2] == CMD_SUSFS_SHOW_ENABLED_FEATURES ||
-+	     (__u32)sd->args[2] == CMD_SUSFS_SHOW_VARIANT))
-+		return ksu_is_manager_appid_valid() && is_uid_manager(current_uid().val);
++	     (__u32)sd->args[2] == CMD_SUSFS_SHOW_VARIANT)) {
++		/*
++		 * toolkit_handle_sys_reboot() dispatches SUSFS only for UID 0.
++		 * ksud may inherit the manager's seccomp filter after switching to
++		 * root, so checking the manager app UID here rejects the real probes.
++		 * Exempt root only, and only for these three read-only query commands.
++		 */
++		return !current_uid().val;
++	}
 +#endif
 +
 +	return false;
@@ -204,7 +211,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +47,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -13,10 +54,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -223,7 +230,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +63,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -25,10 +70,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	ksu_handle_umount(new, old);
  	return;
  
