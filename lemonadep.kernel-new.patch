@@ -75,26 +75,39 @@ diff --git a/fs/exec.c b/fs/exec.c
 index 910b407..d77e381 100644
 --- a/fs/exec.c
 +++ b/fs/exec.c
-@@ -73,6 +73,10 @@
+@@ -73,6 +73,11 @@
  
  #include <trace/events/sched.h>
  
 +#ifdef CONFIG_KSU
 +extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
++extern void ksu_sucompat_execveat_finish(int ret, int handled, int tmp_fd);
 +#endif
 +
  int suid_dumpable = 0;
  
  static LIST_HEAD(formats);
-@@ -1909,6 +1913,10 @@ static int do_execveat_common(int fd, struct filename *filename,
+@@ -1909,6 +1913,21 @@ static int do_execveat_common(int fd, struct filename *filename,
  			      struct user_arg_ptr envp,
  			      int flags)
  {
++	int retval;
 +#ifdef CONFIG_KSU
-+	if (!IS_ERR_OR_NULL(filename))
-+		ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
++	int ksu_sucompat_handled = 0;
++	int ksu_sucompat_tmp_fd = -1;
++
++	if (!IS_ERR_OR_NULL(filename)) {
++		ksu_sucompat_handled = ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
++		if (ksu_sucompat_handled)
++			ksu_sucompat_tmp_fd = fd;
++	}
 +#endif
- 	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
+-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
++	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
++#ifdef CONFIG_KSU
++	ksu_sucompat_execveat_finish(retval, ksu_sucompat_handled, ksu_sucompat_tmp_fd);
++#endif
++	return retval;
  }
  
 diff --git a/fs/namei.c b/fs/namei.c
@@ -6309,7 +6322,7 @@ new file mode 100644
 diff --git a/kernel/seccomp.c b/kernel/seccomp.c
 --- a/kernel/seccomp.c
 +++ b/kernel/seccomp.c
-@@ -24,6 +24,7 @@
+@@ -22,6 +22,7 @@
  #include <linux/prctl.h>
  #include <linux/sched.h>
  #include <linux/sched/task_stack.h>
@@ -6317,17 +6330,16 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  #include <linux/seccomp.h>
  #include <linux/slab.h>
  #include <linux/syscalls.h>
-@@ -371,6 +372,10 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
+@@ -247,3 +248,7 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
  	if (WARN_ON(f == NULL))
  		return SECCOMP_RET_KILL_PROCESS;
  
-+	/* Keep seccomp enabled; exempt exact KSU requests and read-only SUSFS probes. */
++	/* Keep seccomp enabled; exempt only the exact KernelSU manager request. */
 +	if (ksu_seccomp_allow_reboot(sd))
 +		return SECCOMP_RET_ALLOW;
 +
- 	if (seccomp_cache_check_allow(f, sd))
- 		return SECCOMP_RET_ALLOW;
- 
+
+
 diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
 new file mode 100644
 --- /dev/null
@@ -6341,8 +6353,8 @@ new file mode 100644
 +#include <linux/seccomp.h>
 +
 +/*
-+ * This callback is implemented by built-in SukiSU. It allows the manager's
-+ * exact FD-install request and read-only SUSFS capability probes to pass.
++ * This callback is implemented by built-in SukiSU. It allows only the
++ * manager's exact reboot-based FD-install request to pass seccomp filters.
 + */
 +#if IS_BUILTIN(CONFIG_KSU)
 +bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd);
