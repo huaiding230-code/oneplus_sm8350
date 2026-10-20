@@ -1,9 +1,9 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility and seccomp manager exception
+Subject: [PATCH] SukiSU builtin-new: Linux 5.4 compatibility, CPU spoof, and seccomp exception
 
 Baseline: uploaded SukiSU-Ultra builtin-new source zip; commit 548fbf243f70d65f5b8afc45516af63c07fa1958
 
-Requires lemonadep.kernel-new.patch (includes the original kernel integration plus the seccomp-core exception).
+Includes the Linux 5.4 CPU-spoof compatibility guard; requires lemonadep.kernel-new.patch (kernel integration plus seccomp-core exception).
 UAPI baseline: builtin-new already defines KERNEL_SU_UAPI_VERSION 6; no uapi5.patch is needed.
 
 ---
@@ -343,3 +343,23 @@ index 1ead162..2597813 100644
 +endmenu
 +
  endmenu
+
+diff --git a/kernel/extension/cpu_spoof.c b/kernel/extension/cpu_spoof.c
+--- a/kernel/extension/cpu_spoof.c
++++ b/kernel/extension/cpu_spoof.c
+@@ -165,6 +165,7 @@
+ 				}
+ #endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+ 				{
+ 					struct clocksource **curr_cs_ptr =
+ 						(struct clocksource **)find_kernel_symbol_exact(
+@@ -177,6 +178,7 @@
+ 						++missing;
+ 					}
+ 				}
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) */
+ 
+ 				{
+ 					enum vdso_clock_mode *vd_default =
