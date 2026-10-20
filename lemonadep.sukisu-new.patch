@@ -552,3 +552,91 @@ diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
  	type = "SUSFS Inline Hook";
  #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
  	type = "ARM64 Branch Link Hijack";
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 003f86b..f1363be 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -85,9 +85,6 @@ long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
+     long ret;
+     const struct cred *old_cred;
+ 
+-    if (!ksu_is_allow_uid_for_current(current_uid().val)) {
+-        goto do_orig_facessat;
+-    }
+ 
+     filename_user = (const char __user **)&PT_REGS_PARM2(regs);
+ 
+@@ -110,7 +107,6 @@ long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
+         }
+     }
+ 
+-do_orig_facessat:
+     return ksu_syscall_table[orig_nr](regs);
+ }
+ 
+@@ -120,9 +116,6 @@ long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)
+     long ret;
+     const struct cred *old_cred;
+ 
+-    if (!ksu_is_allow_uid_for_current(current_uid().val)) {
+-        goto do_orig_stat;
+-    }
+ 
+     filename_user = (const char __user **)&PT_REGS_PARM2(regs);
+ 
+@@ -145,7 +138,6 @@ long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)
+         }
+     }
+ 
+-do_orig_stat:
+     return ksu_syscall_table[orig_nr](regs);
+ }
+ 
+diff --git a/userspace/ksud/src/extension.rs b/userspace/ksud/src/extension.rs
+index baf01f3..30b57bf 100644
+--- a/userspace/ksud/src/extension.rs
++++ b/userspace/ksud/src/extension.rs
+@@ -370,10 +370,9 @@ pub fn list_extensions() {
+     let kpm_advertised = states.get(&ExtensionId::Kpm).is_some_and(|s| s.supported);
+     let kpm_working = kpm_advertised && kpm_actually_working();
+ 
+-    // Lazy SuSFS probe: only run `susfs status` if the kernel
+-    // advertised SuSFS support (i.e. the stub handler is registered).
+-    let susfs_advertised = states.get(&ExtensionId::Susfs).is_some_and(|s| s.supported);
+-    let susfs_working = susfs_advertised && susfs_actually_working();
++    // SUSFS uses its own SUSFS_MAGIC command channel. Probe the actual kernel
++    // response independently of the optional extension-handler registry.
++    let susfs_working = susfs_actually_working();
+ 
+     let mut extension_to_modules: HashMap<String, Vec<String>> = HashMap::new();
+     for (module_id, ext_list) in &managed_extensions_map {
+@@ -392,9 +391,11 @@ pub fn list_extensions() {
+         // For KPM, "supported" requires the live ioctl probe to succeed.
+         // For SuSFS, "supported" requires the susfs status probe.
+         // For the other three, the kernel-side supported flag is enough.
+-        let really_supported = state.supported
+-            && (extension_id != &ExtensionId::Kpm || kpm_working)
+-            && (extension_id != &ExtensionId::Susfs || susfs_working);
++        let really_supported = if extension_id == &ExtensionId::Susfs {
++            susfs_working
++        } else {
++            state.supported && (extension_id != &ExtensionId::Kpm || kpm_working)
++        };
+ 
+         let label = if !really_supported {
+             "NOT_SUPPORTED".to_string()
+@@ -452,9 +453,11 @@ pub fn list_extensions() {
+     for extension_id in &ExtensionId::ALL {
+         let id = *extension_id as u32;
+         let state = states.get(extension_id).copied().unwrap_or_default();
+-        let really_supported = state.supported
+-            && (extension_id != &ExtensionId::Kpm || kpm_working)
+-            && (extension_id != &ExtensionId::Susfs || susfs_working);
++        let really_supported = if extension_id == &ExtensionId::Susfs {
++            susfs_working
++        } else {
++            state.supported && (extension_id != &ExtensionId::Kpm || kpm_working)
++        };
+         let managed = extension_to_modules
+             .get(extension_id.name())
+             .is_some_and(|v| !v.is_empty());
