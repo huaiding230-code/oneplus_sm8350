@@ -1,10 +1,11 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-Subject: [PATCH] SukiSU builtin-new: fix SUSFS probe and su command lookup
+Subject: [PATCH] SukiSU builtin-new: fix SUSFS capability reporting and su lookup
 
-Baseline: uploaded SukiSU-Ultra builtin-new source zip; commit 548fbf243f70d65f5b8afc45516af63c07fa1958
+Baseline: uploaded SukiSU-Ultra builtin-new source; commit 548fbf243f70d65f5b8afc45516af63c07fa1958
 
 Includes the Linux 5.4 CPU-spoof compatibility guard, the sucompat-state accessor, SUSFS command dispatch through SUSFS_MAGIC, early susfs_init(), and the post-fs-data sdcard watcher startup. Requires lemonadep.kernel-new.patch (kernel integration plus seccomp-core exception).
-Update 2026-10-20: adds SUSFS-aware VFS stat/faccessat handlers so /system/bin/su is visible during PATH lookup, and makes SUSFS support depend on its live SUSFS_MAGIC probe rather than the generic extension registry. Keeps KPM configuration unchanged.
+Fixes SUSFS capability reporting by registering the SUSFS extension so the manager can run its live SUSFS_MAGIC probe. Adds CONFIG_KSU_SUSFS VFS stat/faccessat adapters that make /system/bin/su visible as /system/bin/sh during shell lookup, while the exec hook continues redirecting su to ksud. KPM configuration is unchanged.
+Apply from the KernelSU source root (the directory containing kernel/). This patch intentionally contains no userspace/ paths.
 UAPI baseline: builtin-new already defines KERNEL_SU_UAPI_VERSION 6; no uapi5.patch is needed.
 
 ---
@@ -399,6 +400,89 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 +
  static char __user *sh_user_path(void)
  {
+@@ -206,6 +211,46 @@
+ }
+ 
++#ifdef CONFIG_KSU_SUSFS
++/*
++ * SUSFS VFS call sites pass a kernel-owned struct filename after
++ * getname_flags(). A shell checks su with faccessat/stat before execve;
++ * make those checks see sh while the existing exec hook redirects su to ksud.
++ */
++struct filename;
++static __always_inline int ksu_sucompat_rewrite_vfs_lookup(
++	struct filename **filename_ptr, const char *syscall_name)
++{
++	void *struct_filename;
++	char *path;
++
++	if (!filename_ptr || IS_ERR_OR_NULL(*filename_ptr))
++		return 0;
++
++	struct_filename = (void *)*filename_ptr;
++	/* struct filename begins with its kernel-owned pathname pointer. */
++	path = *(char **)struct_filename;
++	if (!path || strcmp(path, SU_PATH))
++		return 0;
++	/* Caller gates this hook by su_compat and allowed UID. Do not use
++	 * is_su_allowed(): it rejects tasks with the inherited seccomp filter,
++	 * which this builtin intentionally preserves for the manager. */
++	memcpy(path, SH_PATH, sizeof(SH_PATH));
++	pr_info("su_compat: %s su->sh!%s\n", syscall_name,
++		(is_compat_task()) ? " [compat]" : "");
++	return 0;
++}
++#endif
++
+ // sys_faccessat
++#ifdef CONFIG_KSU_SUSFS
++int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, int *__unused_flags)
++{
++	(void)dfd;
++	(void)mode;
++	(void)__unused_flags;
++	return ksu_sucompat_rewrite_vfs_lookup(filename_ptr, "sys_faccessat");
++}
++#else
+ SUCOMPAT_HOOK_TYPE ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags)
+ {
+ 	if (!is_su_allowed((const void **)filename_user))
+@@ -214,7 +259,16 @@
+ 	ksu_sucompat_user_common(filename_user, "sys_faccessat");
+ 	return 0;
+ }
++#endif
+ // sys_newfstatat, sys_fstat64
++#ifdef CONFIG_KSU_SUSFS
++int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
++{
++	(void)dfd;
++	(void)flags;
++	return ksu_sucompat_rewrite_vfs_lookup(filename_ptr, "sys_newfstatat");
++}
++#else
+ SUCOMPAT_HOOK_TYPE ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags)
+ {
+ 	if (!is_su_allowed((const void **)filename_user))
+@@ -223,3 +277,4 @@
+ 	ksu_sucompat_user_common(filename_user, "sys_newfstatat");
+ 	return 0;
+ }
++#endif
+@@ -255,4 +310,10 @@ static __always_inline void ksu_sucompat_kernel_common(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
+-	if (!is_su_allowed((const void **)filename_ptr))
+-		return;
+-
++	#ifdef CONFIG_KSU_SUSFS
++	if (!READ_ONCE(ksu_su_compat_enabled) ||
++	    !__ksu_is_allow_uid_for_current(current_uid().val))
++		return;
++	#else
++	if (!is_su_allowed((const void **)filename_ptr))
++		return;
++	#endif
++
+ 	if (!!fd && fd != (int *)AT_FDCWD && *fd != AT_FDCWD)
 
 diff --git a/kernel/downstream/toolkit.h b/kernel/downstream/toolkit.h
 index 0636437..9a870ee 100644
@@ -552,143 +636,72 @@ diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
  	type = "SUSFS Inline Hook";
  #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
  	type = "ARM64 Branch Link Hijack";
-diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index 003f86b..7a3a8f0 100644
---- a/kernel/feature/sucompat.c
-+++ b/kernel/feature/sucompat.c
-@@ -79,6 +79,54 @@ static bool is_ksud_exists()
-     return true;
- }
- 
-+/*
-+ * The SUSFS-aware VFS call sites pass a kernel-owned struct filename. Shells
-+ * test /system/bin/su with stat/faccessat before trying execve; the execve hook
-+ * cannot help if those checks say the command does not exist. Make lookup see
-+ * the executable shell path. The actual execve of /system/bin/su remains
-+ * intercepted by sucompat and redirected to ksud.
-+ */
-+#ifdef CONFIG_KSU_SUSFS
-+static int ksu_rewrite_su_lookup(struct filename **filename_ptr,
-+                                 const char *operation)
-+{
-+    struct filename *filename;
-+    static const char sh_path[] = "/system/bin/sh";
-+
-+    if (!filename_ptr || !*filename_ptr || IS_ERR(*filename_ptr))
-+        return 0;
-+
-+    filename = *filename_ptr;
-+    if (!filename->name || !ksu_su_compat_is_enabled() ||
-+        !ksu_is_allow_uid_for_current(current_uid().val))
-+        return 0;
-+
-+    if (sizeof(SU_PATH) != sizeof(sh_path) ||
-+        memcmp(filename->name, SU_PATH, sizeof(SU_PATH)))
-+        return 0;
-+
-+    memcpy((char *)filename->name, sh_path, sizeof(sh_path));
-+    pr_info("su_compat: %s su->sh!\n", operation);
-+    return 0;
-+}
-+
-+int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr,
-+                         int *mode, int *flags)
-+{
-+    (void)dfd;
-+    (void)mode;
-+    (void)flags;
-+    return ksu_rewrite_su_lookup(filename_ptr, "faccessat");
-+}
-+
-+int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
-+{
-+    (void)dfd;
-+    (void)flags;
-+    return ksu_rewrite_su_lookup(filename_ptr, "stat");
-+}
-+#endif
-+
- long ksu_handle_faccessat_sucompat(int orig_nr, struct pt_regs *regs)
- {
-     const char __user **filename_user, *orig_filename;
 
-diff --git a/userspace/ksud/src/extension.rs b/userspace/ksud/src/extension.rs
-index baf01f3..2ed1211 100644
---- a/userspace/ksud/src/extension.rs
-+++ b/userspace/ksud/src/extension.rs
-@@ -370,10 +370,9 @@ pub fn list_extensions() {
-     let kpm_advertised = states.get(&ExtensionId::Kpm).is_some_and(|s| s.supported);
-     let kpm_working = kpm_advertised && kpm_actually_working();
+diff --git a/kernel/include/uapi/extension.h b/kernel/include/uapi/extension.h
+--- a/kernel/include/uapi/extension.h
++++ b/kernel/include/uapi/extension.h
+@@ -52,6 +52,7 @@
+ 	KSU_EXTENSION_CPU_SPOOF = 1,
+ 	KSU_EXTENSION_UMOUNT_PATHS = 2,
+ 	KSU_EXTENSION_DYNAMIC_MANAGER = 3,
++	KSU_EXTENSION_SUSFS = 4,
  
--    // Lazy SuSFS probe: only run `susfs status` if the kernel
--    // advertised SuSFS support (i.e. the stub handler is registered).
--    let susfs_advertised = states.get(&ExtensionId::Susfs).is_some_and(|s| s.supported);
--    let susfs_working = susfs_advertised && susfs_actually_working();
-+    // SUSFS has an independent SUSFS_MAGIC query path. Probe the actual kernel
-+    // response independently of the optional generic extension-handler registry.
-+    let susfs_working = susfs_actually_working();
- 
-     let mut extension_to_modules: HashMap<String, Vec<String>> = HashMap::new();
-     for (module_id, ext_list) in &managed_extensions_map {
-@@ -392,9 +391,11 @@ pub fn list_extensions() {
-         // For KPM, "supported" requires the live ioctl probe to succeed.
-         // For SuSFS, "supported" requires the susfs status probe.
-         // For the other three, the kernel-side supported flag is enough.
--        let really_supported = state.supported
--            && (extension_id != &ExtensionId::Kpm || kpm_working)
--            && (extension_id != &ExtensionId::Susfs || susfs_working);
-+        let really_supported = if extension_id == &ExtensionId::Susfs {
-+            susfs_working
-+        } else {
-+            state.supported && (extension_id != &ExtensionId::Kpm || kpm_working)
-+        };
- 
-         let label = if !really_supported {
-             "NOT_SUPPORTED".to_string()
-@@ -452,9 +453,11 @@ pub fn list_extensions() {
-     for extension_id in &ExtensionId::ALL {
-         let id = *extension_id as u32;
-         let state = states.get(extension_id).copied().unwrap_or_default();
--        let really_supported = state.supported
--            && (extension_id != &ExtensionId::Kpm || kpm_working)
--            && (extension_id != &ExtensionId::Susfs || susfs_working);
-+        let really_supported = if extension_id == &ExtensionId::Susfs {
-+            susfs_working
-+        } else {
-+            state.supported && (extension_id != &ExtensionId::Kpm || kpm_working)
-+        };
-         let managed = extension_to_modules
-             .get(extension_id.name())
-             .is_some_and(|v| !v.is_empty());
-@@ -537,6 +540,17 @@ pub fn check_extension(id: &str) -> Result<()> {
-         return Ok(());
-     }
- 
-+    // SUSFS has an independent SUSFS_MAGIC query path. Do not let a missing
-+    // generic extension-handler advertisement mask a working SUSFS backend.
-+    if extension_id == ExtensionId::Susfs {
-+        if susfs_actually_working() {
-+            println!("supported");
-+        } else {
-+            println!("unsupported");
-+        }
-+        return Ok(());
-+    }
+ 	KSU_EXTENSION_MAX
+ };
+@@ -122,1 +123,1 @@
+-/* IOCTL command: one ioctl, four extensions. */
++/* IOCTL command: one ioctl, five extensions. */
+
+diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
+--- a/kernel/extension/extension.c
++++ b/kernel/extension/extension.c
+@@ -26,7 +26,21 @@
+ 	[KSU_EXTENSION_CPU_SPOOF] = "cpu_spoof",
+ 	[KSU_EXTENSION_UMOUNT_PATHS] = "umount_paths",
+ 	[KSU_EXTENSION_DYNAMIC_MANAGER] = "dynamic_manager",
++	[KSU_EXTENSION_SUSFS] = "susfs",
+ };
++#ifdef CONFIG_KSU_SUSFS
++static int ksu_extension_susfs_get(u32 extension_id, u64 *value)
++{
++	(void)extension_id;
++	if (value)
++		*value = 0;
++	return 0;
++}
 +
-     if !state.supported {
-         println!("unsupported");
-         return Ok(());
-@@ -549,13 +563,6 @@ pub fn check_extension(id: &str) -> Result<()> {
-         return Ok(());
-     }
- 
--    // SuSFS reports supported whenever the stub handler is registered,
--    // but the module may not be installed. Probe it once.
--    if extension_id == ExtensionId::Susfs && !susfs_actually_working() {
--        println!("unsupported");
--        return Ok(());
--    }
--
-     println!("supported");
-     Ok(())
- }
++static const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
++	.get = ksu_extension_susfs_get,
++};
++#endif
+ /*
+  * Force-extension bitmap (parallel to policy/feature.c).
+  * Each set bit in forced_mask means "userspace cannot change this
+@@ -408,6 +422,13 @@
+ 		.ops = &ksu_extension_dynamic_manager_ops,
+ 		.io_handler = ksu_extension_dynamic_manager_io,
+ 	};
++#ifdef CONFIG_KSU_SUSFS
++	static const struct ksu_extension_handler susfs_handler = {
++		.extension_id = KSU_EXTENSION_SUSFS,
++		.name = "susfs",
++		.ops = &ksu_extension_susfs_ops,
++	};
++#endif
+ 	if (ksu_register_extension_handler(&kpm_handler))
+ 		pr_err("extension: failed to register kpm\n");
+ 	if (ksu_register_extension_handler(&cpu_spoof_handler))
+@@ -416,8 +437,12 @@
+ 		pr_err("extension: failed to register umount_paths\n");
+ 	if (ksu_register_extension_handler(&dynamic_manager_handler))
+ 		pr_err("extension: failed to register dynamic_manager\n");
++#ifdef CONFIG_KSU_SUSFS
++	if (ksu_register_extension_handler(&susfs_handler))
++		pr_err("extension: failed to register susfs\n");
++#endif
+ 	/* Publish: any future ksu_extension_apply_forced() is now safe.
+ 	 * The release-store pairs with the acquire-load in
+ 	 * ksu_extension_apply_forced() so that, on the calling CPU,
+-	 * the four ksu_register_extension_handler() writes above are
++	 * the extension registration writes above are
+ 	 * visible before the flag is observed as set. */
