@@ -278,3 +278,68 @@ index a9d4f67..2e3ff39 100644
  
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index 1ead162..2597813 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -154,4 +154,60 @@ config KPM
+     select KALLSYMS
+     select KALLSYMS_ALL
+ 
++menu "SUSFS support"
++
++config KSU_SUSFS
++	bool "Enable SUSFS integration"
++	depends on KSU
++	default y
++	help
++	  Enable the SUSFS kernel integration supplied by the kernel patch.
++
++config KSU_SUSFS_SUS_PATH
++	bool "SUSFS path hiding"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SUS_MAP
++	bool "SUSFS map hiding"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SUS_MOUNT
++	bool "SUSFS mount hiding"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SUS_KSTAT
++	bool "SUSFS stat spoofing"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_OPEN_REDIRECT
++	bool "SUSFS open redirect"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SPOOF_UNAME
++	bool "SUSFS uname spoofing"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++	bool "SUSFS cmdline/bootconfig spoofing"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_ENABLE_LOG
++	bool "SUSFS debug logging"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
++	bool "Hide SUSFS symbols from kallsyms"
++	depends on KSU_SUSFS
++	default y
++
++endmenu
++
+ endmenu
