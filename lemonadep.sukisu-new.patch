@@ -202,183 +202,28 @@ index 3306284..2f3191f 100644
  				{
  					enum vdso_clock_mode *vd_default =
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
-index e6096f6..6390b4b 100644
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
-@@ -5,9 +5,8 @@
-  * track_throne() only crowns KSU_PACKAGE_NAME. This file supplies the
-  * second chance: re-scan /data/app and crown *any* APK signed with the
-  * canonical built-in KernelSU signature, regardless of its package name.
-- * It is reached through the ksu_sig_fallback static_call (see
-- * dynamic_sig_fallback.h) rather than a weak symbol, so the call site is
-- * an indirect branch with a real default target and an uninstalled
-+ * It is reached through the ksu_sig_fallback static key (see
-+ * dynamic_sig_fallback.h) rather than a weak symbol, so an uninstalled
-  * fallback can never deref NULL.
-  *
-  * The scanner is deliberately self-contained: its own dir_context, its own
-@@ -28,7 +27,6 @@
- #include <linux/module.h>
- #include <linux/namei.h>
- #include <linux/slab.h>
--#include <linux/static_call.h>
- #include <linux/string.h>
- #include <linux/types.h>
- #include <linux/version.h>
-@@ -71,7 +69,8 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
+@@ -66,4 +66,5 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
      struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
      char dirpath[DATA_PATH_LEN];
- 
 -    if (!strncmp(name, "..", namelen) || !strncmp(name, ".", namelen))
 +    if ((namelen == 1 && name[0] == '.') ||
 +        (namelen == 2 && name[0] == '.' && name[1] == '.'))
          return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
- 
-     if (d_type == DT_DIR && namelen >= 8 && !strncmp(name, "vmdl", 4) && !strncmp(name + namelen - 4, ".tmp", 4)) {
-@@ -84,13 +83,13 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
-         return FILLDIR_ACTOR_CONTINUE;
+@@ -78,4 +79,4 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
      }
  
 -    if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
 +    if (namelen == 8 && !memcmp(name, "base.apk", 8)) {
          if (!c->matched && is_manager_apk(dirpath))
-             c->matched = true;
+@@ -83,4 +84,4 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
          return FILLDIR_ACTOR_CONTINUE;
      }
- 
 -    if (d_type == DT_DIR && c->depth > 0) {
 +    if ((d_type == DT_DIR || d_type == DT_UNKNOWN) && c->depth > 0) {
          struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
- 
-         if (!p) {
-@@ -204,43 +203,47 @@ static bool fb_crown_by_signature(struct list_head *uid_data)
-     return crowned;
- }
- 
--bool ksu_sig_fallback_stub(struct list_head *uid_data)
--{
--    (void)uid_data;
--    return false;
--}
--
--DEFINE_STATIC_CALL(ksu_sig_fallback, ksu_sig_fallback_stub);
-+#ifdef KSU_CAN_USE_JUMP_LABEL
-+DEFINE_STATIC_KEY_FALSE(ksu_sig_fallback_key);
-+#else
-+bool ksu_sig_fallback_enabled __read_mostly = false;
-+#endif
- 
--static ksu_sig_fallback_fn sig_fallback_current = ksu_sig_fallback_stub;
-+ksu_sig_fallback_fn ksu_sig_fallback_current;
- 
- int ksu_sig_fallback_register(ksu_sig_fallback_fn fn)
- {
-+    bool was_enabled;
-+
-     if (!fn)
-         return -EINVAL;
- 
--    if (READ_ONCE(sig_fallback_current) == fn)
-+    was_enabled = READ_ONCE(ksu_sig_fallback_current) != NULL;
-+    if (was_enabled && READ_ONCE(ksu_sig_fallback_current) == fn)
-         return 0;
- 
--    WRITE_ONCE(sig_fallback_current, fn);
--    static_call_update(ksu_sig_fallback, fn);
-+    if (was_enabled)
-+        KSU_SIG_FALLBACK_DISABLE();
-+
-+    WRITE_ONCE(ksu_sig_fallback_current, fn);
-+    KSU_SIG_FALLBACK_ENABLE();
-     pr_info("sig_fallback: registered %px\n", (void *)fn);
-     return 0;
- }
- 
- void ksu_sig_fallback_unregister(void)
- {
--    if (READ_ONCE(sig_fallback_current) == ksu_sig_fallback_stub)
-+    if (!READ_ONCE(ksu_sig_fallback_current))
-         return;
- 
--    WRITE_ONCE(sig_fallback_current, ksu_sig_fallback_stub);
--    static_call_update(ksu_sig_fallback, ksu_sig_fallback_stub);
--    pr_info("sig_fallback: unregistered, restored stub\n");
-+    KSU_SIG_FALLBACK_DISABLE();
-+    WRITE_ONCE(ksu_sig_fallback_current, NULL);
-+    pr_info("sig_fallback: unregistered, fallback disabled\n");
- }
- 
- bool ksu_sig_fallback_registered(void)
- {
--    return READ_ONCE(sig_fallback_current) != ksu_sig_fallback_stub;
-+    return READ_ONCE(ksu_sig_fallback_current) != NULL;
- }
- 
- void __init ksu_sig_fallback_init(void)
-diff --git a/kernel/extension/dynamic_sig_fallback.h b/kernel/extension/dynamic_sig_fallback.h
-index 1b534d0..aaf00b0 100644
---- a/kernel/extension/dynamic_sig_fallback.h
-+++ b/kernel/extension/dynamic_sig_fallback.h
-@@ -2,16 +2,55 @@
- #ifndef __KSU_H_DYNAMIC_SIG_FALLBACK
- #define __KSU_H_DYNAMIC_SIG_FALLBACK
- 
-+#include <linux/compiler.h>
-+#include <linux/init.h>
- #include <linux/list.h>
--#include <linux/static_call.h>
-+#ifdef KSU_CAN_USE_JUMP_LABEL
-+#include <linux/static_key.h>
-+#endif
- 
- typedef bool (*ksu_sig_fallback_fn)(struct list_head *uid_data);
--DECLARE_STATIC_CALL(ksu_sig_fallback, bool(struct list_head *));
--bool ksu_sig_fallback_stub(struct list_head *uid_data);
- 
-+#ifdef KSU_CAN_USE_JUMP_LABEL
-+DECLARE_STATIC_KEY_FALSE(ksu_sig_fallback_key);
-+#define KSU_SIG_FALLBACK_ENABLE() static_branch_enable(&ksu_sig_fallback_key)
-+#define KSU_SIG_FALLBACK_DISABLE() static_branch_disable(&ksu_sig_fallback_key)
-+#else
-+extern bool ksu_sig_fallback_enabled;
-+#define KSU_SIG_FALLBACK_ENABLE() WRITE_ONCE(ksu_sig_fallback_enabled, true)
-+#define KSU_SIG_FALLBACK_DISABLE() WRITE_ONCE(ksu_sig_fallback_enabled, false)
-+#endif
-+
-+extern ksu_sig_fallback_fn ksu_sig_fallback_current;
-+
-+/*
-+ * Gate the call site on the feature switch.
-+ *
-+ * With static keys this compiles to a jump-label test: once the branch is
-+ * enabled the call site is an unconditional jump, while disabled it is a
-+ * single NOP. Without them (very old kernels) we fall back to a
-+ * __read_mostly bool read.
-+ *
-+ * The implementation pointer is re-read with READ_ONCE() and NULL-checked
-+ * in both cases, so a racing unregister can never turn into a NULL call.
-+ */
- static inline bool ksu_sig_fallback_run(struct list_head *uid_data)
- {
--    return static_call(ksu_sig_fallback)(uid_data);
-+    ksu_sig_fallback_fn fn;
-+
-+#ifdef KSU_CAN_USE_JUMP_LABEL
-+    if (!static_branch_unlikely(&ksu_sig_fallback_key))
-+        return false;
-+#else
-+    if (unlikely(!READ_ONCE(ksu_sig_fallback_enabled)))
-+        return false;
-+#endif
-+
-+    fn = READ_ONCE(ksu_sig_fallback_current);
-+    if (!fn)
-+        return false;
-+
-+    return fn(uid_data);
- }
- 
- int ksu_sig_fallback_register(ksu_sig_fallback_fn fn);
+
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
 index 43c081e..7b9948b 100644
 --- a/kernel/extension/extension.c
