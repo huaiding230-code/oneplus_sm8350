@@ -1,9 +1,24 @@
 From 5e63eacea80c3e5501602b2b9b4c35b9174897d3 Mon Sep 17 00:00:00 2001
-Subject: [PATCH] SukiSU builtin-new: Linux 5.4 and hook/API compatibility
+Subject: [PATCH] SukiSU builtin-new: fix SUSFS detection and sucompat paths
 
 Baseline: SukiSU-Ultra-builtin-new 5e63eacea80c3e5501602b2b9b4c35b9174897d3
-Contains prior integration and Stage 2 Linux 5.4 fixes, plus Stage 3
-kernel-filename sucompat handlers and hook-mode-safe exec redirection.
+Update: 2026-10-21, follow-up to the three-stage audit.
+
+Changes:
+- Add and register SUSFS extension ID 4 expected by the new manager; its live
+  SUSFS status is still verified through the existing SUSFS status command.
+- Accept /system/xbin/su as well as /system/bin/su in sucompat path hooks.
+- Make the KPM stub path safe: no uninitialized buffer reads/copies, and an
+  empty stub version reports -EOPNOTSUPP instead of falsely passing detection.
+- Retain the Stage 2 Linux 5.4 fixes and Stage 3 exec/stat/faccessat bridge.
+
+Validation:
+- Applies cleanly to the exact builtin-new source archive identified above.
+- git diff --check passed after application.
+- This is not a claim of a full Linux 5.4/SM8350 kernel build; that source tree
+  was not part of the uploaded files.
+---
+
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index 1ead162..2597813 100644
 --- a/kernel/Kconfig
@@ -283,25 +298,212 @@ index 1b534d0..e81eb6b 100644
  int ksu_sig_fallback_register(ksu_sig_fallback_fn fn);
  void ksu_sig_fallback_unregister(void);
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
-index 43c081e..0e4de15 100644
+index 43c081e..7b9948b 100644
 --- a/kernel/extension/extension.c
 +++ b/kernel/extension/extension.c
-@@ -433,7 +433,6 @@ void __init ksu_extension_register_all(void)
+@@ -18,6 +18,8 @@
+ #include <linux/string.h>
+ #include <linux/types.h>
+ 
++#include "susfs_extension.h"
++
+ static const struct ksu_extension_handler *extension_handlers[KSU_EXTENSION_MAX];
+ 
+ static DEFINE_MUTEX(extension_mutex);
+@@ -27,6 +29,7 @@ static const char *const extension_names[KSU_EXTENSION_MAX] = {
+ 	[KSU_EXTENSION_CPU_SPOOF] = "cpu_spoof",
+ 	[KSU_EXTENSION_UMOUNT_PATHS] = "umount_paths",
+ 	[KSU_EXTENSION_DYNAMIC_MANAGER] = "dynamic_manager",
++	[KSU_EXTENSION_SUSFS] = "susfs",
+ };
+ 
+ /*
+@@ -433,7 +436,11 @@ void __init ksu_extension_register_all(void)
  		.ops = &ksu_extension_dynamic_manager_ops,
  		.io_handler = ksu_extension_dynamic_manager_io,
  	};
 -
++	static const struct ksu_extension_handler susfs_handler = {
++		.extension_id = KSU_EXTENSION_SUSFS,
++		.name = "susfs",
++		.ops = &ksu_extension_susfs_ops,
++	};
  	if (ksu_register_extension_handler(&kpm_handler))
  		pr_err("extension: failed to register kpm\n");
  	if (ksu_register_extension_handler(&cpu_spoof_handler))
-@@ -442,7 +441,6 @@ void __init ksu_extension_register_all(void)
+@@ -442,7 +449,8 @@ void __init ksu_extension_register_all(void)
  		pr_err("extension: failed to register umount_paths\n");
  	if (ksu_register_extension_handler(&dynamic_manager_handler))
  		pr_err("extension: failed to register dynamic_manager\n");
 -
++	if (ksu_register_extension_handler(&susfs_handler))
++		pr_err("extension: failed to register susfs\n");
  	/* Publish: any future ksu_extension_apply_forced() is now safe.
  	 * The release-store pairs with the acquire-load in
  	 * ksu_extension_apply_forced() so that, on the calling CPU,
+diff --git a/kernel/extension/kpm/kpm.c b/kernel/extension/kpm/kpm.c
+index e060894..c2d9487 100644
+--- a/kernel/extension/kpm/kpm.c
++++ b/kernel/extension/kpm/kpm.c
+@@ -156,7 +156,9 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
+ 	 * single allocation covering every sub-op is fine and avoids
+ 	 * per-branch kfree.
+ 	 */
+-	struct kpm_scratch *s = kmalloc(sizeof(*s), GFP_KERNEL);
++	/* These scratch buffers also back stubbed KPM entry points. Zero them so
++	 * an unimplemented backend can never leak uninitialized kernel memory. */
++	struct kpm_scratch *s = kzalloc(sizeof(*s), GFP_KERNEL);
+ 	if (!s) {
+ 		res = -ENOMEM;
+ 		goto exit;
+@@ -192,7 +194,7 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
+ 	} else if (control_code == SUKISU_KPM_NUM) {
+ 		sukisu_kpm_num(&res);
+ 	} else if (control_code == SUKISU_KPM_INFO) {
+-		int size;
++		int size = 0;
+ 		if (arg1 == 0 || arg2 == 0) {
+ 			res = -EINVAL;
+ 			goto exit;
+@@ -204,6 +206,11 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
+ 						  sizeof(s->kernel_name_buffer));
+ 		sukisu_kpm_info(s->kernel_name_buffer, s->buf,
+ 						sizeof(s->buf), &size);
++		/* The current builtin-new backend is stubbed; size remains zero. */
++		if (size <= 0 || size > sizeof(s->buf)) {
++			res = -EOPNOTSUPP;
++			goto exit;
++		}
+ 		if (!access_ok(arg2, size))
+ 			goto invalid_arg;
+ 		res = copy_to_user(arg2, s->buf, size);
+@@ -216,6 +223,8 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
+ 		if (!access_ok(arg2, len))
+ 			goto invalid_arg;
+ 		sukisu_kpm_list(s->buf, sizeof(s->buf), &res);
++		if (res < 0)
++			goto exit;
+ 		if (res > len) {
+ 			res = -ENOBUFS;
+ 			goto exit;
+@@ -239,9 +248,20 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
+ 										 sizeof(s->kpm_args));
+ 		sukisu_kpm_control(s->kpm_name, s->kpm_args, arg_len, &res);
+ 	} else if (control_code == SUKISU_KPM_VERSION) {
+-		sukisu_kpm_version(s->buffer, sizeof(s->buffer));
+ 		unsigned int outlen = (unsigned int)arg2;
+-		int len = strlen(s->buffer);
++		int len;
++		if (!arg1 || !outlen) {
++			res = -EINVAL;
++			goto exit;
++		}
++		sukisu_kpm_version(s->buffer, sizeof(s->buffer));
++		s->buffer[sizeof(s->buffer) - 1] = '\0';
++		len = strnlen(s->buffer, sizeof(s->buffer));
++		/* An empty version means the KPM implementation is only a stub. */
++		if (!len) {
++			res = -EOPNOTSUPP;
++			goto exit;
++		}
+ 		if (len >= outlen)
+ 			len = outlen - 1;
+ 		res = copy_to_user(arg1, s->buffer, len + 1);
+diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
+new file mode 100644
+index 0000000..39f2eed
+--- /dev/null
++++ b/kernel/extension/susfs_extension.c
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SuSFS extension handler stub.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. Its presence is advertised by the
++ * mere fact that this handler is registered with the extension
++ * subsystem — the framework itself sets `supported = true`
++ * whenever a handler is found, and `ops->get` only fills the
++ * optional value field.
++ *
++ * The SuSFS sub-screen independently checks whether the SuSFS
++ * module is installed (via `ksud susfs status`) and prompts the
++ * user accordingly. No additional runtime probing is needed here.
++ */
++#include "susfs_extension.h"
++#include "klog.h" // IWYU pragma: keep
++
++#include <linux/errno.h>
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value)
++{
++    if (value)
++        *value = 0;
++    return 0;
++}
++
++int ksu_extension_susfs_set(u32 extension_id, u64 value)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_wipe(u32 extension_id)
++{
++    return -EOPNOTSUPP;
++}
++
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value)
++{
++    /* No-op: SuSFS state is managed entirely by the userspace
++     * module management flow, not by force_extension=. */
++}
++
++const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
++    .get = ksu_extension_susfs_get,
++    .set = NULL,
++};
+diff --git a/kernel/extension/susfs_extension.h b/kernel/extension/susfs_extension.h
+new file mode 100644
+index 0000000..d2bdbf6
+--- /dev/null
++++ b/kernel/extension/susfs_extension.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * SuSFS extension handler.
++ *
++ * This is a thin shim that bridges the kernel extension subsystem
++ * (kernel/extension/extension.c) with the SuSFS module. The
++ * extension framework sets `supported = true` whenever a handler
++ * is registered; ops->get only fills the optional value field.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. The SuSFS sub-screen independently
++ * probes `ksud susfs status` to determine whether the module is
++ * actually installed.
++ */
++#ifndef __KSU_H_EXTENSION_SUSFS
++#define __KSU_H_EXTENSION_SUSFS
++
++#include <linux/types.h>
++
++#include "extension.h"
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value);
++int ksu_extension_susfs_set(u32 extension_id, u64 value);
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg);
++int ksu_extension_susfs_wipe(u32 extension_id);
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value);
++
++/* ops table consumed by ksu_register_extension_handler() in extension.c */
++extern const struct ksu_extension_handler_ops ksu_extension_susfs_ops;
++
++#endif /* __KSU_H_EXTENSION_SUSFS */
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 index d342d42..023d9cc 100644
 --- a/kernel/feature/selinux_hide.c
@@ -458,7 +660,7 @@ index 1706e6f..3e3f52c 100644
  static int sepol_expected_argc(u32 cmd);
  
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index 64483c8..c6db151 100644
+index 64483c8..cecec0b 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -1,3 +1,8 @@
@@ -470,7 +672,12 @@ index 64483c8..c6db151 100644
  #if defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) || defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
  #define SUCOMPAT_HOOK_TYPE static __always_inline int
  #else
-@@ -9,6 +14,11 @@
+@@ -5,10 +10,16 @@
+ #endif
+ 
+ #define SU_PATH "/system/bin/su"
++#define SU_PATH_ALT "/system/xbin/su"
+ #define SH_PATH "/system/bin/sh"
  
  static bool ksu_su_compat_enabled __read_mostly = true;
  
@@ -482,7 +689,7 @@ index 64483c8..c6db151 100644
  static char __user *sh_user_path(void)
  {
  	constexpr char sh_path[16] = SH_PATH;
-@@ -64,14 +74,16 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
+@@ -64,14 +75,16 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
  #endif // KSU_CAN_USE_JUMP_LABEL
  #endif
  
@@ -504,7 +711,59 @@ index 64483c8..c6db151 100644
  #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
  	if (!ksu_is_allow_uid_for_current(current_uid().val))
  		return false;
-@@ -241,6 +253,52 @@ SUCOMPAT_HOOK_TYPE ksu_handle_stat(int *dfd, const char __user **filename_user,
+@@ -126,10 +139,14 @@ check_ptr:
+ static __always_inline void ksu_sucompat_user_common(const char __user **filename_user, const char *syscall_name)
+ {
+ 	uintptr_t buf;
++	int i;
++	char user_path[16];
+ 	constexpr char su[16] = SU_PATH;
+ 
+ 	// sugar prep
++	constexpr char su_alt[16] = SU_PATH_ALT;
+ 	uintptr_t *su_p = (uintptr_t *)su;
++	uintptr_t *su_alt_p = (uintptr_t *)su_alt;
+ 	uintptr_t __user *fn_p = (uintptr_t __user *)untagged_addr(*(char **)filename_user);
+ 
+ 	static_assert(sizeof(SU_PATH) + 1 == 16);
+@@ -154,25 +171,19 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filenam
+ 	if (get_user(buf, &fn_p[1]))
+ 		return;
+ 
+-	if (likely((buf & 0x00FFFFFFFFFFFFFFUL) != (su_p[1] & 0x00FFFFFFFFFFFFFFUL)))
++	if (likely((buf & 0x00FFFFFFFFFFFFFFUL) != (su_p[1] & 0x00FFFFFFFFFFFFFFUL) &&
++		   (buf & 0x00FFFFFFFFFFFFFFUL) != (su_alt_p[1] & 0x00FFFFFFFFFFFFFFUL)))
+ 		return;
+ #else
+-	if (get_user(buf, &fn_p[3]))
+-		return;
+-
+-	if (likely((buf & 0x00FFFFFFUL) != (su_p[3] & 0x00FFFFFFUL)))
+-		return;
+-
+-	if (unlikely(get_user(buf, &fn_p[2])))
+-		return;
+-
+-	if (buf != su_p[2])
+-		return;
+-
+-	if (unlikely(get_user(buf, &fn_p[1])))
+-		return;
+-
+-	if (unlikely(buf != su_p[1]))
++	/* 32-bit fallback: compare the complete path to avoid mixing words
++	 * from the two accepted path spellings. */
++	for (i = 0; i < 4; i++) {
++		if (get_user(buf, &fn_p[i]))
++			return;
++		memcpy(&user_path[i * sizeof(buf)], &buf, sizeof(buf));
++	}
++	if (strncmp(user_path, SU_PATH, sizeof(SU_PATH)) &&
++	    strncmp(user_path, SU_PATH_ALT, sizeof(SU_PATH_ALT)))
+ 		return;
+ #endif
+ 	// last word
+@@ -241,6 +252,52 @@ SUCOMPAT_HOOK_TYPE ksu_handle_stat(int *dfd, const char __user **filename_user,
  	return 0;
  }
  
@@ -518,7 +777,6 @@ index 64483c8..c6db151 100644
 +{
 +	struct filename *filename;
 +	char *path;
-+	constexpr char su[16] = SU_PATH;
 +	constexpr char sh[16] = SH_PATH;
 +
 +	if (!filename_ptr || IS_ERR_OR_NULL(*filename_ptr))
@@ -528,7 +786,8 @@ index 64483c8..c6db151 100644
 +		return 0;
 +
 +	path = (char *)filename->name;
-+	if (strncmp(path, SU_PATH, sizeof(SU_PATH)))
++	if (strncmp(path, SU_PATH, sizeof(SU_PATH)) &&
++	    strncmp(path, SU_PATH_ALT, sizeof(SU_PATH_ALT)))
 +		return 0;
 +
 +	if (!strcmp(syscall_name, "sys_faccessat"))
@@ -557,7 +816,7 @@ index 64483c8..c6db151 100644
  // sys_execve, compat_sys_execve
  SUCOMPAT_HOOK_TYPE ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *envp)
  {
-@@ -267,7 +325,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_sys_execveat(int *fd, const char __user **filename
+@@ -267,7 +324,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_sys_execveat(int *fd, const char __user **filename
  	return 0;
  }
  
@@ -566,7 +825,7 @@ index 64483c8..c6db151 100644
  {
  	ksu_adb_root_execve_kernel((void *)filename_ptr, (void *)envp);
  #ifdef CONFIG_KSU_HACK_ARM64_BRANCH_LINK
-@@ -275,56 +333,112 @@ static __always_inline void ksu_sucompat_kernel_common(int *restrict fd, void **
+@@ -275,56 +332,115 @@ static __always_inline void ksu_sucompat_kernel_common(int *restrict fd, void **
  #endif // we defer hooking on branch link it should be caught by sys_execve first
  
  	if (!is_su_allowed((const void **)filename_ptr))
@@ -582,7 +841,9 @@ index 64483c8..c6db151 100644
 +		return 0;
  
  	constexpr char su[16] = SU_PATH;
++	constexpr char su_alt[16] = SU_PATH_ALT;
  	uint64_t *su_p = (uint64_t *)su;
++	uint64_t *su_alt_p = (uint64_t *)su_alt;
  	uint64_t *fn_p = (uint64_t *)*(char **)filename_ptr;
  
 -	// getname_flags pads this so nothing to worry about
@@ -591,8 +852,10 @@ index 64483c8..c6db151 100644
  	assume_dereferenceable((void *)fn_p, 16);
  
 -	// https://godbolt.org/z/j8Yovv6bE
- 	if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_p[1] & 0x00FFFFFFFFFFFFFFULL)))
+-	if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_p[1] & 0x00FFFFFFFFFFFFFFULL)))
 -		return;
++	if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_p[1] & 0x00FFFFFFFFFFFFFFULL) &&
++		   (fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_alt_p[1] & 0x00FFFFFFFFFFFFFFULL)))
 +		return 0;
  
  	if (unlikely(fn_p[0] != su_p[0]))
@@ -703,7 +966,7 @@ index 64483c8..c6db151 100644
  }
  
  struct filename; // take note: struct filename *filename, for do_execveat_common / do_execve_common on >= 3.14
-@@ -340,8 +454,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+@@ -340,8 +456,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_execveat(int *fd, struct filename **filename_ptr,
  
  	// first member of struct filename is char *name.
  	// char *filename = *(char **)struct_filename;
@@ -771,8 +1034,33 @@ index 9257980..485b5b1 100644
  kill_seccomp:
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
+diff --git a/kernel/include/uapi/extension.h b/kernel/include/uapi/extension.h
+index 7b57112..c37e39a 100644
+--- a/kernel/include/uapi/extension.h
++++ b/kernel/include/uapi/extension.h
+@@ -55,8 +55,10 @@ enum ksu_extension_id {
+ 	KSU_EXTENSION_CPU_SPOOF = 1,
+ 	KSU_EXTENSION_UMOUNT_PATHS = 2,
+ 	KSU_EXTENSION_DYNAMIC_MANAGER = 3,
++	/* New manager probes SUSFS via KSU_IOCTL_EXTENSION id 4. */
++	KSU_EXTENSION_SUSFS = 4,
+ 
+-	KSU_EXTENSION_MAX
++	KSU_EXTENSION_MAX = 5
+ };
+ 
+ /* Operation discriminator for the unified KSU_IOCTL_EXTENSION. */
+@@ -128,7 +130,7 @@ struct ksu_extension_umount_cmd {
+ #define KSU_UMOUNT_IO_OP_DEL  2u
+ #define KSU_UMOUNT_IO_OP_LIST 3u
+ 
+-/* IOCTL command: one ioctl, four extensions. */
++/* IOCTL command: one ioctl, five extensions. */
+ #define KSU_IOCTL_EXTENSION	 _IOC(_IOC_READ | _IOC_WRITE, 'K', 300, sizeof(struct ksu_extension_cmd))
+ 
+ /*
 diff --git a/kernel/ksu.c b/kernel/ksu.c
-index 5e320e8..6ec8ff8 100644
+index 5e320e8..6d89c93 100644
 --- a/kernel/ksu.c
 +++ b/kernel/ksu.c
 @@ -46,6 +46,10 @@
@@ -786,7 +1074,15 @@ index 5e320e8..6ec8ff8 100644
  #include "include/util.h"
  
  #include "policy/app_profile.h"
-@@ -284,6 +288,11 @@ static int __init kernelsu_init(void)
+@@ -116,6 +120,7 @@
+ 
+ // unity build
+ #include "extension/extension.c"
++#include "extension/susfs_extension.c"
+ #include "extension/cpu_spoof.c"
+ #include "extension/umount_paths.c"
+ #include "extension/dynamic_manager.c"
+@@ -284,6 +289,11 @@ static int __init kernelsu_init(void)
  		return -ENOSYS;
  	}
  

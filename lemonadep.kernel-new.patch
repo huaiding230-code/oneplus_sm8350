@@ -4,7 +4,7 @@ Date: Wed, 14 Oct 2026 23:23:00 +0800
 Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
 
 Patch-Prepared: 2026-10-14
-Patch-Updated: 2026-10-21 (Stage 3 interface audit)
+Patch-Updated: 2026-10-21 (Stage 3 interface audit + sucompat path-probe fix)
 Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 
 功能说明：
@@ -20,15 +20,15 @@ Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 ---
 # ============================================================================
 # 文件说明：SUSFS + KernelSU/SukiSU 内核侧集成补丁（kernel.patch）
-# 目标平台：OnePlus 9 / SM8350；LineageOS 23.2；Linux 5.4；SukiSU builtin
+# 目标平台：OnePlus 9 / SM8350；LineageOS 24.0；Linux 5.4；SukiSU builtin-new
 #
-# 更新日期：2026-10-20
-# 更新基线：lemonadep.kernel-new.patch；保留既有 SUSFS 和 Linux 5.4 适配内容。
+# 更新日期：2026-10-21
+# 更新基线：lemonadep.kernel-new.patch；按用户提供的 LineageOS 24.0 fs/exec.c 重新生成 exec hunk，其余 SUSFS/Linux 5.4 适配内容保留。
 # 上游来源：本次用户提供的 susfs-50-only.patch，以及配套差异说明“粘贴的文本 (1)(2).txt”。
 # 上游对应文件：kernel_patches/50_add_susfs_in_gki-android12-5.10.patch（SUSFS Linux 5.10 补丁）。
 # 
 # 本次追加修复（2026-10-20）：针对与 SukiSU builtin-new 链接时的 undefined symbol。
-# 本阶段新增：SUSFS 的 fs/open.c 与 fs/stat.c 已改用内核态 struct filename 专用 sucompat 接口；
+# 本阶段新增：SUSFS 的 fs/open.c 与 fs/stat.c 已改用内核态 struct filename 专用 sucompat 接口；路径探测钩子不再在调用点重复限制 UID，而统一由 sucompat 内部 is_su_allowed() 判定，保留 TIF_KSU_MANAGED 快路径，避免“/system/bin/su”探测被提前拦截；
 # exec/open/stat 的直接调用仅在非 syscall-table、非 ARM64 branch-link 模式启用，避免静态内联符号链接错误和重复 hook。
 # 移除新版 SukiSU 已不再提供的旧式 input/read/vfs_fstat/setresuid 入口；
 # 将 sucompat 状态检查改为 lemonadep.sukisu-new.patch 提供的查询函数；
@@ -89,10 +89,11 @@ index 910b407..d77e381 100644
  int suid_dumpable = 0;
  
  static LIST_HEAD(formats);
-@@ -1909,7 +1914,22 @@ static int do_execveat_common(int fd, struct filename *filename,
-       struct user_arg_ptr envp,
-       int flags)
+@@ -1909,7 +1914,22 @@
+ 			      struct user_arg_ptr envp,
+ 			      int flags)
  {
+-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
 +	int retval;
 +#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	int ksu_sucompat_handled = 0;
@@ -104,7 +105,6 @@ index 910b407..d77e381 100644
 +			ksu_sucompat_tmp_fd = fd;
 +	}
 +#endif
--	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
 +	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
 +#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	ksu_sucompat_execveat_finish(retval, ksu_sucompat_handled, ksu_sucompat_tmp_fd);
@@ -987,7 +987,7 @@ index 3f9f5fd..b9917cb 100644
 +#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	fname = getname_flags(filename, lookup_flags, NULL);
 +	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
-+	    ksu_su_compat_is_enabled() && __ksu_is_allow_uid_for_current(current_uid().val))
++	    ksu_su_compat_is_enabled())
 +		ksu_handle_faccessat_kernel(&dfd, &fname, &mode, NULL);
 +	/* filename_lookup consumes fname, including failure paths. */
 +	res = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
@@ -1986,7 +1986,7 @@ index 298eb77..9555f4b 100644
 +#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	fname = getname_flags(filename, lookup_flags, NULL);
 +	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
-+	    ksu_su_compat_is_enabled() && __ksu_is_allow_uid_for_current(current_uid().val))
++	    ksu_su_compat_is_enabled())
 +		ksu_handle_stat_kernel(&dfd, &fname, &flags);
 +	/* filename_lookup consumes fname, including failure paths. */
 +	error = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
