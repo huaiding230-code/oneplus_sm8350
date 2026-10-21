@@ -204,26 +204,19 @@ index 3306284..2f3191f 100644
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
-@@ -66,4 +66,5 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
-     struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
-     char dirpath[DATA_PATH_LEN];
+@@ -68,2 +68,3 @@
 -    if (!strncmp(name, "..", namelen) || !strncmp(name, ".", namelen))
 +    if ((namelen == 1 && name[0] == '.') ||
 +        (namelen == 2 && name[0] == '.' && name[1] == '.'))
          return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
-@@ -78,4 +79,4 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
-     }
- 
+@@ -80,2 +81,2 @@
 -    if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
 +    if (namelen == 8 && !memcmp(name, "base.apk", 8)) {
          if (!c->matched && is_manager_apk(dirpath))
-@@ -83,4 +84,4 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
-         return FILLDIR_ACTOR_CONTINUE;
-     }
+@@ -85,2 +86,2 @@
 -    if (d_type == DT_DIR && c->depth > 0) {
 +    if ((d_type == DT_DIR || d_type == DT_UNKNOWN) && c->depth > 0) {
          struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
-
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
 index 43c081e..7b9948b 100644
 --- a/kernel/extension/extension.c
