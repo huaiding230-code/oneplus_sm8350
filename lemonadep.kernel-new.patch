@@ -90,8 +90,8 @@ index 910b407..d77e381 100644
  
  static LIST_HEAD(formats);
 @@ -1909,7 +1914,22 @@ static int do_execveat_common(int fd, struct filename *filename,
- 					struct user_arg_ptr envp,
- 					int flags)
+       struct user_arg_ptr envp,
+       int flags)
  {
 +	int retval;
 +#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
