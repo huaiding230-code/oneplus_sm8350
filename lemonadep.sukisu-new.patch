@@ -204,16 +204,16 @@ index 3306284..2f3191f 100644
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
-@@ -68,2 +68,3 @@
+@@ -72,2 +72,3 @@
 -    if (!strncmp(name, "..", namelen) || !strncmp(name, ".", namelen))
 +    if ((namelen == 1 && name[0] == '.') ||
 +        (namelen == 2 && name[0] == '.' && name[1] == '.'))
          return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
-@@ -80,2 +81,2 @@
+@@ -86,2 +87,2 @@
 -    if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
 +    if (namelen == 8 && !memcmp(name, "base.apk", 8)) {
          if (!c->matched && is_manager_apk(dirpath))
-@@ -85,2 +86,2 @@
+@@ -92,2 +94,2 @@
 -    if (d_type == DT_DIR && c->depth > 0) {
 +    if ((d_type == DT_DIR || d_type == DT_UNKNOWN) && c->depth > 0) {
          struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
