@@ -193,47 +193,27 @@ index 3306284bdbf88b816bed0aba9b96e85377355a32..2f3191f863a55591b2bd6ad99b22ab3e
  				{
  					enum vdso_clock_mode *vd_default =
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
-index 43c081e1ec7853e7c6a74e758ce8c7116b61e210..728bd2fa6de3233467e6d45fcfb57614eb6cbbee 100644
 --- a/kernel/extension/extension.c
 +++ b/kernel/extension/extension.c
-@@ -27,6 +27,7 @@ static const char *const extension_names[KSU_EXTENSION_MAX] = {
- 	[KSU_EXTENSION_CPU_SPOOF] = "cpu_spoof",
- 	[KSU_EXTENSION_UMOUNT_PATHS] = "umount_paths",
- 	[KSU_EXTENSION_DYNAMIC_MANAGER] = "dynamic_manager",
-+	[KSU_EXTENSION_SUSFS] = "susfs",
- };
- 
- /*
-@@ -433,6 +434,11 @@ void __init ksu_extension_register_all(void)
+@@ -433,7 +433,6 @@
  		.ops = &ksu_extension_dynamic_manager_ops,
  		.io_handler = ksu_extension_dynamic_manager_io,
  	};
-+	static const struct ksu_extension_handler susfs_handler = {
-+		.extension_id = KSU_EXTENSION_SUSFS,
-+		.name = "susfs",
-+		.ops = &ksu_extension_susfs_ops,
-+	};
- 
+-
  	if (ksu_register_extension_handler(&kpm_handler))
  		pr_err("extension: failed to register kpm\n");
-@@ -442,11 +448,13 @@ void __init ksu_extension_register_all(void)
+ 	if (ksu_register_extension_handler(&cpu_spoof_handler))
+@@ -442,7 +441,6 @@
  		pr_err("extension: failed to register umount_paths\n");
  	if (ksu_register_extension_handler(&dynamic_manager_handler))
  		pr_err("extension: failed to register dynamic_manager\n");
-+	if (ksu_register_extension_handler(&susfs_handler))
-+		pr_err("extension: failed to register susfs\n");
- 
+-
  	/* Publish: any future ksu_extension_apply_forced() is now safe.
  	 * The release-store pairs with the acquire-load in
  	 * ksu_extension_apply_forced() so that, on the calling CPU,
--	 * the four ksu_register_extension_handler() writes above are
-+	 * the five ksu_register_extension_handler() writes above are
- 	 * visible before the flag is observed as set. */
- 	smp_wmb();
- 	WRITE_ONCE(extensions_registered, true);
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
---- sucompat.c.orig	2026-10-21 00:27:02.653970568 +0000
-+++ sucompat.c.fixed	2026-10-21 00:27:24.189112882 +0000
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
 @@ -1,3 +1,8 @@
 +#include <linux/fdtable.h>
 +#include <linux/file.h>
@@ -586,6 +566,32 @@ index 1706e6fb50e48b9a673bc9ecbd475c900fa2e9db..3e3f52c0fc9a051c6b8c7c26d4c26857
  
  static int sepol_expected_argc(u32 cmd);
  
+diff --git a/kernel/ksu.c b/kernel/ksu.c
+--- a/kernel/ksu.c
++++ b/kernel/ksu.c
+@@ -46,6 +46,10 @@
+ 
+ // kernel compat
+ #include "kernel_compat.h"
++
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs.h>
++#endif
+ #include "include/util.h"
+ 
+ #include "policy/app_profile.h"
+@@ -284,6 +288,11 @@
+ 		return -ENOSYS;
+ 	}
+ 
++#ifdef CONFIG_KSU_SUSFS
++	/* Initialize SUSFS work items before userspace can submit commands. */
++	susfs_init();
++#endif
++
+ #ifdef KSU_CAN_USE_MODULE_BLACKLIST
+ 	ksu_module_blacklist_init(); // Block modules early, before vendor modules are loaded in second stage.
+ #endif
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 index 925798048a86548b33ec0717b45a730a1e21a058..485b5b1d35ea2a21ca95a660f8eaeb48f27eb627 100644
 --- a/kernel/hook/setuid_hook.c
@@ -644,61 +650,6 @@ index 925798048a86548b33ec0717b45a730a1e21a058..485b5b1d35ea2a21ca95a660f8eaeb48
  kill_seccomp:
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-diff --git a/kernel/include/uapi/extension.h b/kernel/include/uapi/extension.h
-index 7b57112e3f44a8fbf37106dfe13091f6760b98d9..cff56ecb461098fa8239e65661662fe3c216c55a 100644
---- a/kernel/include/uapi/extension.h
-+++ b/kernel/include/uapi/extension.h
-@@ -55,6 +55,7 @@ enum ksu_extension_id {
- 	KSU_EXTENSION_CPU_SPOOF = 1,
- 	KSU_EXTENSION_UMOUNT_PATHS = 2,
- 	KSU_EXTENSION_DYNAMIC_MANAGER = 3,
-+	KSU_EXTENSION_SUSFS = 4,
- 
- 	KSU_EXTENSION_MAX
- };
-diff --git a/kernel/ksu.c b/kernel/ksu.c
-index 55642d78f84b01ed58037f54d19f8bc00f146a4e..380b9a90b0989ea2aefd7753372c078634ba563d 100644
---- a/kernel/ksu.c
-+++ b/kernel/ksu.c
-@@ -46,6 +46,10 @@
- 
- // kernel compat
- #include "kernel_compat.h"
-+
-+#ifdef CONFIG_KSU_SUSFS
-+#include <linux/susfs.h>
-+#endif
- #include "include/util.h"
- 
- #include "policy/app_profile.h"
-@@ -107,6 +111,7 @@
- #include "extension/cpu_spoof.h"
- #include "extension/umount_paths.h"
- #include "extension/dynamic_manager.h"
-+#include "extension/susfs_extension.h"
- #include "extension/kpm.h"
- #include "extension/kpm/kpm.h"
- #include "extension/kpm/compact.h"
-@@ -117,6 +122,7 @@
- #include "extension/cpu_spoof.c"
- #include "extension/umount_paths.c"
- #include "extension/dynamic_manager.c"
-+#include "extension/susfs_extension.c"
- #include "extension/kpm.c"
- #include "extension/kpm/kpm.c"
- #include "extension/kpm/compact.c"
-@@ -276,6 +282,11 @@ static int __init kernelsu_init(void)
- 		return -ENOSYS;
- 	}
- 
-+#ifdef CONFIG_KSU_SUSFS
-+	/* Initialize SUSFS work items before userspace can submit commands. */
-+	susfs_init();
-+#endif
-+
- #ifdef KSU_CAN_USE_MODULE_BLACKLIST
- 	ksu_module_blacklist_init(); // Block modules early, before vendor modules are loaded in second stage.
- #endif
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 index 604cad976da36938e7ee9968bd0dceaca095a78e..41895ca92da71f6ccb9cd49349254258770034fe 100644
 --- a/kernel/runtime/boot_event.c
