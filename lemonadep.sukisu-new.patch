@@ -431,7 +431,7 @@ index 0000000..39f2eed
 + * user accordingly. No additional runtime probing is needed here.
 + */
 +#include "susfs_extension.h"
-+#include "klog.h" // IWYU pragma: keep
++#include "../include/klog.h" // IWYU pragma: keep
 +
 +#include <linux/errno.h>
 +
