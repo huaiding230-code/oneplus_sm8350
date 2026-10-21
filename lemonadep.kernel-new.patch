@@ -4,7 +4,7 @@ Date: Wed, 14 Oct 2026 23:23:00 +0800
 Subject: [PATCH] kernel: integrate SUSFS for Linux 5.4
 
 Patch-Prepared: 2026-10-14
-Patch-Updated: 2026-10-20
+Patch-Updated: 2026-10-21 (Stage 3 interface audit)
 Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 
 功能说明：
@@ -28,6 +28,8 @@ Subject: [PATCH] kernel: integrate SUSFS and SukiSU hooks for Linux 5.4
 # 上游对应文件：kernel_patches/50_add_susfs_in_gki-android12-5.10.patch（SUSFS Linux 5.10 补丁）。
 # 
 # 本次追加修复（2026-10-20）：针对与 SukiSU builtin-new 链接时的 undefined symbol。
+# 本阶段新增：SUSFS 的 fs/open.c 与 fs/stat.c 已改用内核态 struct filename 专用 sucompat 接口；
+# exec/open/stat 的直接调用仅在非 syscall-table、非 ARM64 branch-link 模式启用，避免静态内联符号链接错误和重复 hook。
 # 移除新版 SukiSU 已不再提供的旧式 input/read/vfs_fstat/setresuid 入口；
 # 将 sucompat 状态检查改为 lemonadep.sukisu-new.patch 提供的查询函数；
 # 补齐 susfs_is_current_ksu_domain() 定义，并增加 SELinux SID 的延迟解析。
@@ -79,7 +81,7 @@ index 910b407..d77e381 100644
  
  #include <trace/events/sched.h>
  
-+#ifdef CONFIG_KSU
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
 +extern void ksu_sucompat_execveat_finish(int ret, int handled, int tmp_fd);
 +#endif
@@ -87,12 +89,12 @@ index 910b407..d77e381 100644
  int suid_dumpable = 0;
  
  static LIST_HEAD(formats);
-@@ -1909,7 +1914,22 @@ static int do_execveat_common(int fd, struct filename *filename,
+@@ -1909,6 +1914,21 @@ static int do_execveat_common(int fd, struct filename *filename,
  			      struct user_arg_ptr envp,
  			      int flags)
  {
 +	int retval;
-+#ifdef CONFIG_KSU
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	int ksu_sucompat_handled = 0;
 +	int ksu_sucompat_tmp_fd = -1;
 +
@@ -104,13 +106,12 @@ index 910b407..d77e381 100644
 +#endif
 -	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
 +	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
-+#ifdef CONFIG_KSU
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	ksu_sucompat_execveat_finish(retval, ksu_sucompat_handled, ksu_sucompat_tmp_fd);
 +#endif
 +	return retval;
  }
  
- int do_execve_file(struct file *file, void *__argv, void *__envp)
 diff --git a/fs/namei.c b/fs/namei.c
 index 60b0dc4..538a625 100644
 --- a/fs/namei.c
@@ -953,11 +954,11 @@ index 3f9f5fd..b9917cb 100644
  #include "internal.h"
  
 +#ifdef CONFIG_KSU
-+#ifdef CONFIG_KSU_SUSFS
-+extern int ksu_handle_faccessat(int *dfd, struct filename **filename_user, int *mode, int *flags);
++#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++extern int ksu_handle_faccessat_kernel(int *dfd, struct filename **filename_user, int *mode, int *flags);
 +extern bool ksu_su_compat_is_enabled(void);
 +extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-+#else
++#elif !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
 +#endif
 +#endif
@@ -969,10 +970,10 @@ index 3f9f5fd..b9917cb 100644
  	int res;
  	unsigned int lookup_flags = LOOKUP_FOLLOW;
  
-+#ifdef CONFIG_KSU_SUSFS
++#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	struct filename *fname;
 +#endif
-+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS)
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	ksu_handle_faccessat(&dfd, &filename, &mode, NULL);
 +#endif
  	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
@@ -982,11 +983,11 @@ index 3f9f5fd..b9917cb 100644
  
  	old_cred = override_creds(override_cred);
  retry:
-+#ifdef CONFIG_KSU_SUSFS
++#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	fname = getname_flags(filename, lookup_flags, NULL);
 +	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
 +	    ksu_su_compat_is_enabled() && __ksu_is_allow_uid_for_current(current_uid().val))
-+		ksu_handle_faccessat(&dfd, &fname, &mode, NULL);
++		ksu_handle_faccessat_kernel(&dfd, &fname, &mode, NULL);
 +	/* filename_lookup consumes fname, including failure paths. */
 +	res = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
 +#else
@@ -1920,11 +1921,11 @@ index 298eb77..9555f4b 100644
 +#include "internal.h"
 +
 +#ifdef CONFIG_KSU
-+#ifdef CONFIG_KSU_SUSFS
-+extern int ksu_handle_stat(int *dfd, struct filename **filename_user, int *flags);
++#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++extern int ksu_handle_stat_kernel(int *dfd, struct filename **filename_user, int *flags);
 +extern bool ksu_su_compat_is_enabled(void);
 +extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-+#else
++#elif !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
 +#endif
 +#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
@@ -1968,10 +1969,10 @@ index 298eb77..9555f4b 100644
  	struct path path;
  	int error = -EINVAL;
  	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
-+#ifdef CONFIG_KSU_SUSFS
++#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	struct filename *fname;
 +#endif
-+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS)
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	ksu_handle_stat(&dfd, &filename, &flags);
 +#endif
  
@@ -1981,11 +1982,11 @@ index 298eb77..9555f4b 100644
  		lookup_flags |= LOOKUP_EMPTY;
  
  retry:
-+#ifdef CONFIG_KSU_SUSFS
++#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	fname = getname_flags(filename, lookup_flags, NULL);
 +	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
 +	    ksu_su_compat_is_enabled() && __ksu_is_allow_uid_for_current(current_uid().val))
-+		ksu_handle_stat(&dfd, &fname, &flags);
++		ksu_handle_stat_kernel(&dfd, &fname, &flags);
 +	/* filename_lookup consumes fname, including failure paths. */
 +	error = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
 +#else
@@ -6342,6 +6343,7 @@ diff --git a/kernel/seccomp.c b/kernel/seccomp.c
  	if (seccomp_cache_check_allow(f, sd))
  		return SECCOMP_RET_ALLOW;
  
+
 diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
 new file mode 100644
 --- /dev/null
