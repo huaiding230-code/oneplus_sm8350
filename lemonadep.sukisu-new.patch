@@ -1,24 +1,3 @@
-From 5e63eacea80c3e5501602b2b9b4c35b9174897d3 Mon Sep 17 00:00:00 2001
-Subject: [PATCH] SukiSU builtin-new: fix SUSFS detection and sucompat paths
-
-Baseline: SukiSU-Ultra-builtin-new 5e63eacea80c3e5501602b2b9b4c35b9174897d3
-Update: 2026-10-21, follow-up to the three-stage audit.
-
-Changes:
-- Add and register SUSFS extension ID 4 expected by the new manager; its live
-  SUSFS status is still verified through the existing SUSFS status command.
-- Accept /system/xbin/su as well as /system/bin/su in sucompat path hooks.
-- Make the KPM stub path safe: no uninitialized buffer reads/copies, and an
-  empty stub version reports -EOPNOTSUPP instead of falsely passing detection.
-- Retain the Stage 2 Linux 5.4 fixes and Stage 3 exec/stat/faccessat bridge.
-
-Validation:
-- Applies cleanly to the exact builtin-new source archive identified above.
-- git diff --check passed after application.
-- This is not a claim of a full Linux 5.4/SM8350 kernel build; that source tree
-  was not part of the uploaded files.
----
-
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index 1ead162..2597813 100644
 --- a/kernel/Kconfig
@@ -202,23 +181,37 @@ index 3306284..2f3191f 100644
  				{
  					enum vdso_clock_mode *vd_default =
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
+index 1aeffbd..6390b4b 100644
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
-@@ -72,2 +72,3 @@
+@@ -69,7 +69,8 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
+     struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
+     char dirpath[DATA_PATH_LEN];
+ 
 -    if (!strncmp(name, "..", namelen) || !strncmp(name, ".", namelen))
 +    if ((namelen == 1 && name[0] == '.') ||
 +        (namelen == 2 && name[0] == '.' && name[1] == '.'))
          return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
-@@ -86,2 +87,2 @@
+ 
+     if (d_type == DT_DIR && namelen >= 8 && !strncmp(name, "vmdl", 4) && !strncmp(name + namelen - 4, ".tmp", 4)) {
+@@ -82,13 +83,13 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
+         return FILLDIR_ACTOR_CONTINUE;
+     }
+ 
 -    if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
 +    if (namelen == 8 && !memcmp(name, "base.apk", 8)) {
          if (!c->matched && is_manager_apk(dirpath))
-@@ -92,2 +94,2 @@
+             c->matched = true;
+         return FILLDIR_ACTOR_CONTINUE;
+     }
+ 
 -    if (d_type == DT_DIR && c->depth > 0) {
 +    if ((d_type == DT_DIR || d_type == DT_UNKNOWN) && c->depth > 0) {
          struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
+ 
+         if (!p) {
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
-index 43c081e..7b9948b 100644
+index 9ef241c..3ea1ae3 100644
 --- a/kernel/extension/extension.c
 +++ b/kernel/extension/extension.c
 @@ -18,6 +18,8 @@
@@ -235,106 +228,36 @@ index 43c081e..7b9948b 100644
  	[KSU_EXTENSION_UMOUNT_PATHS] = "umount_paths",
  	[KSU_EXTENSION_DYNAMIC_MANAGER] = "dynamic_manager",
 +	[KSU_EXTENSION_SUSFS] = "susfs",
+ 	[KSU_EXTENSION_VERSION_SPOOF] = "version_spoof",
  };
  
- /*
-@@ -433,7 +436,11 @@ void __init ksu_extension_register_all(void)
+@@ -434,6 +437,11 @@ void __init ksu_extension_register_all(void)
  		.ops = &ksu_extension_dynamic_manager_ops,
  		.io_handler = ksu_extension_dynamic_manager_io,
  	};
--
 +	static const struct ksu_extension_handler susfs_handler = {
 +		.extension_id = KSU_EXTENSION_SUSFS,
 +		.name = "susfs",
 +		.ops = &ksu_extension_susfs_ops,
 +	};
- 	if (ksu_register_extension_handler(&kpm_handler))
- 		pr_err("extension: failed to register kpm\n");
- 	if (ksu_register_extension_handler(&cpu_spoof_handler))
-@@ -442,7 +449,8 @@ void __init ksu_extension_register_all(void)
+ 	static const struct ksu_extension_handler version_spoof_handler = {
+         .extension_id = KSU_EXTENSION_VERSION_SPOOF,
+         .name = "version_spoof",
+@@ -450,6 +458,8 @@ void __init ksu_extension_register_all(void)
  		pr_err("extension: failed to register umount_paths\n");
  	if (ksu_register_extension_handler(&dynamic_manager_handler))
  		pr_err("extension: failed to register dynamic_manager\n");
--
 +	if (ksu_register_extension_handler(&susfs_handler))
 +		pr_err("extension: failed to register susfs\n");
- 	/* Publish: any future ksu_extension_apply_forced() is now safe.
- 	 * The release-store pairs with the acquire-load in
- 	 * ksu_extension_apply_forced() so that, on the calling CPU,
-diff --git a/kernel/extension/kpm/kpm.c b/kernel/extension/kpm/kpm.c
-index e060894..c2d9487 100644
---- a/kernel/extension/kpm/kpm.c
-+++ b/kernel/extension/kpm/kpm.c
-@@ -156,7 +156,9 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
- 	 * single allocation covering every sub-op is fine and avoids
- 	 * per-branch kfree.
- 	 */
--	struct kpm_scratch *s = kmalloc(sizeof(*s), GFP_KERNEL);
-+	/* These scratch buffers also back stubbed KPM entry points. Zero them so
-+	 * an unimplemented backend can never leak uninitialized kernel memory. */
-+	struct kpm_scratch *s = kzalloc(sizeof(*s), GFP_KERNEL);
- 	if (!s) {
- 		res = -ENOMEM;
- 		goto exit;
-@@ -192,7 +194,7 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
- 	} else if (control_code == SUKISU_KPM_NUM) {
- 		sukisu_kpm_num(&res);
- 	} else if (control_code == SUKISU_KPM_INFO) {
--		int size;
-+		int size = 0;
- 		if (arg1 == 0 || arg2 == 0) {
- 			res = -EINVAL;
- 			goto exit;
-@@ -204,6 +206,11 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
- 						  sizeof(s->kernel_name_buffer));
- 		sukisu_kpm_info(s->kernel_name_buffer, s->buf,
- 						sizeof(s->buf), &size);
-+		/* The current builtin-new backend is stubbed; size remains zero. */
-+		if (size <= 0 || size > sizeof(s->buf)) {
-+			res = -EOPNOTSUPP;
-+			goto exit;
-+		}
- 		if (!access_ok(arg2, size))
- 			goto invalid_arg;
- 		res = copy_to_user(arg2, s->buf, size);
-@@ -216,6 +223,8 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
- 		if (!access_ok(arg2, len))
- 			goto invalid_arg;
- 		sukisu_kpm_list(s->buf, sizeof(s->buf), &res);
-+		if (res < 0)
-+			goto exit;
- 		if (res > len) {
- 			res = -ENOBUFS;
- 			goto exit;
-@@ -239,9 +248,20 @@ noinline static int sukisu_handle_kpm(unsigned long control_code,
- 										 sizeof(s->kpm_args));
- 		sukisu_kpm_control(s->kpm_name, s->kpm_args, arg_len, &res);
- 	} else if (control_code == SUKISU_KPM_VERSION) {
--		sukisu_kpm_version(s->buffer, sizeof(s->buffer));
- 		unsigned int outlen = (unsigned int)arg2;
--		int len = strlen(s->buffer);
-+		int len;
-+		if (!arg1 || !outlen) {
-+			res = -EINVAL;
-+			goto exit;
-+		}
-+		sukisu_kpm_version(s->buffer, sizeof(s->buffer));
-+		s->buffer[sizeof(s->buffer) - 1] = '\0';
-+		len = strnlen(s->buffer, sizeof(s->buffer));
-+		/* An empty version means the KPM implementation is only a stub. */
-+		if (!len) {
-+			res = -EOPNOTSUPP;
-+			goto exit;
-+		}
- 		if (len >= outlen)
- 			len = outlen - 1;
- 		res = copy_to_user(arg1, s->buffer, len + 1);
+ 	if (ksu_register_extension_handler(&version_spoof_handler))
+         pr_err("extension: failed to register version_spoof\n");
+ 
 diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
 new file mode 100644
-index 0000000..39f2eed
+index 0000000..4696874
 --- /dev/null
 +++ b/kernel/extension/susfs_extension.c
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,51 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * SuSFS extension handler stub.
@@ -351,7 +274,6 @@ index 0000000..39f2eed
 + * user accordingly. No additional runtime probing is needed here.
 + */
 +#include "susfs_extension.h"
-+#include "../include/klog.h" // IWYU pragma: keep
 +
 +#include <linux/errno.h>
 +
@@ -955,32 +877,19 @@ index 9257980..485b5b1 100644
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
 diff --git a/kernel/include/uapi/extension.h b/kernel/include/uapi/extension.h
-index 7b57112..c37e39a 100644
+index aa14f33..c739fd2 100644
 --- a/kernel/include/uapi/extension.h
 +++ b/kernel/include/uapi/extension.h
-@@ -55,8 +55,10 @@ enum ksu_extension_id {
+@@ -55,6 +55,7 @@ enum ksu_extension_id {
  	KSU_EXTENSION_CPU_SPOOF = 1,
  	KSU_EXTENSION_UMOUNT_PATHS = 2,
  	KSU_EXTENSION_DYNAMIC_MANAGER = 3,
-+	/* New manager probes SUSFS via KSU_IOCTL_EXTENSION id 4. */
 +	KSU_EXTENSION_SUSFS = 4,
+ 	KSU_EXTENSION_VERSION_SPOOF = 5,
  
--	KSU_EXTENSION_MAX
-+	KSU_EXTENSION_MAX = 5
- };
- 
- /* Operation discriminator for the unified KSU_IOCTL_EXTENSION. */
-@@ -128,7 +130,7 @@ struct ksu_extension_umount_cmd {
- #define KSU_UMOUNT_IO_OP_DEL  2u
- #define KSU_UMOUNT_IO_OP_LIST 3u
- 
--/* IOCTL command: one ioctl, four extensions. */
-+/* IOCTL command: one ioctl, five extensions. */
- #define KSU_IOCTL_EXTENSION	 _IOC(_IOC_READ | _IOC_WRITE, 'K', 300, sizeof(struct ksu_extension_cmd))
- 
- /*
+ 	KSU_EXTENSION_MAX
 diff --git a/kernel/ksu.c b/kernel/ksu.c
-index 5e320e8..6d89c93 100644
+index 338fe98..998dd3a 100644
 --- a/kernel/ksu.c
 +++ b/kernel/ksu.c
 @@ -46,6 +46,10 @@
@@ -994,7 +903,7 @@ index 5e320e8..6d89c93 100644
  #include "include/util.h"
  
  #include "policy/app_profile.h"
-@@ -116,6 +120,7 @@
+@@ -117,6 +121,7 @@
  
  // unity build
  #include "extension/extension.c"
@@ -1002,7 +911,7 @@ index 5e320e8..6d89c93 100644
  #include "extension/cpu_spoof.c"
  #include "extension/umount_paths.c"
  #include "extension/dynamic_manager.c"
-@@ -284,6 +289,11 @@ static int __init kernelsu_init(void)
+@@ -286,6 +291,11 @@ static int __init kernelsu_init(void)
  		return -ENOSYS;
  	}
  
@@ -1126,10 +1035,10 @@ index a9d4f67..2e3ff39 100644
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index f5ca8c6..a765954 100644
+index d9cec3a..919b6aa 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
-@@ -663,8 +663,9 @@ static int do_get_hook_type(void __user *arg)
+@@ -665,8 +665,9 @@ static int do_get_hook_type(void __user *arg)
  	struct ksu_hook_type_cmd cmd = { 0 };
  	const char *type;
  
