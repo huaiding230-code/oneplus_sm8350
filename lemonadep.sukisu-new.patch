@@ -211,7 +211,7 @@ index 1aeffbd..6390b4b 100644
  
          if (!p) {
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
-index 9ef241c..3ea1ae3 100644
+index 05b8cb1..5e36011 100644
 --- a/kernel/extension/extension.c
 +++ b/kernel/extension/extension.c
 @@ -18,6 +18,8 @@
@@ -224,40 +224,51 @@ index 9ef241c..3ea1ae3 100644
  
  static DEFINE_MUTEX(extension_mutex);
 @@ -27,6 +29,7 @@ static const char *const extension_names[KSU_EXTENSION_MAX] = {
- 	[KSU_EXTENSION_CPU_SPOOF] = "cpu_spoof",
- 	[KSU_EXTENSION_UMOUNT_PATHS] = "umount_paths",
- 	[KSU_EXTENSION_DYNAMIC_MANAGER] = "dynamic_manager",
-+	[KSU_EXTENSION_SUSFS] = "susfs",
- 	[KSU_EXTENSION_VERSION_SPOOF] = "version_spoof",
+     [KSU_EXTENSION_CPU_SPOOF] = "cpu_spoof",
+     [KSU_EXTENSION_UMOUNT_PATHS] = "umount_paths",
+     [KSU_EXTENSION_DYNAMIC_MANAGER] = "dynamic_manager",
++    [KSU_EXTENSION_SUSFS] = "susfs",
+     [KSU_EXTENSION_VERSION_SPOOF] = "version_spoof",
  };
  
-@@ -434,6 +437,11 @@ void __init ksu_extension_register_all(void)
- 		.ops = &ksu_extension_dynamic_manager_ops,
- 		.io_handler = ksu_extension_dynamic_manager_io,
- 	};
-+	static const struct ksu_extension_handler susfs_handler = {
-+		.extension_id = KSU_EXTENSION_SUSFS,
-+		.name = "susfs",
-+		.ops = &ksu_extension_susfs_ops,
-+	};
- 	static const struct ksu_extension_handler version_spoof_handler = {
+@@ -449,7 +452,7 @@ void ksu_extension_apply_forced(void)
+              * later it must be replayed explicitly.
+              */
+             pr_warn("extension: force_extension=%s=%llu pending: handler not registered\n",
+-                    extension_names[id], forced_values[id]);
++                    extension_names[id], extension_forced_values[id]);
+             clear_bit(id, forced_pending);
+             continue;
+         }
+@@ -552,6 +555,13 @@ void __init ksu_extension_register_all(void)
+         .ops = &ksu_extension_dynamic_manager_ops,
+         .io_handler = ksu_extension_dynamic_manager_io,
+     };
++    static const struct ksu_extension_handler susfs_handler = {
++        .extension_id = KSU_EXTENSION_SUSFS,
++        .name = "susfs",
++        .caps = 0,
++        .min_api_version = 0,
++        .ops = &ksu_extension_susfs_ops,
++    };
+     static const struct ksu_extension_handler version_spoof_handler = {
          .extension_id = KSU_EXTENSION_VERSION_SPOOF,
          .name = "version_spoof",
-@@ -450,6 +458,8 @@ void __init ksu_extension_register_all(void)
- 		pr_err("extension: failed to register umount_paths\n");
- 	if (ksu_register_extension_handler(&dynamic_manager_handler))
- 		pr_err("extension: failed to register dynamic_manager\n");
-+	if (ksu_register_extension_handler(&susfs_handler))
-+		pr_err("extension: failed to register susfs\n");
- 	if (ksu_register_extension_handler(&version_spoof_handler))
+@@ -570,6 +580,8 @@ void __init ksu_extension_register_all(void)
+         pr_err("extension: failed to register umount_paths\n");
+     if (ksu_register_extension_handler(&dynamic_manager_handler))
+         pr_err("extension: failed to register dynamic_manager\n");
++    if (ksu_register_extension_handler(&susfs_handler))
++        pr_err("extension: failed to register susfs\n");
+     if (ksu_register_extension_handler(&version_spoof_handler))
          pr_err("extension: failed to register version_spoof\n");
  
 diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
 new file mode 100644
-index 0000000..4696874
+index 0000000..8cf23ab
 --- /dev/null
 +++ b/kernel/extension/susfs_extension.c
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,52 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * SuSFS extension handler stub.
@@ -274,6 +285,7 @@ index 0000000..4696874
 + * user accordingly. No additional runtime probing is needed here.
 + */
 +#include "susfs_extension.h"
++#include "../include/klog.h" // IWYU pragma: keep
 +
 +#include <linux/errno.h>
 +
@@ -877,17 +889,17 @@ index 9257980..485b5b1 100644
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
 diff --git a/kernel/include/uapi/extension.h b/kernel/include/uapi/extension.h
-index aa14f33..c739fd2 100644
+index 571c6de..47ddb5a 100644
 --- a/kernel/include/uapi/extension.h
 +++ b/kernel/include/uapi/extension.h
-@@ -55,6 +55,7 @@ enum ksu_extension_id {
- 	KSU_EXTENSION_CPU_SPOOF = 1,
- 	KSU_EXTENSION_UMOUNT_PATHS = 2,
- 	KSU_EXTENSION_DYNAMIC_MANAGER = 3,
-+	KSU_EXTENSION_SUSFS = 4,
- 	KSU_EXTENSION_VERSION_SPOOF = 5,
+@@ -98,6 +98,7 @@ enum ksu_extension_id {
+     KSU_EXTENSION_CPU_SPOOF = 1,
+     KSU_EXTENSION_UMOUNT_PATHS = 2,
+     KSU_EXTENSION_DYNAMIC_MANAGER = 3,
++    KSU_EXTENSION_SUSFS = 4,
+     KSU_EXTENSION_VERSION_SPOOF = 5,
  
- 	KSU_EXTENSION_MAX
+     KSU_EXTENSION_MAX
 diff --git a/kernel/ksu.c b/kernel/ksu.c
 index 338fe98..998dd3a 100644
 --- a/kernel/ksu.c
@@ -1035,7 +1047,7 @@ index a9d4f67..2e3ff39 100644
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index d9cec3a..919b6aa 100644
+index 0ab964a..a5f8943 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
 @@ -665,8 +665,9 @@ static int do_get_hook_type(void __user *arg)
