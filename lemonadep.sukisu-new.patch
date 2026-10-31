@@ -1,18 +1,3 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: SukiSU Patch Maintainer
-Date: Sat, 31 Oct 2026 13:35:00 +0800
-Subject: [PATCH] SukiSU builtin-new: sync SUSFS and add priority UID filter
-
-Baseline: uploaded SukiSU-Ultra-builtin-new (2).zip
-Previous integration: lemonadep.sukisu-builtin-new-v2-synced.patch
-New SUSFS source: susfs4ksu-gki-android12-5.10.zip (2026-10-29)
-
-Adds the SUSFS priority UID-filter command dispatch and refreshes package-name
-UID mappings after packages.list changes. It pairs with
-lemonadep.kernel-new-priority-uid-filter.patch. Existing KPM=n setting and all
-previous CPU spoof / SELinux hide / sucompat changes are retained.
-
----
 diff --git a/kernel/Kconfig b/kernel/Kconfig
 index 1ead162..2597813 100644
 --- a/kernel/Kconfig
@@ -79,7 +64,7 @@ index 1ead162..2597813 100644
 +
  endmenu
 diff --git a/kernel/downstream/toolkit.h b/kernel/downstream/toolkit.h
-index 0636437..374ee12 100644
+index 0636437..9a870ee 100644
 --- a/kernel/downstream/toolkit.h
 +++ b/kernel/downstream/toolkit.h
 @@ -14,6 +14,10 @@
@@ -93,7 +78,7 @@ index 0636437..374ee12 100644
  // extensions
  #define CHANGE_MANAGER_UID 	10006
  #define KSU_UMOUNT_GETSIZE 	107	// get list size // shit is u8 we cant fit 10k+ on it
-@@ -32,6 +36,84 @@ static inline int toolkit_handle_sys_reboot(int magic1, int magic2, unsigned int
+@@ -32,6 +36,81 @@ static inline int toolkit_handle_sys_reboot(int magic1, int magic2, unsigned int
  	// only root is allowed for these commands
  	if (!!current_uid().val)
  		return 0;
@@ -154,9 +139,6 @@ index 0636437..374ee12 100644
 +			susfs_add_sus_map(arg);
 +			break;
 +#endif
-+		case CMD_SUSFS_SET_PRIORITY_UID_FILTER:
-+			susfs_set_priority_uid_filter(arg);
-+			break;
 +		case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
 +			susfs_set_avc_log_spoofing(arg);
 +			break;
@@ -953,32 +935,6 @@ index 338fe98..998dd3a 100644
  #ifdef KSU_CAN_USE_MODULE_BLACKLIST
  	ksu_module_blacklist_init(); // Block modules early, before vendor modules are loaded in second stage.
  #endif
-diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
-index 8a7d780..4704ed1 100644
---- a/kernel/manager/pkg_observer.c
-+++ b/kernel/manager/pkg_observer.c
-@@ -53,6 +53,10 @@ static void ksu_rename_observer_slow(struct dentry *old_dentry, struct dentry *n
- 
- 	pr_info("renameat: %s -> %s, new path: %s\n", old_dentry->d_iname, new_dentry->d_iname, buf);
- 	track_throne(false);
-+#ifdef CONFIG_KSU_SUSFS
-+	// Refresh package-name to app-uid mappings after packages.list changes.
-+	susfs_parse_priority_app_strings();
-+#endif
- 	return;
- }
- 
-@@ -102,6 +106,10 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
- 
- 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
- 	track_throne(false);
-+#ifdef CONFIG_KSU_SUSFS
-+	// Refresh package-name to app-uid mappings after packages.list changes.
-+	susfs_parse_priority_app_strings();
-+#endif
- 	return;
- 
- slow_path:
 diff --git a/kernel/preinit/preinit.c b/kernel/preinit/preinit.c
 index 5c6c0c0..dbfae2f 100644
 --- a/kernel/preinit/preinit.c
@@ -1106,3 +1062,55 @@ index 0ab964a..a5f8943 100644
  #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
  	type = "ARM64 Branch Link Hijack";
  #elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
+
+# Priority UID Filter integration (integrated; no separate delta patch required)
+
+diff --git a/kernel/downstream/toolkit.h b/kernel/downstream/toolkit.h
+index 9a870ee..374ee12 100644
+--- a/kernel/downstream/toolkit.h
++++ b/kernel/downstream/toolkit.h
+@@ -93,6 +93,9 @@ static inline int toolkit_handle_sys_reboot(int magic1, int magic2, unsigned int
+ 			susfs_add_sus_map(arg);
+ 			break;
+ #endif
++		case CMD_SUSFS_SET_PRIORITY_UID_FILTER:
++			susfs_set_priority_uid_filter(arg);
++			break;
+ 		case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
+ 			susfs_set_avc_log_spoofing(arg);
+ 			break;
+diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
+index 8a7d780..8539fde 100644
+--- a/kernel/manager/pkg_observer.c
++++ b/kernel/manager/pkg_observer.c
+@@ -21,6 +21,10 @@
+  * reuses code from: https://github.com/tiann/KernelSU/blob/v1.0.5/kernel/core_hook.c#L188
+  */
+ 
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs.h>
++#endif
++
+ static void *system_dir_inode_ptr = nullptr;
+ 
+ static noinline void ksu_grab_data_system_inode()
+@@ -53,6 +57,9 @@ static void ksu_rename_observer_slow(struct dentry *old_dentry, struct dentry *n
+ 
+ 	pr_info("renameat: %s -> %s, new path: %s\n", old_dentry->d_iname, new_dentry->d_iname, buf);
+ 	track_throne(false);
++#ifdef CONFIG_KSU_SUSFS
++	susfs_parse_priority_app_strings();
++#endif
+ 	return;
+ }
+ 
+@@ -102,6 +109,9 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
+ 
+ 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
+ 	track_throne(false);
++#ifdef CONFIG_KSU_SUSFS
++	susfs_parse_priority_app_strings();
++#endif
+ 	return;
+ 
+ slow_path:
