@@ -1,15 +1,8 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: SukiSU Patch Maintainer
-Date: Sat, 31 Oct 2026 20:20:00 +0800
-Subject: [PATCH] SukiSU builtin-new: integrate SUSFS Priority UID Filter
-
-Full replacement patch: preserves the previously synced upstream/SUSFS integration and adds Priority UID Filter command dispatch plus package UID re-resolution.
-
 diff --git a/kernel/Kconfig b/kernel/Kconfig
-index 1ead162..2597813 100644
+index 1ead162..9b24bd6 100644
 --- a/kernel/Kconfig
 +++ b/kernel/Kconfig
-@@ -154,4 +154,60 @@ config KPM
+@@ -154,4 +154,67 @@ config KPM
      select KALLSYMS
      select KALLSYMS_ALL
  
@@ -67,11 +60,18 @@ index 1ead162..2597813 100644
 +	depends on KSU_SUSFS
 +	default y
 +
++config KSU_SUSFS_PRIORITY_UID_FILTER
++	bool "SUSFS priority UID filter"
++	depends on KSU_SUSFS
++	default y
++	help
++	  Hide selected application UIDs from priority-related system calls.
++
 +endmenu
 +
  endmenu
 diff --git a/kernel/downstream/toolkit.h b/kernel/downstream/toolkit.h
-index 0636437..374ee12 100644
+index 0636437..052b4ac 100644
 --- a/kernel/downstream/toolkit.h
 +++ b/kernel/downstream/toolkit.h
 @@ -14,6 +14,10 @@
@@ -85,7 +85,7 @@ index 0636437..374ee12 100644
  // extensions
  #define CHANGE_MANAGER_UID 	10006
  #define KSU_UMOUNT_GETSIZE 	107	// get list size // shit is u8 we cant fit 10k+ on it
-@@ -32,6 +36,84 @@ static inline int toolkit_handle_sys_reboot(int magic1, int magic2, unsigned int
+@@ -32,6 +36,86 @@ static inline int toolkit_handle_sys_reboot(int magic1, int magic2, unsigned int
  	// only root is allowed for these commands
  	if (!!current_uid().val)
  		return 0;
@@ -146,9 +146,11 @@ index 0636437..374ee12 100644
 +			susfs_add_sus_map(arg);
 +			break;
 +#endif
++		#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +		case CMD_SUSFS_SET_PRIORITY_UID_FILTER:
 +			susfs_set_priority_uid_filter(arg);
 +			break;
++		#endif
 +		case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
 +			susfs_set_avc_log_spoofing(arg);
 +			break;
@@ -221,7 +223,7 @@ index 1aeffbd..6390b4b 100644
  
          if (!p) {
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
-index 05b8cb1..5e36011 100644
+index f00aebd..5e36011 100644
 --- a/kernel/extension/extension.c
 +++ b/kernel/extension/extension.c
 @@ -18,6 +18,8 @@
@@ -241,15 +243,6 @@ index 05b8cb1..5e36011 100644
      [KSU_EXTENSION_VERSION_SPOOF] = "version_spoof",
  };
  
-@@ -449,7 +452,7 @@ void ksu_extension_apply_forced(void)
-              * later it must be replayed explicitly.
-              */
-             pr_warn("extension: force_extension=%s=%llu pending: handler not registered\n",
--                    extension_names[id], forced_values[id]);
-+                    extension_names[id], extension_forced_values[id]);
-             clear_bit(id, forced_pending);
-             continue;
-         }
 @@ -552,6 +555,13 @@ void __init ksu_extension_register_all(void)
          .ops = &ksu_extension_dynamic_manager_ops,
          .io_handler = ksu_extension_dynamic_manager_io,
@@ -524,7 +517,7 @@ index 1706e6f..3e3f52c 100644
  static int sepol_expected_argc(u32 cmd);
  
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index 64483c8..cecec0b 100644
+index 4efbf91..2ddc40f 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -1,3 +1,8 @@
@@ -688,7 +681,7 @@ index 64483c8..cecec0b 100644
 +static __always_inline int ksu_sucompat_kernel_common(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
  {
  	ksu_adb_root_execve_kernel((void *)filename_ptr, (void *)envp);
- #ifdef CONFIG_KSU_HACK_ARM64_BRANCH_LINK
+ #if !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 @@ -275,56 +332,115 @@ static __always_inline void ksu_sucompat_kernel_common(int *restrict fd, void **
  #endif // we defer hooking on branch link it should be caught by sys_execve first
  
@@ -778,7 +771,7 @@ index 64483c8..cecec0b 100644
 +	 * redirect through, e.g. the ARM64 branch-link path above). */
 +	write_sulog('x');
  #ifdef CONFIG_KSU_FEATURE_SULOG
- 	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, NULL, GFP_KERNEL);
+ 	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
  #endif
 -	if (!!escape_with_root_profile())
 -		return;
@@ -946,7 +939,7 @@ index 338fe98..998dd3a 100644
  	ksu_module_blacklist_init(); // Block modules early, before vendor modules are loaded in second stage.
  #endif
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
-index 8a7d780..8539fde 100644
+index 8a7d780..1a74995 100644
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
 @@ -21,6 +21,10 @@
@@ -964,7 +957,7 @@ index 8a7d780..8539fde 100644
  
  	pr_info("renameat: %s -> %s, new path: %s\n", old_dentry->d_iname, new_dentry->d_iname, buf);
  	track_throne(false);
-+#ifdef CONFIG_KSU_SUSFS
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER)
 +	susfs_parse_priority_app_strings();
 +#endif
  	return;
@@ -974,91 +967,12 @@ index 8a7d780..8539fde 100644
  
  	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
  	track_throne(false);
-+#ifdef CONFIG_KSU_SUSFS
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER)
 +	susfs_parse_priority_app_strings();
 +#endif
  	return;
  
  slow_path:
-diff --git a/kernel/preinit/preinit.c b/kernel/preinit/preinit.c
-index 5c6c0c0..dbfae2f 100644
---- a/kernel/preinit/preinit.c
-+++ b/kernel/preinit/preinit.c
-@@ -12,13 +12,16 @@ static bool is_selinux_setup(const char __user *const __user *argv_user)
- 	if (!argv_user)
- 		return false;
- 
-+	arg = NULL;
- 	if (is_compat_task()) {
- 		uint32_t __user *compat_argv_user = (uint32_t __user *)argv_user;
- 		uint32_t arg32_p;
--		get_user(arg32_p, compat_argv_user + 1);
--		arg = (void *)(uintptr_t)arg32_p;
--	} else
--		get_user(arg, argv_user + 1);
-+		if (get_user(arg32_p, compat_argv_user + 1))
-+			return false;
-+		arg = (const char __user *)(uintptr_t)arg32_p;
-+	} else if (get_user(arg, argv_user + 1)) {
-+		return false;
-+	}
- 
- 	if (!arg)
- 		return false;
-@@ -93,8 +96,10 @@ static noinline void ksu_preinit_handle_kexecve(void **filename, void *kargv)
- 	kthread_run(ksu_disable_preinit_branch, nullptr, "kthread");
- 
- 	int fd = ksu_stage_preinit_binary();
--	if (fd < 0)
-+	if (fd < 0) {
- 		pr_info("preinit: get fd failed: %d\n", fd);
-+		return;
-+	}
- 
- 	char fd_path[32];
- 	int len = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-@@ -111,8 +116,11 @@ static noinline void ksu_preinit_handle_kexecve(void **filename, void *kargv)
- 	__builtin_memcpy(*filename, fd_path, len + 1);
- #endif
- 	void __user *filename_user = userspace_stack_buffer(fd_path, len + 1);
--	if (!filename_user)
-+	if (!filename_user) {
-+		ksu_close_fd(fd);
-+		pr_err("preinit: cannot allocate user stack path\n");
- 		return;
-+	}
- 
- 	pr_info("preinit: syscall(SYS_execve, (long)\"%s\", 0x%lx, NULL);\n", fd_path, (uintptr_t)*(void ***)u_argv);
- 
-@@ -146,8 +154,10 @@ static noinline void ksu_preinit_handle_uexecve(const char __user **filename, vo
- 	kthread_run(ksu_disable_preinit_branch, nullptr, "kthread");
- 
- 	int fd = ksu_stage_preinit_binary();
--	if (fd < 0)
-+	if (fd < 0) {
- 		pr_info("preinit: get fd failed: %d\n", fd);
-+		return;
-+	}
- 
- 	char fd_path[32];
- 	int len = snprintf(fd_path, sizeof(fd_path), "/proc/self/fd/%d", fd);
-@@ -160,8 +170,14 @@ static noinline void ksu_preinit_handle_uexecve(const char __user **filename, vo
- 	}
- 	path_put(&p);
- 
--	void *orig = *filename;
--	*filename = userspace_stack_buffer(fd_path, len + 1);
-+	void *orig = (void *)*filename;
-+	void __user *redirected_filename = userspace_stack_buffer(fd_path, len + 1);
-+	if (!redirected_filename) {
-+		ksu_close_fd(fd);
-+		pr_err("preinit: cannot allocate user stack path\n");
-+		return;
-+	}
-+	*filename = redirected_filename;
- 
- 	pr_info("preinit: syscall(SYS_execve, (long)\"%s\", 0x%lx, NULL);\n", fd_path, (uintptr_t)*(void ***)u_argv);
- 
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 index 604cad9..41895ca 100644
 --- a/kernel/runtime/boot_event.c
@@ -1076,10 +990,10 @@ index 604cad9..41895ca 100644
  
  	// Sanity check for safe mode only needs early-boot input samples.
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index a9d4f67..2e3ff39 100644
+index 07b9717..e62b98c 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -151,6 +151,11 @@ static int apply_kernelsu_rules_fn(void *ptr)
+@@ -153,6 +153,11 @@ static int apply_kernelsu_rules_fn(void *ptr)
  void apply_kernelsu_rules()
  {
  	struct policydb *db;
@@ -1091,8 +1005,80 @@ index a9d4f67..2e3ff39 100644
  
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
+diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index 01068b3..ef2f76c 100644
+--- a/kernel/selinux/sepolicy.c
++++ b/kernel/selinux/sepolicy.c
+@@ -18,6 +18,11 @@
+ // Declaration
+ //////////////////////////////////////////////////////
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern int susfs_add_sus_type(const char *secctx, u32 type_value);
++extern int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 orig_avd_allowed);
++#endif
++
+ static struct avtab_node *get_avtab_node(struct policydb *db, struct avtab_key *key,
+                                          struct avtab_extended_perms *xperms);
+ 
+@@ -339,6 +344,11 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
+ 				return false;
+ 		}
+ 
++		#ifdef CONFIG_KSU_SUSFS
++		susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
++							cls->value, node->datum.u.data);
++		#endif
++
+ 		if (invert) {
+ 			if (perm)
+ 				node->datum.u.data &= ~(1U << (perm->value - 1));
+@@ -804,6 +814,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 				1);
+ 	}
+ 
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ 
+ #elif defined(KSU_TYPE_VAL_TO_STRUCT_ARRAY)
+@@ -852,6 +866,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 				1);
+ 	}
+ 
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ 
+ #elif defined(CONFIG_IS_HW_HISI)
+@@ -903,6 +921,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 				1);
+ 	}
+ 
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ #else
+ 	// flex_array is not extensible, we need to create a new bigger one instead
+@@ -1013,6 +1035,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 		ebitmap_set_bit(&db->role_val_to_struct[i]->types, value - 1,
+ 				1);
+ 	}
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ #endif
+ 
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index 0ab964a..a5f8943 100644
+index 3c339ac..c4dd842 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
 @@ -665,8 +665,9 @@ static int do_get_hook_type(void __user *arg)

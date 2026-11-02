@@ -1,55 +1,28 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: SukiSU Patch Maintainer
-Date: Sat, 31 Oct 2026 20:20:00 +0800
-Subject: [PATCH] SUSFS: integrate Priority UID Filter into SM8350 5.4
+From: Kernel Patch Maintainer <noreply@example.invalid>
+Date: Mon, 2 Nov 2026 19:45:00 +0800
+Subject: [PATCH] kernel: sync SUSFS 5.10 updates for SM8350 Linux 5.4
 
-Patch-Prepared: 2026-10-14
-Patch-Updated: 2026-10-31 (Priority UID Filter integrated; duplicate diff sections removed)
-Subject: [PATCH] kernel: integrate SUSFS, SukiSU hooks and Priority UID Filter for Linux 5.4
+Target: OnePlus 9 Pro (SM8350), LineageOS 23.2, Linux 5.4.
 
-功能说明：
-- 集成 SUSFS 到 Linux 5.4 内核，包括 SUS_PATH、SUS_MOUNT 等路径与挂载隐藏相关适配。
-- 接入 SukiSU/KernelSU 所需的内核 Hook，涉及文件路径、进程信息、目录遍历、stat/statfs、umount 等内核路径。
-- 集成 cmdline、bootconfig 等信息处理相关改动，以及 SUSFS 所需的内核头文件、配置和编译接线。
-- 添加 SELinux/SELinuxFS 隐藏功能所需的内核侧适配接口，配合 lemonadep.sukisu-new.patch 使用。
+This is the complete kernel-side integration patch, updated against the
+latest supplied SukiSU builtin-new and SUSFS 5.10 sources. It retains the
+existing 5.4 SUSFS filesystem/mount implementation and adds the compatible
+5.10 updates:
+  - packages.list-based Priority UID Filter and its independent Kconfig gate;
+  - SUSFS hidden SELinux type tracking;
+  - restoration of original allowed AV permissions for SELinux queries;
+  - Linux 5.4-specific SELinux policy/status integration.
 
-说明：
-本补丁负责内核侧集成，不包含全部 SukiSU 功能实现。
-应在匹配的 Linux 5.4 内核源码上应用。
+Use together with lemonadep.sukisu-synced-20261102.patch on the matching
+LineageOS 23.2 SM8350 kernel tree.
+
+Validation: patch syntax/stat parsing passed; the kernel/sys.c and
+block/ioprio.c hunks applied cleanly to the two source files supplied by the
+user. A full kernel-tree apply check and ARM64 build have not been performed
+because the complete kernel source tree was not supplied.
 
 ---
-# ============================================================================
-# 文件说明：SUSFS + KernelSU/SukiSU 内核侧集成补丁（kernel.patch）
-# 目标平台：OnePlus 9 / SM8350；LineageOS 23.2；Linux 5.4；SukiSU builtin-new
-#
-# 更新日期：2026-10-21
-# 更新基线：lemonadep.kernel-new.patch；按用户提供的 LineageOS 23.2 fs/exec.c 重新生成 exec hunk，其余 SUSFS/Linux 5.4 适配内容保留。
-# 上游来源：本次用户提供的 susfs-50-only.patch，以及配套差异说明“粘贴的文本 (1)(2).txt”。
-# 上游对应文件：kernel_patches/50_add_susfs_in_gki-android12-5.10.patch（SUSFS Linux 5.10 补丁）。
-# 
-# 本次追加修复（2026-10-20）：针对与 SukiSU builtin-new 链接时的 undefined symbol。
-# 本阶段新增：SUSFS 的 fs/open.c 与 fs/stat.c 已改用内核态 struct filename 专用 sucompat 接口；路径探测钩子不再在调用点重复限制 UID，而统一由 sucompat 内部 is_su_allowed() 判定，保留 TIF_KSU_MANAGED 快路径，避免“/system/bin/su”探测被提前拦截；
-# exec/open/stat 的直接调用仅在非 syscall-table、非 ARM64 branch-link 模式启用，避免静态内联符号链接错误和重复 hook。
-# 移除新版 SukiSU 已不再提供的旧式 input/read/vfs_fstat/setresuid 入口；
-# 将 sucompat 状态检查改为 lemonadep.sukisu-new.patch 提供的查询函数；
-# 补齐 susfs_is_current_ksu_domain() 定义，并增加 SELinux SID 的延迟解析。
-# 原有 SELinux setprocattr/current 隐藏策略预校验仍保留：
-# 在 security/selinux/hooks.c 的 selinux_setprocattr() 中，当普通应用 UID >= 10000
-# 且 ksu_selinux_hide_running 为 true 时，先以 fake_state 调用
-# security_context_to_sid() 验证写入的上下文；验证失败即返回错误，避免应用使用
-# 仅存在于被修改后的真实 SELinux policy、却不存在于隐藏策略快照中的上下文。
-#
-# 未移植内容及原因：没有整段同步上游 fs/exec.c 与 security/selinux/selinuxfs.c 的
-# Linux 5.10 专用改动，因为本补丁目标是 Linux 5.4，相关静态键、状态锁/状态页字段、
-# sucompat 回调接口与当前 builtin 适配不完全一致。其余原 kernel.patch 改动均保留。
-# 与 lemonadep.sukisu-new.patch 配套使用；builtin-new 已使用 UAPI v6，不需要额外叠加 uapi5.patch。
-#
-# 验证边界：本文件已通过 git apply --stat 格式解析；尚未在完整 SM8350 源码树中执行
-# git apply --check，也未进行 ARM64 内核编译。最终以目标仓库试应用和实际编译结果为准。
-# 后续更新提示：下一次更新请核对 SUSFS 上游该 5.10 patch 的版本/提交或文件差异，
-# 再以本文件为当前基线重新审查每个 hunk，勿把面向 Linux 5.10 的改动直接整包移植到 5.4。
-# ============================================================================
-
 
 diff --git a/drivers/Makefile b/drivers/Makefile
 index aaef17c..daaf7f1 100644
@@ -69,7 +42,7 @@ index d70980d..8540f50 100644
  	return 0;
  }
  
-+#ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +extern bool susfs_is_priority_uid_filtered(uid_t uid);
 +#endif
 +
@@ -81,7 +54,7 @@ index d70980d..8540f50 100644
  				user = current_user();
  			else
 -				user = find_user(uid);
-+#ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +			{
 +				if (current_uid().val >= 10000 && susfs_is_priority_uid_filtered(uid.val))
 +					break;
@@ -98,7 +71,7 @@ index d70980d..8540f50 100644
  				user = current_user();
  			else
 -				user = find_user(uid);
-+#ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +			{
 +				if (current_uid().val >= 10000 && susfs_is_priority_uid_filtered(uid.val))
 +					break;
@@ -2205,10 +2178,10 @@ index 8edf44a..0a20967 100644
  	 * Always return at least 1 from get_anon_bdev.
 diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
-index 0000000..0709744
+index 0000000..c03cd25
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,1994 @@
+@@ -0,0 +1,2199 @@
 +#include <linux/version.h>
 +#include <linux/cred.h>
 +#include <linux/fs.h>
@@ -2235,6 +2208,8 @@ index 0000000..0709744
 +#include <linux/limits.h>
 +#include <linux/rcupdate.h>
 +#include <linux/string.h>
++#include <linux/hash.h>
++#include <linux/vmalloc.h>
 +#include <linux/security.h>
 +#include <linux/susfs.h>
 +#include "fuse/fuse_i.h"
@@ -2274,6 +2249,134 @@ index 0000000..0709744
 +#define SUSFS_LOGI(fmt, ...) 
 +#define SUSFS_LOGE(fmt, ...) 
 +#endif
++
++static DEFINE_MUTEX(susfs_mutex_lock_sus_type);
++static DEFINE_HASHTABLE(SUS_TYPE_HLIST, 10);
++
++struct st_susfs_sus_type_hlist {
++	struct hlist_node                       node;
++};
++
++int susfs_add_sus_type(const char *secctx, u32 type_value) {
++	struct st_susfs_sus_type_hlist *new_entry, *tmp_entry;
++	struct hlist_node *tmp_hlist_node;
++	int err = 0;
++
++	mutex_lock(&susfs_mutex_lock_sus_type);
++	hash_for_each_possible_safe(SUS_TYPE_HLIST, tmp_entry, tmp_hlist_node, node, type_value) {
++		SUSFS_LOGE("secctx '%s', type_value '%u', was added before already\n",
++			secctx, type_value);
++		err = -EINVAL;
++		goto unlock;
++	}
++
++	new_entry = kzalloc(sizeof(struct st_susfs_sus_type_hlist), GFP_KERNEL);
++	if (!new_entry) {
++		err = -ENOMEM;
++		goto unlock;
++	}
++
++	hash_add_rcu(SUS_TYPE_HLIST, &new_entry->node, type_value);
++	SUSFS_LOGI("secctx '%s', type '%u', has been added to SUS_TYPE_HLIST\n",
++					secctx, type_value);
++unlock:
++	mutex_unlock(&susfs_mutex_lock_sus_type);
++	return err;
++}
++
++bool susfs_is_sus_type_rcu(u32 type_value) {
++	struct st_susfs_sus_type_hlist *entry = NULL;
++
++	hash_for_each_possible_rcu(SUS_TYPE_HLIST, entry, node, type_value) {
++		return true;
++	}
++	return false;
++}
++
++static DEFINE_MUTEX(susfs_mutex_lock_sus_avd_allowed_hlist);
++static DEFINE_HASHTABLE(SUS_AVD_ALLOWED_HLIST, 18);
++
++struct susfs_sus_av_rule {
++	struct hlist_node node;
++	u32 s_type;
++	u32 t_type;
++	u32 c_type;
++	u32 orig_avd_allowed;
++};
++
++static inline u32 susfs_av_rule_hash(u32 ssid, u32 tsid, u16 tclass)
++{
++	u32 h;
++
++	h = hash_32(ssid, 32);
++	h ^= rol32(hash_32(tsid, 32), 13);
++	h ^= rol32(hash_32((u32)tclass, 32), 19);
++
++	h += h << 13;
++	h ^= h >> 7;
++	h += h << 17;
++	h ^= h >> 5;
++
++	return h;
++}
++
++int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 orig_avd_allowed)
++{
++	struct susfs_sus_av_rule *entry, *tmp_entry;
++	struct hlist_node *tmp_hlist_node;
++	int err = 0;
++	u32 key;
++
++	mutex_lock(&susfs_mutex_lock_sus_avd_allowed_hlist);
++
++	entry = kzalloc(sizeof(*entry), GFP_ATOMIC);
++	if (!entry) {
++		err = -ENOMEM;
++		goto unlock;
++	}
++
++	key = susfs_av_rule_hash(s_type, t_type, c_type);
++	hash_for_each_possible_safe(SUS_AVD_ALLOWED_HLIST, tmp_entry, tmp_hlist_node, node, key) {
++		if (tmp_entry->s_type == s_type &&
++		    tmp_entry->t_type == t_type &&
++		    tmp_entry->c_type == c_type)
++		{
++			// Do not apply any new orig_avd_allowed for matched entry.
++			kfree(entry);
++			goto unlock;
++		}
++	}
++
++	entry->s_type = s_type;
++	entry->t_type = t_type;
++	entry->c_type = c_type;
++	entry->orig_avd_allowed = orig_avd_allowed;
++
++
++	hash_add_rcu(SUS_AVD_ALLOWED_HLIST, &entry->node, key);
++	SUSFS_LOGI("av_rule '%u %u %u %u' has been added to SUS_AVD_ALLOWED_HLIST\n",
++				s_type, t_type, c_type, orig_avd_allowed);
++unlock:
++	mutex_unlock(&susfs_mutex_lock_sus_avd_allowed_hlist);
++	return err;
++}
++
++void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_allowed)
++{
++	struct susfs_sus_av_rule *entry;
++	u32 key = susfs_av_rule_hash(s_type, t_type, c_type);
++
++	hash_for_each_possible_rcu(SUS_AVD_ALLOWED_HLIST, entry, node, key) {
++		if (entry->s_type == s_type &&
++		    entry->t_type == t_type &&
++		    entry->c_type == c_type)
++		{
++			*avd_allowed = entry->orig_avd_allowed;
++			return;
++		}
++	}
++}
++
 +
 +
 +/*
@@ -3468,6 +3571,19 @@ index 0000000..0709744
 +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 +
 +/* priority uid filter */
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
++/*****************************************/
++/* getpriority uid filter (bitmap)       */
++/*****************************************/
++/* The uids that are hidden from the apps that abuse the getpriority syscall
++ * to find out the existing uids. Only the uids within the app uid range
++ * (10000 - 19999) are supported.
++ */
++#define SUSFS_PRIORITY_UID_FILTER_MIN_UID 10000
++#define SUSFS_PRIORITY_UID_FILTER_MAX_UID 19999
++#define SUSFS_PRIORITY_UID_FILTER_UID_NUM (SUSFS_PRIORITY_UID_FILTER_MAX_UID - SUSFS_PRIORITY_UID_FILTER_MIN_UID + 1)
++#define SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_PRIORITY_UID_FILTER_UID_NUM)
++
 +struct susfs_priority_uid_filter_bitmap {
 +	struct rcu_head			rcu;
 +	unsigned long			bits[SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN];
@@ -3512,42 +3628,103 @@ index 0000000..0709744
 +}
 +
 +/*
-+ * Resolves the uid of the given app package name with the owner uid of the
-+ * data path of the app ('/data/data/<app_name>').
++ * Resolves the uid of the given app package name from /data/system/packages.list.
 + * Returns 0 on success, a negative errno on failure.
 + */
 +static int susfs_resolve_priority_app_uid(const char *app_name, uid_t *uid) {
-+	char app_path[512];
-+	struct path path;
-+	struct kstat st;
-+	int len;
-+	int ret;
++	struct file *fp;
++	char *buf = NULL;
++	char *line, *tmp, *p;
++	char *pkg_name, *uid_str;
++	loff_t pos = 0;
++	size_t size;
++	unsigned long val;
++	int ret = -ENOENT;
 +
-+	len = scnprintf(app_path, sizeof(app_path), "/data/data/%s", app_name);
-+	if (len < 0 || len >= sizeof(app_path)) {
-+		SUSFS_LOGE("the app name '%s' is too long\n", app_name);
++	if (!app_name || !*app_name || !uid)
 +		return -EINVAL;
-+	}
 +
-+	ret = kern_path(app_path, LOOKUP_FOLLOW, &path);
-+	if (ret) {
-+		SUSFS_LOGE("failed to look up '%s': %d\n", app_path, ret);
++	if (!susfs_is_valid_app_name(app_name))
++		return -EINVAL;
++
++	fp = filp_open("/data/system/packages.list", O_RDONLY | O_NOATIME, 0);
++	if (IS_ERR(fp)) {
++		ret = PTR_ERR(fp);
++		SUSFS_LOGE("failed to open /data/system/packages.list: %d\n", ret);
 +		return ret;
 +	}
 +
-+	ret = vfs_getattr(&path, &st, STATX_BASIC_STATS, 0);
-+	path_put(&path);
-+	if (ret) {
-+		SUSFS_LOGE("failed to get the attributes of '%s': %d\n", app_path, ret);
-+		return ret;
++	size = i_size_read(file_inode(fp));
++	if (size <= 0 || size > (4 * 1024 * 1024)) {
++		filp_close(fp, NULL);
++		return -EFBIG;
 +	}
 +
-+	*uid = from_kuid(&init_user_ns, st.uid);
-+	if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
-+		*uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
-+		return -EINVAL;
++	buf = vmalloc(size + 1);
++	if (!buf) {
++		filp_close(fp, NULL);
++		return -ENOMEM;
++	}
++	buf[size] = '\0';
 +
-+	return 0;
++	ret = kernel_read(fp, buf, size, &pos);
++	filp_close(fp, NULL);
++	if (ret != (int)size) {
++		vfree(buf);
++		return -EIO;
++	}
++
++	line = buf;
++	while (line && *line) {
++		p = strchr(line, '\n');
++		if (p) {
++			*p = '\0';
++			tmp = p + 1;
++		} else {
++			tmp = NULL;
++		}
++
++		/* skip empty lines */
++		if (*line == '\0' || *line == '\r') {
++			line = tmp;
++			continue;
++		}
++
++		/* packages.list format: <package> <uid> <gid> ... */
++		pkg_name = strsep(&line, " \t");
++		if (!pkg_name || *pkg_name == '\0') {
++			line = tmp;
++			continue;
++		}
++
++		uid_str = strsep(&line, " \t");
++		if (!uid_str || *uid_str == '\0') {
++			line = tmp;
++			continue;
++		}
++
++		if (!strcmp(pkg_name, app_name)) {
++			if (kstrtoul(uid_str, 10, &val)) {
++				vfree(buf);
++				return -EINVAL;
++			}
++
++			*uid = (uid_t)val % 100000;
++
++			vfree(buf);
++
++			if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
++			    *uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
++				return -EINVAL;
++
++			return 0;
++		}
++
++		line = tmp;
++	}
++
++	vfree(buf);
++	return -ENOENT;
 +}
 +
 +/*
@@ -3667,7 +3844,7 @@ index 0000000..0709744
 +
 +	if (is_uid_filter_set_before)
 +		SUSFS_LOGI("renewing the priority uid filter\n");
-+	err = susfs_parse_priority_app_names(info->app_strings, new_bitmap->bits, false);
++	err = susfs_parse_priority_app_names(info->app_strings, new_bitmap->bits, true);
 +
 +	susfs_restore_creds(orig_cred);
 +	orig_cred = NULL;
@@ -3823,6 +4000,7 @@ index 0000000..0709744
 +
 +	return false;
 +}
++#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +
 +
 +/* susfs avc log spoofing */
@@ -4494,10 +4672,10 @@ index 0000000..6bdd94c
 +#endif
 diff --git a/include/linux/susfs.h b/include/linux/susfs.h
 new file mode 100644
-index 0000000..a82c32f
+index 0000000..44a34fe
 --- /dev/null
 +++ b/include/linux/susfs.h
-@@ -0,0 +1,249 @@
+@@ -0,0 +1,264 @@
 +#ifndef KSU_SUSFS_H
 +#define KSU_SUSFS_H
 +
@@ -4522,6 +4700,7 @@ index 0000000..a82c32f
 +/********/
 +/* ENUM */
 +/********/
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 +enum UID_SCHEME {
 +	UID_NON_APP_PROC = 0,
 +	UID_ROOT_PROC_EXCEPT_SU_PROC,
@@ -4529,6 +4708,7 @@ index 0000000..a82c32f
 +	UID_UMOUNTED_APP_PROC,
 +	UID_UMOUNTED_PROC,
 +};
++#endif // #ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 +
 +/**********/
 +/* STRUCT */
@@ -4657,10 +4837,13 @@ index 0000000..a82c32f
 +#endif
 +
 +/* priority UID filter */
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
++#define SUSFS_APP_STR_BUF_SIZE 65535
 +struct st_susfs_priority_uid_filter {
 +	char                                    app_strings[SUSFS_APP_STR_BUF_SIZE];
 +	int                                     err;
 +};
++#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +
 +/* avc log spoofing */
 +struct st_susfs_avc_log_spoofing {
@@ -4732,8 +4915,18 @@ index 0000000..a82c32f
 +void susfs_add_sus_map(void __user **user_info);
 +#endif
 +
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +void susfs_set_priority_uid_filter(void __user **user_info);
 +void susfs_parse_priority_app_strings(void);
++bool susfs_is_priority_uid_filtered(uid_t uid);
++#endif // #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
++
++#ifdef CONFIG_KSU_SUSFS
++int susfs_add_sus_type(const char *secctx, u32 type_value);
++bool susfs_is_sus_type_rcu(u32 type_value);
++int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 orig_avd_allowed);
++void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_allowed);
++#endif // #ifdef CONFIG_KSU_SUSFS
 +
 +void susfs_set_avc_log_spoofing(void __user **user_info);
 +
@@ -4747,12 +4940,13 @@ index 0000000..a82c32f
 +void susfs_init(void);
 +
 +#endif
+
 diff --git a/include/linux/susfs_def.h b/include/linux/susfs_def.h
 new file mode 100644
-index 0000000..7d9b4e2
+index 0000000..84bfad8
 --- /dev/null
 +++ b/include/linux/susfs_def.h
-@@ -0,0 +1,175 @@
+@@ -0,0 +1,166 @@
 +#ifndef KSU_SUSFS_DEF_H
 +#define KSU_SUSFS_DEF_H
 +
@@ -4797,15 +4991,6 @@ index 0000000..7d9b4e2
 +#define SUSFS_MAX_VERSION_BUFSIZE 16
 +#define SUSFS_MAX_VARIANT_BUFSIZE 16
 +
-+/*****************************************/
-+/* priority UID filter (bitmap)          */
-+/*****************************************/
-+#define SUSFS_PRIORITY_UID_FILTER_MIN_UID 10000
-+#define SUSFS_PRIORITY_UID_FILTER_MAX_UID 19999
-+#define SUSFS_PRIORITY_UID_FILTER_UID_NUM \
-+	(SUSFS_PRIORITY_UID_FILTER_MAX_UID - SUSFS_PRIORITY_UID_FILTER_MIN_UID + 1)
-+#define SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_PRIORITY_UID_FILTER_UID_NUM)
-+#define SUSFS_APP_STR_BUF_SIZE 65535
 +
 +#define TRY_UMOUNT_DEFAULT 0 /* used by susfs_try_umount() */
 +#define TRY_UMOUNT_DETACH 1 /* used by susfs_try_umount() */
@@ -5381,7 +5566,7 @@ index 3ed05f0..d6c901e 100644
  	return error;
  }
  
-+#ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +extern bool susfs_is_priority_uid_filtered(uid_t uid);
 +#endif
 +
@@ -5392,7 +5577,7 @@ index 3ed05f0..d6c901e 100644
  		if (!who)
  			uid = cred->uid;
  		else if (!uid_eq(uid, cred->uid)) {
-+#ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +			if (cred->uid.val >= 10000 && susfs_is_priority_uid_filtered(uid.val))
 +				goto out_unlock;
 +#endif
@@ -5403,7 +5588,7 @@ index 3ed05f0..d6c901e 100644
  		if (!who)
  			uid = cred->uid;
  		else if (!uid_eq(uid, cred->uid)) {
-+#ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +			if (cred->uid.val >= 10000 && susfs_is_priority_uid_filtered(uid.val))
 +				goto out_unlock;
 +#endif
@@ -6440,6 +6625,138 @@ index 7e1e6bc..b8e06c9 100644
  	if (rc)
  		audit_log_format(ab, " tsid=%d", sad->tsid);
  	else {
+diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
+index 55ec178..c5f4b20 100644
+--- a/security/selinux/ss/services.c
++++ b/security/selinux/ss/services.c
+@@ -62,5 +62,10 @@
+ #include "xfrm.h"
+ #include "ebitmap.h"
+ #include "audit.h"
++#ifdef CONFIG_KSU_SUSFS
++extern bool susfs_is_current_ksu_domain(void);
++extern bool susfs_is_sus_type_rcu(u32 type_value);
++extern void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_allowed);
++#endif
+ /* Policy capability names */
+ const char *selinux_policycap_names[__POLICYDB_CAPABILITY_MAX] = {
+@@ -1081,3 +1086,7 @@
+ 	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd,
+ 				  NULL);
++#ifdef CONFIG_KSU_SUSFS
++	susfs_spoof_avd_allowed_rcu(scontext->type, tcontext->type,
++					tclass, &avd->allowed);
++#endif
+ 	map_decision(&state->ss->map, orig_tclass, avd,
+@@ -1426,2 +1426,89 @@
+ 	return sidtab_context_to_sid(sidtab, context, sid);
+ }
++
++#ifdef CONFIG_KSU_SUSFS
++/*
++ * Resolve a context like the standard SELinux parser, but reject a type that
++ * SUSFS registered as hidden.  Keep this separate from
++ * string_to_context_struct(): changing the common parser would also affect
++ * unrelated in-kernel SELinux operations.
++ */
++int susfs_security_context_to_sid(struct selinux_state *state,
++				  const char *scontext, u32 scontext_len,
++				  u32 *sid, gfp_t gfp)
++{
++	struct policydb *policydb;
++	struct sidtab *sidtab;
++	struct type_datum *typdatum;
++	struct context context;
++	char *scontext2, *p, *type_name, *type_end;
++	int rc;
++
++	if (!scontext_len)
++		return -EINVAL;
++
++	scontext2 = kmemdup_nul(scontext, scontext_len, gfp);
++	if (!scontext2)
++		return -ENOMEM;
++
++	if (!selinux_initialized(state)) {
++		int i;
++
++		for (i = 1; i < SECINITSID_NUM; i++) {
++			if (initial_sid_to_string[i] &&
++		    !strcmp(initial_sid_to_string[i], scontext2)) {
++				*sid = i;
++				goto out_free;
++			}
++		}
++		*sid = SECINITSID_KERNEL;
++		goto out_free;
++	}
++
++	*sid = SECSID_NULL;
++	read_lock(&state->ss->policy_rwlock);
++	policydb = &state->ss->policydb;
++	sidtab = state->ss->sidtab;
++
++	/* Locate the type component in user:role:type[:level]. */
++	p = strchr(scontext2, ':');
++	if (!p)
++		goto invalid_context;
++	p = strchr(p + 1, ':');
++	if (!p)
++		goto invalid_context;
++	type_name = p + 1;
++	type_end = strchr(type_name, ':');
++	if (type_end)
++		*type_end = '\0';
++	typdatum = hashtab_search(policydb->p_types.table, type_name);
++	if (type_end)
++		*type_end = ':';
++	if (typdatum && !typdatum->attribute &&
++	    susfs_is_sus_type_rcu(typdatum->value))
++		goto invalid_context;
++
++	rc = string_to_context_struct(policydb, sidtab, scontext2,
++				      &context, SECSID_NULL);
++	if (rc)
++		goto out_unlock;
++	rc = context_struct_to_sid(state, &context, sid);
++	context_destroy(&context);
++	goto out_unlock;
++
++invalid_context:
++	rc = -EINVAL;
++out_unlock:
++	read_unlock(&state->ss->policy_rwlock);
++out_free:
++	kfree(scontext2);
++	return rc;
++}
++
++int susfs_security_context_str_to_sid(struct selinux_state *state,
++				      const char *scontext, u32 *sid, gfp_t gfp)
++{
++	return susfs_security_context_to_sid(state, scontext, strlen(scontext),
++					     sid, gfp);
++}
++#endif
+@@ -2148,3 +2243,8 @@
+ 	state->ss->map.mapping = newmap.mapping;
+ 	state->ss->map.size = newmap.size;
++#ifdef CONFIG_KSU_SUSFS
++	if (susfs_is_current_ksu_domain())
++		seqno = state->ss->latest_granting;
++	else
++#endif
+ 	seqno = ++state->ss->latest_granting;
+@@ -2821,2 +2921,7 @@
+-	seqno = ++state->ss->latest_granting;
++#ifdef CONFIG_KSU_SUSFS
++	if (susfs_is_current_ksu_domain())
++		seqno = state->ss->latest_granting;
++	else
++#endif
++	seqno = ++state->ss->latest_granting;
+ 	rc = 0;
+
 diff --git a/scripts/setlocalversion b/scripts/setlocalversion
 --- a/scripts/setlocalversion
 +++ b/scripts/setlocalversion
@@ -6509,7 +6826,7 @@ index f1e1b14..fe25d25 100644
 diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
 --- a/security/selinux/hooks.c
 +++ b/security/selinux/hooks.c
-@@ -107,6 +107,11 @@
+@@ -107,4 +107,10 @@
  struct selinux_state selinux_state __rticdata;
  #else
  struct selinux_state selinux_state;
@@ -6518,10 +6835,9 @@ diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
 +#ifdef CONFIG_KSU_SUSFS
 +extern struct selinux_state fake_state;
 +extern bool ksu_selinux_hide_running __read_mostly;
++extern int susfs_security_context_to_sid(struct selinux_state *, const char *, u32, u32 *, gfp_t);
  #endif
- 
- /* SECMARK reference count */
-@@ -6474,6 +6479,11 @@
+@@ -6474,3 +6479,8 @@
  	u32 mysid = current_sid(), sid = 0, ptsid;
  	int error;
  	char *str = value;
@@ -6530,24 +6846,25 @@ diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
 +					     current_uid().val >= 10000 &&
 +					     ksu_selinux_hide_running));
 +#endif
- 
- 	/*
- 	 * Basic control over ability to set these attributes at all.
-@@ -6509,6 +6519,14 @@
+@@ -6509,6 +6519,17 @@
  			str[size-1] = 0;
  			size--;
  		}
 +#ifdef CONFIG_KSU_SUSFS
 +		if (should_check_current) {
 +			u32 tmp_sid = 0;
-+			int fake_error = security_context_to_sid(&fake_state, value, size, &tmp_sid, GFP_KERNEL);
++			int fake_error = security_context_to_sid(&fake_state, value, size,
++								 &tmp_sid, GFP_KERNEL);
 +			if (fake_error)
 +				return fake_error;
-+		}
++			error = susfs_security_context_to_sid(&selinux_state, value,
++								 size, &sid, GFP_KERNEL);
++		} else
 +#endif
  		error = security_context_to_sid(&selinux_state, value, size,
  						&sid, GFP_KERNEL);
  		if (error == -EINVAL && !strcmp(name, "fscreate")) {
+
 diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 --- a/security/selinux/selinuxfs.c
 +++ b/security/selinux/selinuxfs.c
@@ -6559,70 +6876,38 @@ diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
  #include <linux/pagemap.h>
  #include <linux/slab.h>
  #include <linux/vmalloc.h>
-@@ -126,7 +127,7 @@
- 	ssize_t length;
- 
- 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d",
+@@ -38,2 +39,9 @@
+ #include "objsec.h"
+ #include "conditional.h"
++#ifdef CONFIG_KSU_SUSFS
++extern bool ksu_selinux_hide_running __read_mostly;
++extern int susfs_security_context_to_sid(struct selinux_state *, const char *, u32, u32 *, gfp_t);
++extern int susfs_security_context_str_to_sid(struct selinux_state *, const char *, u32 *, gfp_t);
++static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size);
++static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size);
++#endif
+@@ -118,1 +126,1 @@
 -			   enforcing_enabled(fsi->state));
 +			   enforcing_enabled(ksu_selinux_hide_select_state(fsi->state)));
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
- }
- 
-@@ -136,7 +137,7 @@
- 
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
+@@ -128,1 +136,1 @@
 -	struct selinux_state *state = fsi->state;
 +	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *page = NULL;
- 	ssize_t length;
- 	int old_value, new_value;
-@@ -199,7 +200,7 @@
- 					size_t count, loff_t *ppos)
- {
- 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
+@@ -190,1 +198,1 @@
 -	struct selinux_state *state = fsi->state;
 +	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char tmpbuf[TMPBUFLEN];
- 	ssize_t length;
- 	ino_t ino = file_inode(filp)->i_ino;
-@@ -219,7 +220,7 @@
- static int sel_open_handle_status(struct inode *inode, struct file *filp)
- {
- 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
+@@ -210,1 +218,1 @@
 -	struct page    *status = selinux_kernel_status_page(fsi->state);
 +	struct page    *status = selinux_kernel_status_page(ksu_selinux_hide_select_state(fsi->state));
- 
- 	if (!status)
- 		return -ENOMEM;
-@@ -304,7 +305,7 @@
- 		goto out;
- 
- 	if (new_value) {
+@@ -295,1 +303,1 @@
 -		enforcing = enforcing_enabled(fsi->state);
 +		enforcing = enforcing_enabled(ksu_selinux_hide_select_state(fsi->state));
- 		length = selinux_disable(fsi->state);
- 		if (length)
- 			goto out;
-@@ -362,7 +363,7 @@
- 	ssize_t length;
- 
- 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d",
+@@ -355,1 +363,1 @@
 -			   security_mls_enabled(fsi->state));
 +			   security_mls_enabled(ksu_selinux_hide_select_state(fsi->state)));
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
- }
- 
-@@ -379,7 +380,7 @@
- static int sel_open_policy(struct inode *inode, struct file *filp)
- {
- 	struct selinux_fs_info *fsi = inode->i_sb->s_fs_info;
+@@ -372,1 +380,1 @@
 -	struct selinux_state *state = fsi->state;
 +	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	struct policy_load_memory *plm = NULL;
- 	int rc;
- 
-@@ -601,7 +602,7 @@
+@@ -564,7 +572,7 @@
  static ssize_t sel_write_context(struct file *file, char *buf, size_t size)
  {
  	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
@@ -6631,250 +6916,165 @@ diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
  	char *canon = NULL;
  	u32 sid, len;
  	ssize_t length;
-@@ -641,7 +642,7 @@
- 	char tmpbuf[TMPBUFLEN];
- 	ssize_t length;
- 
--	length = scnprintf(tmpbuf, TMPBUFLEN, "%u", fsi->state->checkreqprot);
-+	length = scnprintf(tmpbuf, TMPBUFLEN, "%u", ksu_selinux_hide_select_state(fsi->state)->checkreqprot);
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
- }
- 
-@@ -675,7 +676,7 @@
- 	if (sscanf(page, "%u", &new_value) != 1)
- 		goto out;
- 
--	fsi->state->checkreqprot = new_value ? 1 : 0;
-+	ksu_selinux_hide_select_state(fsi->state)->checkreqprot = new_value ? 1 : 0;
- 	length = count;
+@@ -593,5 +602,42 @@
+ 	length = len;
  out:
- 	kfree(page);
-@@ -692,7 +693,7 @@
- 					size_t count, loff_t *ppos)
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *oldcon = NULL, *newcon = NULL, *taskcon = NULL;
- 	char *req = NULL;
- 	u32 osid, nsid, tsid;
-@@ -821,7 +822,7 @@
- static ssize_t sel_write_access(struct file *file, char *buf, size_t size)
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *scon = NULL, *tcon = NULL;
- 	u32 ssid, tsid;
- 	u16 tclass;
-@@ -872,7 +873,7 @@
- static ssize_t sel_write_create(struct file *file, char *buf, size_t size)
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *scon = NULL, *tcon = NULL;
- 	char *namebuf = NULL, *objname = NULL;
- 	u32 ssid, tsid, newsid;
-@@ -976,7 +977,7 @@
- static ssize_t sel_write_relabel(struct file *file, char *buf, size_t size)
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *scon = NULL, *tcon = NULL;
- 	u32 ssid, tsid, newsid;
- 	u16 tclass;
-@@ -1037,7 +1038,7 @@
- static ssize_t sel_write_user(struct file *file, char *buf, size_t size)
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *con = NULL, *user = NULL, *ptr;
- 	u32 sid, *sids = NULL;
- 	ssize_t length;
-@@ -1102,7 +1103,7 @@
- static ssize_t sel_write_member(struct file *file, char *buf, size_t size)
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *scon = NULL, *tcon = NULL;
- 	u32 ssid, tsid, newsid;
- 	u16 tclass;
-@@ -1197,7 +1198,7 @@
- 	if (!page)
- 		goto out_unlock;
- 
--	cur_enforcing = security_get_bool_value(fsi->state, index);
-+	cur_enforcing = security_get_bool_value(ksu_selinux_hide_select_state(fsi->state), index);
- 	if (cur_enforcing < 0) {
- 		ret = cur_enforcing;
- 		goto out_unlock;
-@@ -1361,7 +1362,7 @@
- 	if (!page)
- 		goto out;
- 
--	ret = security_get_bools(fsi->state, &num, &names, &values);
-+	ret = security_get_bools(ksu_selinux_hide_select_state(fsi->state), &num, &names, &values);
- 	if (ret)
- 		goto out;
- 
-@@ -1387,7 +1388,7 @@
- 		}
- 
- 		isec = selinux_inode(inode);
--		ret = security_genfs_sid(fsi->state, "selinuxfs", page,
-+		ret = security_genfs_sid(ksu_selinux_hide_select_state(fsi->state), "selinuxfs", page,
- 					 SECCLASS_FILE, &sid);
- 		if (ret) {
- 			pr_warn_ratelimited("SELinux: no sid found, defaulting to security isid for %s\n",
-@@ -1425,7 +1426,7 @@
- 					    size_t count, loff_t *ppos)
- {
- 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char tmpbuf[TMPBUFLEN];
- 	ssize_t length;
- 
-@@ -1440,7 +1441,7 @@
- 
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *page;
- 	ssize_t ret;
- 	unsigned int new_value;
-@@ -1479,7 +1480,7 @@
- 				       size_t count, loff_t *ppos)
- {
- 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *page;
- 	ssize_t length;
- 
-@@ -1499,7 +1500,7 @@
- 					size_t count, loff_t *ppos)
- {
- 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *page;
- 	ssize_t length;
- 
-@@ -1679,7 +1680,7 @@
- 	ssize_t ret;
- 
- 	sid = file_inode(file)->i_ino&SEL_INO_MASK;
--	ret = security_sid_to_context(fsi->state, sid, &con, &len);
-+	ret = security_sid_to_context(ksu_selinux_hide_select_state(fsi->state), sid, &con, &len);
- 	if (ret)
- 		return ret;
- 
-@@ -1775,7 +1776,7 @@
- 	ssize_t length;
- 	unsigned long i_ino = file_inode(file)->i_ino;
- 
--	value = security_policycap_supported(fsi->state, i_ino & SEL_INO_MASK);
-+	value = security_policycap_supported(ksu_selinux_hide_select_state(fsi->state), i_ino & SEL_INO_MASK);
- 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d", value);
- 
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
-@@ -1793,7 +1794,7 @@
- 	int i, rc, nperms;
- 	char **perms;
- 
--	rc = security_get_permissions(fsi->state, objclass, &perms, &nperms);
-+	rc = security_get_permissions(ksu_selinux_hide_select_state(fsi->state), objclass, &perms, &nperms);
- 	if (rc)
- 		return rc;
- 
-@@ -1867,7 +1868,7 @@
- 	/* delete any existing entries */
- 	sel_remove_entries(fsi->class_dir);
- 
--	rc = security_get_classes(fsi->state, &classes, &nclasses);
-+	rc = security_get_classes(ksu_selinux_hide_select_state(fsi->state), &classes, &nclasses);
- 	if (rc)
- 		return rc;
- 
-diff --git a/include/linux/ksu_selinux_hide.h b/include/linux/ksu_selinux_hide.h
-new file mode 100644
---- /dev/null
-+++ b/include/linux/ksu_selinux_hide.h
-@@ -0,0 +1,20 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+#ifndef _LINUX_KSU_SELINUX_HIDE_H
-+#define _LINUX_KSU_SELINUX_HIDE_H
+ 	kfree(canon);
+ 	return length;
+ }
 +
-+#include <linux/kconfig.h>
-+#include <linux/version.h>
-+
-+struct selinux_state;
-+
-+#if IS_ENABLED(CONFIG_KSU) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state);
-+#else
-+static inline struct selinux_state *
-+ksu_selinux_hide_select_state(struct selinux_state *state)
++#ifdef CONFIG_KSU_SUSFS
++static ssize_t susfs_sel_write_context(struct file *file, char *buf, size_t size)
 +{
-+    return state;
++	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
++	struct selinux_state *state = fsi->state;
++	char *canon = NULL;
++	u32 sid, len;
++	ssize_t length;
++
++	length = avc_has_perm(&selinux_state, current_sid(), SECINITSID_SECURITY,
++			      SECCLASS_SECURITY, SECURITY__CHECK_CONTEXT, NULL);
++	if (length)
++		goto out;
++	length = susfs_security_context_to_sid(state, buf, size, &sid, GFP_KERNEL);
++	if (length)
++		goto out;
++	length = security_sid_to_context(state, sid, &canon, &len);
++	if (length)
++		goto out;
++	length = -ERANGE;
++	if (len > SIMPLE_TRANSACTION_LIMIT)
++		goto out;
++	memcpy(buf, canon, len);
++	length = len;
++out:
++	kfree(canon);
++	return length;
++}
++
++static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size)
++{
++	if (current_uid().val >= 10000 && ksu_selinux_hide_running)
++		return susfs_sel_write_context(file, buf, size);
++	return sel_write_context(file, buf, size);
 +}
 +#endif
-+
-+#endif /* _LINUX_KSU_SELINUX_HIDE_H */
-
-diff --git a/kernel/seccomp.c b/kernel/seccomp.c
---- a/kernel/seccomp.c
-+++ b/kernel/seccomp.c
-@@ -24,6 +24,7 @@
- #include <linux/prctl.h>
- #include <linux/sched.h>
- #include <linux/sched/task_stack.h>
-+#include <linux/ksu_seccomp.h>
- #include <linux/seccomp.h>
- #include <linux/slab.h>
- #include <linux/syscalls.h>
-@@ -371,6 +372,10 @@ static u32 seccomp_run_filters(const struct seccomp_data *sd,
- 	if (WARN_ON(f == NULL))
- 		return SECCOMP_RET_KILL_PROCESS;
- 
-+	/* Keep seccomp enabled; exempt only the exact KernelSU manager request. */
-+	if (ksu_seccomp_allow_reboot(sd))
-+		return SECCOMP_RET_ALLOW;
-+
- 	if (seccomp_cache_check_allow(f, sd))
- 		return SECCOMP_RET_ALLOW;
- 
-
-diff --git a/include/linux/ksu_seccomp.h b/include/linux/ksu_seccomp.h
-new file mode 100644
---- /dev/null
-+++ b/include/linux/ksu_seccomp.h
-@@ -0,0 +1,21 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+#ifndef _LINUX_KSU_SECCOMP_H
-+#define _LINUX_KSU_SECCOMP_H
-+
-+#include <linux/kconfig.h>
-+#include <linux/seccomp.h>
-+
-+/*
-+ * This callback is implemented by built-in SukiSU. It allows only the
-+ * manager's exact reboot-based FD-install request to pass seccomp filters.
-+ */
-+#if IS_BUILTIN(CONFIG_KSU)
-+bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd);
+@@ -725,9 +773,21 @@
+ static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
++#ifdef CONFIG_KSU_SUSFS
++static ssize_t susfs_sel_write_access(struct file *file, char *buf, size_t size);
++#endif
+ static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
+-	[SEL_ACCESS] = sel_write_access,
++#ifdef CONFIG_KSU_SUSFS
++	[SEL_ACCESS] = handle_sel_write_access,
 +#else
-+static inline bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
++	[SEL_ACCESS] = sel_write_access,
++#endif
+ 	[SEL_CREATE] = sel_write_create,
+ 	[SEL_RELABEL] = sel_write_relabel,
+ 	[SEL_USER] = sel_write_user,
+ 	[SEL_MEMBER] = sel_write_member,
+-	[SEL_CONTEXT] = sel_write_context,
++	[SEL_CONTEXT] =
++#ifdef CONFIG_KSU_SUSFS
++		handle_sel_write_context,
++#else
++		sel_write_context,
++#endif
+ };
+@@ -814,5 +870,53 @@
+ out:
+ 	kfree(tcon);
+ 	kfree(scon);
+ 	return length;
+ }
++
++#ifdef CONFIG_KSU_SUSFS
++static ssize_t susfs_sel_write_access(struct file *file, char *buf, size_t size)
 +{
-+	return false;
++	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
++	struct selinux_state *state = fsi->state;
++	char *scon = NULL, *tcon = NULL;
++	u32 ssid, tsid;
++	u16 tclass;
++	struct av_decision avd;
++	ssize_t length;
++
++	length = avc_has_perm(&selinux_state, current_sid(), SECINITSID_SECURITY,
++			      SECCLASS_SECURITY, SECURITY__COMPUTE_AV, NULL);
++	if (length)
++		goto out;
++	scon = kzalloc(size + 1, GFP_KERNEL);
++	tcon = kzalloc(size + 1, GFP_KERNEL);
++	if (!scon || !tcon) {
++		length = -ENOMEM;
++		goto out;
++	}
++	length = -EINVAL;
++	if (sscanf(buf, "%s %s %hu", scon, tcon, &tclass) != 3)
++		goto out;
++	length = susfs_security_context_str_to_sid(state, scon, &ssid, GFP_KERNEL);
++	if (length)
++		goto out;
++	length = susfs_security_context_str_to_sid(state, tcon, &tsid, GFP_KERNEL);
++	if (length)
++		goto out;
++	security_compute_av_user(state, ssid, tsid, tclass, &avd);
++	length = scnprintf(buf, SIMPLE_TRANSACTION_LIMIT, "%x %x %x %x %u %x",
++			   avd.allowed, 0xffffffff, avd.auditallow, avd.auditdeny,
++			   avd.seqno, avd.flags);
++out:
++	kfree(tcon);
++	kfree(scon);
++	return length;
++}
++
++static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size)
++{
++	if (current_uid().val >= 10000 && ksu_selinux_hide_running)
++		return susfs_sel_write_access(file, buf, size);
++	return sel_write_access(file, buf, size);
 +}
 +#endif
-+
-+#endif /* _LINUX_KSU_SECCOMP_H */
+
+diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
+--- a/security/selinux/ss/status.c
++++ b/security/selinux/ss/status.c
+@@ -12,2 +12,5 @@
+ #include "avc.h"
+ #include "services.h"
++#ifdef CONFIG_KSU_SUSFS
++extern bool susfs_is_current_ksu_domain(void);
++#endif
+@@ -78,4 +82,13 @@
+ 		status = page_address(state->ss->status_page);
+ 
++#ifdef CONFIG_KSU_SUSFS
++		if (susfs_is_current_ksu_domain()) {
++			smp_wmb();
++			status->enforcing = enforcing;
++			smp_wmb();
++			mutex_unlock(&state->ss->status_lock);
++			return;
++		}
++#endif
+ 		status->sequence++;
+ 		smp_wmb();
+@@ -103,5 +116,15 @@
+ 		status = page_address(state->ss->status_page);
+ 
++#ifdef CONFIG_KSU_SUSFS
++		if (susfs_is_current_ksu_domain()) {
++			smp_wmb();
++			status->policyload = seqno;
++			status->deny_unknown = !security_get_allow_unknown(state);
++			smp_wmb();
++			mutex_unlock(&state->ss->status_lock);
++			return;
++		}
++#endif
+ 		status->sequence++;
+ 		smp_wmb();
+ 		status->policyload = seqno;
 
