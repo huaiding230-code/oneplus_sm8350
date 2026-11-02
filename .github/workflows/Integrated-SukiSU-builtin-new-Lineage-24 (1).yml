@@ -56,25 +56,20 @@ jobs:
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
           echo "[+] kernel-new.patch and binder-freezer-enable.patch applied"
 
-      # 5. 固定检出 SukiSU builtin-new 版本并应用 Linux 5.4 适配补丁；
-      #    sukisu-new.patch also defines the SUSFS Kconfig symbols so olddefconfig keeps them.
+      # 5. 检出 SukiSU builtin-new 最新版本并应用 Linux 5.4 适配补丁；
       - name: Integrate pinned SukiSU builtin-new
         shell: bash
         run: |
           set -euo pipefail
           cd "${GITHUB_WORKSPACE}/kernel_source"
           # Commit hash embedded in the newly provided builtin-new source archive (UAPI v6).
-          SUKISU_PIN="688397854f0463cfcd57b8a63502aa0c8da9a6fe"
           KSU_REPO="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
           rm -rf "${KSU_REPO}"
-          git clone --branch main --single-branch --no-checkout https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "${KSU_REPO}"
-          git -C "${KSU_REPO}" fetch origin "${SUKISU_PIN}" --depth=1
-          git -C "${KSU_REPO}" checkout --detach FETCH_HEAD
+          git clone --depth=1 --branch builtin-new https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "${KSU_REPO}"
           SUKISU_REF="$(git -C "${KSU_REPO}" rev-parse HEAD)"
-          test "${SUKISU_REF}" = "${SUKISU_PIN}"
-          echo "Using pinned SukiSU commit: ${SUKISU_REF}"
+          echo "Using SukiSU builtin-new: ${SUKISU_REF}"
           echo "SUKISU_REF=${SUKISU_REF}" >> "${GITHUB_ENV}"
-
+          
           # setup.sh would clone/pull independently; wire the already-pinned checkout directly.
           DRIVER_DIR="${GITHUB_WORKSPACE}/kernel_source/drivers"
           rm -rf "${DRIVER_DIR}/kernelsu"
