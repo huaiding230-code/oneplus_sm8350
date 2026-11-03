@@ -989,6 +989,22 @@ index 604cad9..41895ca 100644
  
  	// Sanity check for safe mode only needs early-boot input samples.
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -99,6 +99,12 @@
+ 	ksu_allow(db, "init", "adb_data_file", "file", ALL);
+ 	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
+ 
++	// Android 17: freshly staged module files (module.prop, post-fs-data.sh,
++	// service.sh, etc.) still carry the fallback "system_file" context when
++	// "init" tries to relabel them, which the rules above never covered.
++	ksu_allow(db, "init", "system_file", "file", ALL);
++	ksu_allow(db, "init", "system_file", "dir", ALL);
++
+ 	// copied from Magisk rules
+ 	// suRights
+ 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 index 07b9717..e62b98c 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
