@@ -7070,3 +7070,44 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 
 
 
+diff --git a/kernel/seccomp.c b/kernel/seccomp.c
+--- a/kernel/seccomp.c
++++ b/kernel/seccomp.c
+@@ -1227,6 +1227,17 @@
+ }
+ #endif
+ 
++#ifdef CONFIG_KSU
++#include <asm/unistd.h>
++/*
++ * Defined in kernel/hook/setuid_hook.c. Lets the KernelSU/SukiSU manager's
++ * documented magic-reboot descriptor handshake (see kernel/reboot.c) pass
++ * through an app's inherited seccomp-bpf filter untouched, instead of the
++ * manager process having its whole filter disabled.
++ */
++extern bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd);
++#endif
++
+ int __secure_computing(const struct seccomp_data *sd)
+ {
+ 	int mode = current->seccomp.mode;
+@@ -1239,6 +1250,19 @@
+ 	this_syscall = sd ? sd->nr :
+ 		syscall_get_nr(current, current_pt_regs());
+ 
++#ifdef CONFIG_KSU
++	if (unlikely(this_syscall == __NR_reboot)) {
++		struct seccomp_data sd_local;
++
++		if (!sd) {
++			populate_seccomp_data(&sd_local);
++			sd = &sd_local;
++		}
++		if (ksu_seccomp_allow_reboot(sd))
++			return 0;
++	}
++#endif
++
+ 	switch (mode) {
+ 	case SECCOMP_MODE_STRICT:
+ 		__secure_computing_strict(this_syscall);  /* may call do_exit */
