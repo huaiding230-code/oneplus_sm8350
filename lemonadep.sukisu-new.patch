@@ -991,15 +991,20 @@ index 604cad9..41895ca 100644
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -99,6 +99,12 @@
+@@ -99,6 +99,17 @@
  	ksu_allow(db, "init", "adb_data_file", "file", ALL);
  	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
  
-+	// Android 17: freshly staged module files (module.prop, post-fs-data.sh,
-+	// service.sh, etc.) still carry the fallback "system_file" context when
-+	// "init" tries to relabel them, which the rules above never covered.
++	// Android 17: freshly staged module files/dirs/symlinks (module.prop,
++	// post-fs-data.sh, service.sh, the "zygiskd" symlink, etc.) still carry
++	// the fallback "system_file" context when "init" tries to relabel them,
++	// which none of the rules above ever covered. Mirror the full class set
++	// AOSP\'s own init.te grants against ordinary file_type targets.
 +	ksu_allow(db, "init", "system_file", "file", ALL);
 +	ksu_allow(db, "init", "system_file", "dir", ALL);
++	ksu_allow(db, "init", "system_file", "lnk_file", ALL);
++	ksu_allow(db, "init", "system_file", "sock_file", ALL);
++	ksu_allow(db, "init", "system_file", "fifo_file", ALL);
 +
  	// copied from Magisk rules
  	// suRights
@@ -1108,131 +1113,3 @@ index 3c339ac..c4dd842 100644
  #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
  	type = "ARM64 Branch Link Hijack";
  #elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
-diff --git a/kernel/feature/mount_hide.c b/kernel/feature/mount_hide.c
-index 33d4e62..349ca0e 100644
---- a/kernel/feature/mount_hide.c
-+++ b/kernel/feature/mount_hide.c
-@@ -104,6 +104,10 @@ static bool ksu_mount_hide_running __read_mostly = false;
- static ksu_show_fn ksu_orig_show_vfsmnt;
- static ksu_show_fn ksu_orig_show_mountinfo;
- static ksu_show_fn ksu_orig_show_vfsstat;
-+/* SUSFS replaces proc_mounts->show for non-KSU domains when sus_mount is on. */
-+static ksu_show_fn ksu_orig_susfs_show_vfsmnt;
-+static ksu_show_fn ksu_orig_susfs_show_mountinfo;
-+static ksu_show_fn ksu_orig_susfs_show_vfsstat;
- 
- static const char *const ksu_mount_markers[] = {
- 	"/adb/", "/data/adb", "kernelsu", "magisk", "zygisk", "/debug_ramdisk",
-@@ -285,6 +289,23 @@ static int __nocfi ksu_show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
- 	return ksu_filter_show(m, mnt, ksu_orig_show_vfsstat);
- }
- 
-+/* Keep a separate wrapper for each SUSFS callback. A single mutable original
-+ * pointer would race when different proc mount files are read concurrently. */
-+static int __nocfi ksu_show_susfs_vfsmnt(struct seq_file *m, struct vfsmount *mnt)
-+{
-+	return ksu_filter_show(m, mnt, ksu_orig_susfs_show_vfsmnt);
-+}
-+
-+static int __nocfi ksu_show_susfs_mountinfo(struct seq_file *m, struct vfsmount *mnt)
-+{
-+	return ksu_filter_show(m, mnt, ksu_orig_susfs_show_mountinfo);
-+}
-+
-+static int __nocfi ksu_show_susfs_vfsstat(struct seq_file *m, struct vfsmount *mnt)
-+{
-+	return ksu_filter_show(m, mnt, ksu_orig_susfs_show_vfsstat);
-+}
-+
- enum ksu_mount_file {
- 	KSU_MOUNT_FILE_NONE = 0,
- 	KSU_MOUNT_FILE_MOUNTS,
-@@ -317,7 +338,7 @@ int ksu_mount_hide_file_permission(struct file *file, int mask)
- {
- 	struct seq_file *m;
- 	struct ksu_proc_mounts *p;
--	ksu_show_fn expected, filter;
-+	ksu_show_fn expected, filter, susfs_expected, susfs_filter;
- 
- 	if (!(mask & MAY_READ))
- 		return 0;
-@@ -328,14 +349,20 @@ int ksu_mount_hide_file_permission(struct file *file, int mask)
- 	case KSU_MOUNT_FILE_MOUNTS:
- 		expected = ksu_orig_show_vfsmnt;
- 		filter = ksu_show_vfsmnt;
-+		susfs_expected = ksu_orig_susfs_show_vfsmnt;
-+		susfs_filter = ksu_show_susfs_vfsmnt;
- 		break;
- 	case KSU_MOUNT_FILE_MOUNTINFO:
- 		expected = ksu_orig_show_mountinfo;
- 		filter = ksu_show_mountinfo;
-+		susfs_expected = ksu_orig_susfs_show_mountinfo;
-+		susfs_filter = ksu_show_susfs_mountinfo;
- 		break;
- 	case KSU_MOUNT_FILE_MOUNTSTATS:
- 		expected = ksu_orig_show_vfsstat;
- 		filter = ksu_show_vfsstat;
-+		susfs_expected = ksu_orig_susfs_show_vfsstat;
-+		susfs_filter = ksu_show_susfs_vfsstat;
- 		break;
- 	default:
- 		return 0;
-@@ -348,13 +375,22 @@ int ksu_mount_hide_file_permission(struct file *file, int mask)
- 	if (unlikely(!m || !m->private))
- 		return 0;
- 	p = m->private;
--	if (p->show == filter)
-+	if (p->show == filter || p->show == susfs_filter)
- 		return 0; /* already installed for this file */
-+	if (p->show == expected) {
-+		p->show = filter;
-+		return 0;
-+	}
-+	/* With CONFIG_KSU_SUSFS_SUS_MOUNT, non-KSU domains use susfs_show_*.
-+	 * Filter that path too, while delegating each record to the SUSFS version. */
-+	if (susfs_expected && p->show == susfs_expected) {
-+		p->show = susfs_filter;
-+		return 0;
-+	}
- 	if (unlikely(p->show != expected)) {
- 		pr_warn_once("mount_hide: proc_mounts show mismatch, not filtering\n");
- 		return 0;
- 	}
--	p->show = filter;
- 	return 0;
- }
- 
-@@ -364,6 +400,9 @@ static int ksu_mount_hide_resolve(void)
- 		"show_vfsmnt",
- 		"show_mountinfo",
- 		"show_vfsstat",
-+		"susfs_show_vfsmnt",
-+		"susfs_show_mountinfo",
-+		"susfs_show_vfsstat",
- 	};
- 	unsigned long addrs[ARRAY_SIZE(names)] = {};
- 	int ret;
-@@ -374,14 +413,21 @@ static int ksu_mount_hide_resolve(void)
- 		return ret;
- 	}
- 	if (!addrs[0] || !addrs[1] || !addrs[2]) {
--		pr_err("mount_hide: show fns unresolved (vfsmnt=%d mountinfo=%d vfsstat=%d)\n", !!addrs[0], !!addrs[1],
--			   !!addrs[2]);
-+		pr_err("mount_hide: base show fns unresolved (vfsmnt=%d mountinfo=%d vfsstat=%d)\n",
-+		       !!addrs[0], !!addrs[1], !!addrs[2]);
- 		return -ENOSYS;
- 	}
- 
- 	ksu_orig_show_vfsmnt = (ksu_show_fn)addrs[0];
- 	ksu_orig_show_mountinfo = (ksu_show_fn)addrs[1];
- 	ksu_orig_show_vfsstat = (ksu_show_fn)addrs[2];
-+	/* SUSFS callbacks are optional: they are absent when sus_mount is disabled. */
-+	ksu_orig_susfs_show_vfsmnt = (ksu_show_fn)addrs[3];
-+	ksu_orig_susfs_show_mountinfo = (ksu_show_fn)addrs[4];
-+	ksu_orig_susfs_show_vfsstat = (ksu_show_fn)addrs[5];
-+	if (addrs[3] || addrs[4] || addrs[5])
-+		pr_info("mount_hide: SUSFS proc mount callbacks resolved (%d/3)\n",
-+			!!addrs[3] + !!addrs[4] + !!addrs[5]);
- 	return 0;
- }
- 
