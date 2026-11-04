@@ -1046,13 +1046,22 @@ index 01068b3..ef2f76c 100644
  static struct avtab_node *get_avtab_node(struct policydb *db, struct avtab_key *key,
                                           struct avtab_extended_perms *xperms);
  
-@@ -339,6 +344,11 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
+@@ -339,6 +344,20 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
  				return false;
  		}
  
 +		#ifdef CONFIG_KSU_SUSFS
-+		susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
-+							cls->value, node->datum.u.data);
++		{
++			struct type_datum *init_type =
++				symtab_search(&db->p_types, "init");
++			/*
++			 * SUSFS restores this saved AV after SELinux computes it.
++			 * Caching init's pre-KSU AV would erase KSU init permissions.
++			 */
++			if (!init_type || src->value != init_type->value)
++				susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
++								  cls->value, node->datum.u.data);
++		}
 +		#endif
 +
  		if (invert) {
