@@ -1,5 +1,5 @@
 diff --git a/kernel/Kconfig b/kernel/Kconfig
-index 1ead162..4d3d1b4 100644
+index 1ead16290044f3f26f296221234e70ce3b840020..4d3d1b44b86d292f2f0be5522211be28d88e4989 100644
 --- a/kernel/Kconfig
 +++ b/kernel/Kconfig
 @@ -154,4 +154,75 @@ config KPM
@@ -79,7 +79,7 @@ index 1ead162..4d3d1b4 100644
 +
  endmenu
 diff --git a/kernel/downstream/toolkit.h b/kernel/downstream/toolkit.h
-index 0636437..052b4ac 100644
+index 06364371b356ff0a5657fea13321f2e059e0fc73..052b4ac519425ea16bccdd6a407d02bd14fec43e 100644
 --- a/kernel/downstream/toolkit.h
 +++ b/kernel/downstream/toolkit.h
 @@ -14,6 +14,10 @@
@@ -181,7 +181,7 @@ index 0636437..052b4ac 100644
  	// extensions
  	uint64_t reply = (uint64_t)*(void **)arg;
 diff --git a/kernel/extension/cpu_spoof.c b/kernel/extension/cpu_spoof.c
-index 3306284..2f3191f 100644
+index 3306284bdbf88b816bed0aba9b96e85377355a32..2f3191f863a55591b2bd6ad99b22ab3e38410dff 100644
 --- a/kernel/extension/cpu_spoof.c
 +++ b/kernel/extension/cpu_spoof.c
 @@ -165,6 +165,7 @@ static int set_spoof_cpu(const struct ksu_set_spoof_cpu_cmd *cmd)
@@ -201,7 +201,7 @@ index 3306284..2f3191f 100644
  				{
  					enum vdso_clock_mode *vd_default =
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
-index 1aeffbd..6390b4b 100644
+index 1aeffbd6187cda9cf20a48a5477433598c57ffd0..6390b4b6304516ee98f25f0725efa9f0ae669f4e 100644
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
 @@ -69,7 +69,8 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
@@ -231,7 +231,7 @@ index 1aeffbd..6390b4b 100644
  
          if (!p) {
 diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
-index f00aebd..5e36011 100644
+index f00aebd97deccbc54cd77e6a1f2b7012556dc757..5e36011167253fc5a8d7a52b899d58863b98c096 100644
 --- a/kernel/extension/extension.c
 +++ b/kernel/extension/extension.c
 @@ -18,6 +18,8 @@
@@ -274,8 +274,103 @@ index f00aebd..5e36011 100644
      if (ksu_register_extension_handler(&version_spoof_handler))
          pr_err("extension: failed to register version_spoof\n");
  
+diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..8cf23ab374f2f73970497a8e772caf9aa6f3cee1
+--- /dev/null
++++ b/kernel/extension/susfs_extension.c
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SuSFS extension handler stub.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. Its presence is advertised by the
++ * mere fact that this handler is registered with the extension
++ * subsystem — the framework itself sets `supported = true`
++ * whenever a handler is found, and `ops->get` only fills the
++ * optional value field.
++ *
++ * The SuSFS sub-screen independently checks whether the SuSFS
++ * module is installed (via `ksud susfs status`) and prompts the
++ * user accordingly. No additional runtime probing is needed here.
++ */
++#include "susfs_extension.h"
++#include "../include/klog.h" // IWYU pragma: keep
++
++#include <linux/errno.h>
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value)
++{
++    if (value)
++        *value = 0;
++    return 0;
++}
++
++int ksu_extension_susfs_set(u32 extension_id, u64 value)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_wipe(u32 extension_id)
++{
++    return -EOPNOTSUPP;
++}
++
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value)
++{
++    /* No-op: SuSFS state is managed entirely by the userspace
++     * module management flow, not by force_extension=. */
++}
++
++const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
++    .get = ksu_extension_susfs_get,
++    .set = NULL,
++};
+diff --git a/kernel/extension/susfs_extension.h b/kernel/extension/susfs_extension.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..d2bdbf6f489001d12c22db4a835c9aa2bd184c1b
+--- /dev/null
++++ b/kernel/extension/susfs_extension.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * SuSFS extension handler.
++ *
++ * This is a thin shim that bridges the kernel extension subsystem
++ * (kernel/extension/extension.c) with the SuSFS module. The
++ * extension framework sets `supported = true` whenever a handler
++ * is registered; ops->get only fills the optional value field.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. The SuSFS sub-screen independently
++ * probes `ksud susfs status` to determine whether the module is
++ * actually installed.
++ */
++#ifndef __KSU_H_EXTENSION_SUSFS
++#define __KSU_H_EXTENSION_SUSFS
++
++#include <linux/types.h>
++
++#include "extension.h"
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value);
++int ksu_extension_susfs_set(u32 extension_id, u64 value);
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg);
++int ksu_extension_susfs_wipe(u32 extension_id);
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value);
++
++/* ops table consumed by ksu_register_extension_handler() in extension.c */
++extern const struct ksu_extension_handler_ops ksu_extension_susfs_ops;
++
++#endif /* __KSU_H_EXTENSION_SUSFS */
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index d342d42..023d9cc 100644
+index d342d42aa6ae8ca8a1bc0fc6080332cfbb31e907..023d9ccc88f4cc44e4acef79d2bd3438262ec406 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
 @@ -179,6 +179,97 @@ extern struct selinux_state selinux_state;
@@ -410,7 +505,7 @@ index d342d42..023d9cc 100644
  }
  
 diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
-index 1706e6f..3e3f52c 100644
+index 1706e6fb50e48b9a673bc9ecbd475c900fa2e9db..3e3f52c0fc9a051c6b8c7c26d4c26857d5837bae 100644
 --- a/kernel/feature/selinux_hide.h
 +++ b/kernel/feature/selinux_hide.h
 @@ -16,8 +16,15 @@
@@ -430,7 +525,7 @@ index 1706e6f..3e3f52c 100644
  static int sepol_expected_argc(u32 cmd);
  
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index 4efbf91..d2b3a92 100644
+index 4efbf91ddbd94c9eca732971408f07a47649b6fb..d2b3a92eaf6c968e2ed0f1d8688183c1b13de7ec 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -1,3 +1,8 @@
@@ -781,7 +876,7 @@ index 4efbf91..d2b3a92 100644
  
  // take note: char *filename, for do_execve_common on < 3.14
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
-index 9257980..d22b19f 100644
+index 925798048a86548b33ec0717b45a730a1e21a058..d22b19f0cbc2378aef0811569c20ee82a9dbf875 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
 @@ -1,3 +1,29 @@
@@ -845,7 +940,7 @@ index 9257980..d22b19f 100644
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
 diff --git a/kernel/include/uapi/extension.h b/kernel/include/uapi/extension.h
-index 571c6de..47ddb5a 100644
+index 571c6de82df2a315e9f038be378f33eb24513347..47ddb5af8f045849decce8bea7640067af7937ad 100644
 --- a/kernel/include/uapi/extension.h
 +++ b/kernel/include/uapi/extension.h
 @@ -98,6 +98,7 @@ enum ksu_extension_id {
@@ -857,7 +952,7 @@ index 571c6de..47ddb5a 100644
  
      KSU_EXTENSION_MAX
 diff --git a/kernel/ksu.c b/kernel/ksu.c
-index 338fe98..998dd3a 100644
+index 338fe98a3df31639aa0e87636a5def1e55b3862a..998dd3a86577c6a34c639ed94d37acc39212edee 100644
 --- a/kernel/ksu.c
 +++ b/kernel/ksu.c
 @@ -46,6 +46,10 @@
@@ -892,7 +987,7 @@ index 338fe98..998dd3a 100644
  	ksu_module_blacklist_init(); // Block modules early, before vendor modules are loaded in second stage.
  #endif
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
-index 8a7d780..1a74995 100644
+index 8a7d780c334082350868826a341798b4312b571d..1a74995914eadb8ceee2bdd7582c84edf2a6260f 100644
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
 @@ -21,6 +21,10 @@
@@ -927,7 +1022,7 @@ index 8a7d780..1a74995 100644
  
  slow_path:
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
-index 604cad9..41895ca 100644
+index 604cad976da36938e7ee9968bd0dceaca095a78e..41895ca92da71f6ccb9cd49349254258770034fe 100644
 --- a/kernel/runtime/boot_event.c
 +++ b/kernel/runtime/boot_event.c
 @@ -11,6 +11,11 @@ void on_post_fs_data(void)
@@ -943,7 +1038,7 @@ index 604cad9..41895ca 100644
  
  	// Sanity check for safe mode only needs early-boot input samples.
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index 07b9717..8e8eab4 100644
+index 07b9717d87d5e21da57a3b485b86e49b3f39a79f..8e8eab4d7e3f7355016f08c7792751dd6526c04d 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
 @@ -99,6 +99,22 @@ static int apply_kernelsu_rules_fn(void *ptr)
@@ -982,7 +1077,7 @@ index 07b9717..8e8eab4 100644
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
 diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
-index 01068b3..09ef206 100644
+index 01068b395d8002a4b601ffb03290916c317e7665..09ef20687768da2ea0f86619f99a4b6b9c5ba7a5 100644
 --- a/kernel/selinux/sepolicy.c
 +++ b/kernel/selinux/sepolicy.c
 @@ -18,6 +18,11 @@
@@ -1063,7 +1158,7 @@ index 01068b3..09ef206 100644
  #endif
  
 diff --git a/kernel/setup.sh b/kernel/setup.sh
-index 6bb2039..1bd0566 100644
+index 6bb20394137f1a04223a4b5194fd7fb70e53ea6c..1bd0566bdd26a646da4197035eea244a09884f0d 100644
 --- a/kernel/setup.sh
 +++ b/kernel/setup.sh
 @@ -2,13 +2,14 @@
@@ -1125,7 +1220,7 @@ index 6bb2039..1bd0566 100644
      # Add entries in Makefile and Kconfig if not already existing
      grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index 3c339ac..344739c 100644
+index 3c339accc7d45144605dc288f4130423e7910d98..344739cf3ba442e23938870db331b82d4cb9154d 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
 @@ -666,7 +666,8 @@ static int do_get_hook_type(void __user *arg)
@@ -1138,3 +1233,27 @@ index 3c339ac..344739c 100644
  #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
  	type = "ARM64 Branch Link Hijack";
  #elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
+diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
+index 59ec582f5d25375032e8d691e965f7646c8adf9e..3dfb34b06050d857b78e8e695e53495f8f7f8106 100644
+--- a/kernel/supercall/supercall.c
++++ b/kernel/supercall/supercall.c
+@@ -95,7 +95,18 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
+ 	void __user *arg4 = (void __user *)*arg;
+ 
+ 	if (magic2 == KSU_INSTALL_MAGIC2) {
+-		int fd = ksu_install_fd();
++		int fd;
++
++		/* The reboot transport is dispatched before CAP_SYS_BOOT checks.
++		 * Enforce the same verified-manager gate as the seccomp exception.
++		 */
++		if (!ksu_is_manager_appid_valid() ||
++		    !is_uid_manager(current_uid().val)) {
++			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
++					    current_uid().val);
++			return -EPERM;
++		}
++		fd = ksu_install_fd();
+ 
+ 		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
+ 		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
