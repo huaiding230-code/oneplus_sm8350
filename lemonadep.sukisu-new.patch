@@ -1,8 +1,8 @@
 diff --git a/kernel/Kconfig b/kernel/Kconfig
-index 1ead162..9b24bd6 100644
+index 1ead162..4d3d1b4 100644
 --- a/kernel/Kconfig
 +++ b/kernel/Kconfig
-@@ -154,4 +154,67 @@ config KPM
+@@ -154,4 +154,75 @@ config KPM
      select KALLSYMS
      select KALLSYMS_ALL
  
@@ -14,6 +14,14 @@ index 1ead162..9b24bd6 100644
 +	default y
 +	help
 +	  Enable the SUSFS kernel integration supplied by the kernel patch.
++
++config KSU_SUSFS_INLINE_HOOK
++	bool "Use SUSFS inline kernel hooks"
++	depends on KSU_SUSFS
++	default y
++	help
++	  Report and select the direct kernel hook backend integrated by the
++	  companion LineageOS kernel patch.
 +
 +config KSU_SUSFS_SUS_PATH
 +	bool "SUSFS path hiding"
@@ -266,101 +274,6 @@ index f00aebd..5e36011 100644
      if (ksu_register_extension_handler(&version_spoof_handler))
          pr_err("extension: failed to register version_spoof\n");
  
-diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
-new file mode 100644
-index 0000000..8cf23ab
---- /dev/null
-+++ b/kernel/extension/susfs_extension.c
-@@ -0,0 +1,52 @@
-+// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * SuSFS extension handler stub.
-+ *
-+ * SuSFS has no sticky bit, no ioctl passthrough, and no
-+ * force_extension= replay. Its presence is advertised by the
-+ * mere fact that this handler is registered with the extension
-+ * subsystem — the framework itself sets `supported = true`
-+ * whenever a handler is found, and `ops->get` only fills the
-+ * optional value field.
-+ *
-+ * The SuSFS sub-screen independently checks whether the SuSFS
-+ * module is installed (via `ksud susfs status`) and prompts the
-+ * user accordingly. No additional runtime probing is needed here.
-+ */
-+#include "susfs_extension.h"
-+#include "../include/klog.h" // IWYU pragma: keep
-+
-+#include <linux/errno.h>
-+
-+int ksu_extension_susfs_get(u32 extension_id, u64 *value)
-+{
-+    if (value)
-+        *value = 0;
-+    return 0;
-+}
-+
-+int ksu_extension_susfs_set(u32 extension_id, u64 value)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+int ksu_extension_susfs_io(u32 extension_id, void __user *arg)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+int ksu_extension_susfs_wipe(u32 extension_id)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value)
-+{
-+    /* No-op: SuSFS state is managed entirely by the userspace
-+     * module management flow, not by force_extension=. */
-+}
-+
-+const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
-+    .get = ksu_extension_susfs_get,
-+    .set = NULL,
-+};
-diff --git a/kernel/extension/susfs_extension.h b/kernel/extension/susfs_extension.h
-new file mode 100644
-index 0000000..d2bdbf6
---- /dev/null
-+++ b/kernel/extension/susfs_extension.h
-@@ -0,0 +1,31 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+/*
-+ * SuSFS extension handler.
-+ *
-+ * This is a thin shim that bridges the kernel extension subsystem
-+ * (kernel/extension/extension.c) with the SuSFS module. The
-+ * extension framework sets `supported = true` whenever a handler
-+ * is registered; ops->get only fills the optional value field.
-+ *
-+ * SuSFS has no sticky bit, no ioctl passthrough, and no
-+ * force_extension= replay. The SuSFS sub-screen independently
-+ * probes `ksud susfs status` to determine whether the module is
-+ * actually installed.
-+ */
-+#ifndef __KSU_H_EXTENSION_SUSFS
-+#define __KSU_H_EXTENSION_SUSFS
-+
-+#include <linux/types.h>
-+
-+#include "extension.h"
-+
-+int ksu_extension_susfs_get(u32 extension_id, u64 *value);
-+int ksu_extension_susfs_set(u32 extension_id, u64 value);
-+int ksu_extension_susfs_io(u32 extension_id, void __user *arg);
-+int ksu_extension_susfs_wipe(u32 extension_id);
-+void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value);
-+
-+/* ops table consumed by ksu_register_extension_handler() in extension.c */
-+extern const struct ksu_extension_handler_ops ksu_extension_susfs_ops;
-+
-+#endif /* __KSU_H_EXTENSION_SUSFS */
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 index d342d42..023d9cc 100644
 --- a/kernel/feature/selinux_hide.c
@@ -517,7 +430,7 @@ index 1706e6f..3e3f52c 100644
  static int sepol_expected_argc(u32 cmd);
  
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index 4efbf91..2ddc40f 100644
+index 4efbf91..d2b3a92 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -1,3 +1,8 @@
@@ -673,72 +586,94 @@ index 4efbf91..2ddc40f 100644
  // sys_execve, compat_sys_execve
  SUCOMPAT_HOOK_TYPE ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *envp)
  {
-@@ -267,7 +324,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_sys_execveat(int *fd, const char __user **filename
+@@ -267,64 +324,145 @@ SUCOMPAT_HOOK_TYPE ksu_handle_sys_execveat(int *fd, const char __user **filename
  	return 0;
  }
  
 -static __always_inline void ksu_sucompat_kernel_common(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
-+static __always_inline int ksu_sucompat_kernel_common(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
++static __always_inline int ksu_sucompat_kernel_common(int *restrict fd,
++							void **restrict filename_ptr,
++							void *restrict argv,
++							void *restrict envp,
++							int *restrict flags,
++							const char *function_name)
  {
  	ksu_adb_root_execve_kernel((void *)filename_ptr, (void *)envp);
  #if !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-@@ -275,56 +332,115 @@ static __always_inline void ksu_sucompat_kernel_common(int *restrict fd, void **
- #endif // we defer hooking on branch link it should be caught by sys_execve first
++	/* builtin-new ZIP4 uses the three-argument preinit hook. */
+ 	ksu_preinit_kernel_execve_hook(filename_ptr, argv, envp);
+-#endif // we defer hooking on branch link it should be caught by sys_execve first
++#endif /* we defer hooking on branch link; it should be caught by sys_execve first */
  
  	if (!is_su_allowed((const void **)filename_ptr))
 -		return;
-+		return 0;
- 
- 	if (!!fd && fd != (int *)AT_FDCWD && *fd != AT_FDCWD)
+-
+-	if (!!fd && fd != (int *)AT_FDCWD && *fd != AT_FDCWD)
 -		return;
 +		return 0;
  
- 	if (!!flags && !!*flags)
+-	if (!!flags && !!*flags)
 -		return;
++	if (fd && fd != (int *)AT_FDCWD && *fd != AT_FDCWD)
 +		return 0;
  
- 	constexpr char su[16] = SU_PATH;
-+	constexpr char su_alt[16] = SU_PATH_ALT;
- 	uint64_t *su_p = (uint64_t *)su;
-+	uint64_t *su_alt_p = (uint64_t *)su_alt;
- 	uint64_t *fn_p = (uint64_t *)*(char **)filename_ptr;
+-	constexpr char su[16] = SU_PATH;
+-	uint64_t *su_p = (uint64_t *)su;
+-	uint64_t *fn_p = (uint64_t *)*(char **)filename_ptr;
++	if (flags && *flags)
++		return 0;
  
 -	// getname_flags pads this so nothing to worry about
-+	/* getname_flags() provides a padded kernel filename buffer. */
- 	assume_restricted((void *)su_p, (void *)fn_p);
- 	assume_dereferenceable((void *)fn_p, 16);
+-	assume_restricted((void *)su_p, (void *)fn_p);
+-	assume_dereferenceable((void *)fn_p, 16);
++	{
++		constexpr char su[16] = SU_PATH;
++		constexpr char su_alt[16] = SU_PATH_ALT;
++		uint64_t *su_p = (uint64_t *)su;
++		uint64_t *su_alt_p = (uint64_t *)su_alt;
++		uint64_t *fn_p = (uint64_t *)*(char **)filename_ptr;
++
++		/* getname_flags() provides a padded kernel filename buffer. */
++		assume_restricted((void *)su_p, (void *)fn_p);
++		assume_dereferenceable((void *)fn_p, 16);
++
++		if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) !=
++			   (su_p[1] & 0x00FFFFFFFFFFFFFFULL) &&
++			   (fn_p[1] & 0x00FFFFFFFFFFFFFFULL) !=
++			   (su_alt_p[1] & 0x00FFFFFFFFFFFFFFULL)))
++			return 0;
++
++		/* /system/bin/su and /system/xbin/su share the first word. */
++		if (unlikely(fn_p[0] != su_p[0]))
++			return 0;
++	}
  
 -	// https://godbolt.org/z/j8Yovv6bE
 -	if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_p[1] & 0x00FFFFFFFFFFFFFFULL)))
 -		return;
-+	if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_p[1] & 0x00FFFFFFFFFFFFFFULL) &&
-+		   (fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_alt_p[1] & 0x00FFFFFFFFFFFFFFULL)))
-+		return 0;
- 
- 	if (unlikely(fn_p[0] != su_p[0]))
--		return;
-+		return 0;
- 
--	// we only handle execve here after removing vfs_statx hook for >= 6.1
--	write_sulog('x');
-+	/* This hook runs inside do_execveat_common(). Use the fd-based ksud
-+	 * exec path: opening by path after cred/SELinux changes is fragile,
-+	 * and the SU-session fd must only be installed after exec succeeds
-+	 * (see ksu_sucompat_execveat_finish, called from fs/exec.c).
++	/* This hook runs inside do_execveat_common(). Prefer an fd-based ksud
++	 * exec path so path resolution is not repeated after credential changes.
++	 * The SU-session fd is installed only after exec succeeds.
 +	 */
 +#if !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	if (fd && flags) {
 +		int tmp_fd;
 +		struct file *ksud_file;
 +		const struct cred *old_cred;
-+
+ 
+-	if (unlikely(fn_p[0] != su_p[0]))
+-		return;
 +		write_sulog('x');
 +#ifdef CONFIG_KSU_FEATURE_SULOG
-+		ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, NULL, GFP_KERNEL);
++		/* ZIP4 changed the SULOG emit signature to (event, path, uid, gfp). */
++		ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
 +#endif
 +		tmp_fd = get_unused_fd_flags(O_CLOEXEC);
 +		if (tmp_fd < 0) {
-+			pr_err("su_compat: allocate ksud fd failed: %d\n", tmp_fd);
++			constexpr char sh[16] = SH_PATH;
++			pr_err("su_compat: allocate ksud fd failed: %d; falling back to sh\n",
++			       tmp_fd);
++			memcpy_inline(*filename_ptr, sh, sizeof(sh));
 +			return 0;
 +		}
 +
@@ -746,8 +681,11 @@ index 4efbf91..2ddc40f 100644
 +		ksud_file = filp_open(KSUD_PATH, O_PATH, 0);
 +		revert_creds(old_cred);
 +		if (IS_ERR(ksud_file)) {
-+			pr_err("su_compat: open ksud failed: %ld\n", PTR_ERR(ksud_file));
++			constexpr char sh[16] = SH_PATH;
++			pr_err("su_compat: open ksud failed: %ld; falling back to sh\n",
++			       PTR_ERR(ksud_file));
 +			put_unused_fd(tmp_fd);
++			memcpy_inline(*filename_ptr, sh, sizeof(sh));
 +			return 0;
 +		}
 +
@@ -767,9 +705,10 @@ index 4efbf91..2ddc40f 100644
 +	}
 +#endif /* direct do_execveat_common integration */
  
-+	/* Legacy non-do_execveat_common hook fallback (no fd/flags slot to
-+	 * redirect through, e.g. the ARM64 branch-link path above). */
-+	write_sulog('x');
+-	// we only handle execve here after removing vfs_statx hook for >= 6.1
++	/* Legacy hook fallback for non-inline exec backends. */
+ 	write_sulog('x');
+-
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
  #endif
@@ -778,41 +717,49 @@ index 4efbf91..2ddc40f 100644
 +	if (escape_with_root_profile())
 +		return 0;
  
- 	ksu_install_su_fd(); // ksu#3679
--
--	// NOTE: we only check file existence, not exec success!
--	struct path kpath;
--	if (!!kern_path("/data/adb/ksud", 0, &kpath))
--		goto no_ksud;
--
--	path_put(&kpath);
+-	ksu_install_su_fd(); // ksu#3679
++	ksu_install_su_fd(); /* ksu#3679 */
 +	{
 +		struct path kpath;
-+		if (!!kern_path(KSUD_PATH, 0, &kpath)) {
++
++		if (kern_path(KSUD_PATH, 0, &kpath)) {
 +			constexpr char sh[16] = SH_PATH;
 +			memcpy_inline(*filename_ptr, sh, sizeof(sh));
-+			pr_info("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "");
++			pr_info("su_compat: %s su->sh!%s\n", function_name,
++				(is_compat_task()) ? " [compat]" : "");
 +			return 0;
 +		}
 +		path_put(&kpath);
 +	}
- 	pr_info("su_compat: %s su->ksud!%s\n", function_name, (is_compat_task()) ? " [compat]" : "");
- 	constexpr char ksud[16] = KSUD_PATH;
- 	memcpy_inline(*filename_ptr, ksud, sizeof(ksud));
--	return;
+ 
+-	// NOTE: we only check file existence, not exec success!
+-	struct path kpath;
+-	if (!!kern_path("/data/adb/ksud", 0, &kpath))
+-		goto no_ksud;
++	pr_info("su_compat: %s su->ksud!%s\n", function_name,
++		(is_compat_task()) ? " [compat]" : "");
++	{
++		constexpr char ksud[16] = KSUD_PATH;
++		memcpy_inline(*filename_ptr, ksud, sizeof(ksud));
++	}
 +	return 0;
 +}
+ 
+-	path_put(&kpath);
+-	pr_info("su_compat: %s su->ksud!%s\n", function_name, (is_compat_task()) ? " [compat]" : "");
+-	constexpr char ksud[16] = KSUD_PATH;
+-	memcpy_inline(*filename_ptr, ksud, sizeof(ksud));
+-	return;
++void ksu_sucompat_execveat_finish(int ret, int handled, int tmp_fd)
++{
++	if (!handled)
++		return;
  
 -no_ksud:
 -	pr_info("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
 -	constexpr char sh[16] = SH_PATH;
 -	memcpy_inline(*filename_ptr, sh, sizeof(sh));
 -	return;
-+void ksu_sucompat_execveat_finish(int ret, int handled, int tmp_fd)
-+{
-+	if (!handled)
-+		return;
-+
 +	if (ret == 0) {
 +		int su_fd = ksu_install_su_fd();
 +		if (su_fd < 0)
@@ -823,7 +770,7 @@ index 4efbf91..2ddc40f 100644
  }
  
  struct filename; // take note: struct filename *filename, for do_execveat_common / do_execve_common on >= 3.14
-@@ -340,8 +456,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+@@ -340,8 +478,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_execveat(int *fd, struct filename **filename_ptr,
  
  	// first member of struct filename is char *name.
  	// char *filename = *(char **)struct_filename;
@@ -834,33 +781,40 @@ index 4efbf91..2ddc40f 100644
  
  // take note: char *filename, for do_execve_common on < 3.14
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
-index 9257980..485b5b1 100644
+index 9257980..d22b19f 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -1,3 +1,22 @@
+@@ -1,3 +1,29 @@
 +#include <asm/unistd.h>
 +
 +/*
 + * Called by the Linux seccomp core before evaluating installed filters.
-+ * Only the manager's exact reboot-based KernelSU FD request may pass; all
-+ * other syscalls and reboot arguments remain subject to the inherited filter.
++ * Allow only the two reboot-syscall transports that the kernel intercepts:
++ * the manager's exact KernelSU FD handshake, and root-only SUSFS commands.
++ * Normal reboot requests and every other syscall remain filtered.
 + */
 +bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
 +{
-+	if (!sd || sd->nr != __NR_reboot)
++	if (!sd || sd->nr != __NR_reboot ||
++	    (__u32)sd->args[0] != KSU_INSTALL_MAGIC1)
 +		return false;
 +
-+	if ((__u32)sd->args[0] != KSU_INSTALL_MAGIC1 ||
-+	    (__u32)sd->args[1] != KSU_INSTALL_MAGIC2)
-+		return false;
++	if ((__u32)sd->args[1] == KSU_INSTALL_MAGIC2)
++		return ksu_is_manager_appid_valid() &&
++		       is_uid_manager(current_uid().val);
 +
-+	return ksu_is_manager_appid_valid() && is_uid_manager(current_uid().val);
++#ifdef CONFIG_KSU_SUSFS
++	if ((__u32)sd->args[1] == SUSFS_MAGIC)
++		return current_uid().val == 0;
++#endif
++
++	return false;
 +}
 +
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +33,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -13,10 +39,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -879,7 +833,7 @@ index 9257980..485b5b1 100644
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +49,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -25,10 +55,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	ksu_handle_umount(new, old);
  	return;
  
@@ -989,9 +943,10 @@ index 604cad9..41895ca 100644
  
  	// Sanity check for safe mode only needs early-boot input samples.
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 07b9717..8e8eab4 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -99,6 +99,22 @@
+@@ -99,6 +99,22 @@ static int apply_kernelsu_rules_fn(void *ptr)
  	ksu_allow(db, "init", "adb_data_file", "file", ALL);
  	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
  
@@ -1014,11 +969,7 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
  	// copied from Magisk rules
  	// suRights
  	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
-diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index 07b9717..e62b98c 100644
---- a/kernel/selinux/rules.c
-+++ b/kernel/selinux/rules.c
-@@ -153,6 +153,11 @@ static int apply_kernelsu_rules_fn(void *ptr)
+@@ -153,6 +169,11 @@ static int apply_kernelsu_rules_fn(void *ptr)
  void apply_kernelsu_rules()
  {
  	struct policydb *db;
@@ -1031,7 +982,7 @@ index 07b9717..e62b98c 100644
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
 diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
-index 01068b3..ef2f76c 100644
+index 01068b3..09ef206 100644
 --- a/kernel/selinux/sepolicy.c
 +++ b/kernel/selinux/sepolicy.c
 @@ -18,6 +18,11 @@
@@ -1067,7 +1018,7 @@ index 01068b3..ef2f76c 100644
  		if (invert) {
  			if (perm)
  				node->datum.u.data &= ~(1U << (perm->value - 1));
-@@ -804,6 +814,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+@@ -804,6 +823,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
  				1);
  	}
  
@@ -1078,7 +1029,7 @@ index 01068b3..ef2f76c 100644
  	return true;
  
  #elif defined(KSU_TYPE_VAL_TO_STRUCT_ARRAY)
-@@ -852,6 +866,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+@@ -852,6 +875,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
  				1);
  	}
  
@@ -1089,7 +1040,7 @@ index 01068b3..ef2f76c 100644
  	return true;
  
  #elif defined(CONFIG_IS_HW_HISI)
-@@ -903,6 +921,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+@@ -903,6 +930,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
  				1);
  	}
  
@@ -1100,7 +1051,7 @@ index 01068b3..ef2f76c 100644
  	return true;
  #else
  	// flex_array is not extensible, we need to create a new bigger one instead
-@@ -1013,6 +1035,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+@@ -1013,6 +1044,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
  		ebitmap_set_bit(&db->role_val_to_struct[i]->types, value - 1,
  				1);
  	}
@@ -1111,17 +1062,77 @@ index 01068b3..ef2f76c 100644
  	return true;
  #endif
  
+diff --git a/kernel/setup.sh b/kernel/setup.sh
+index 6bb2039..1bd0566 100644
+--- a/kernel/setup.sh
++++ b/kernel/setup.sh
+@@ -2,13 +2,14 @@
+ set -eu
+ 
+ GKI_ROOT=$(pwd)
++SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
++SUKISU_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+ 
+ display_usage() {
+-    echo "Usage: $0 [--cleanup | <commit-or-tag>]"
+-    echo "  --cleanup:              Cleans up previous modifications made by the script."
+-    echo "  <commit-or-tag>:        Sets up or updates the KernelSU to specified tag or commit."
++    echo "Usage: $0 [--cleanup | -h | --help]"
++    echo "  --cleanup:              Removes the driver link and build-file entries."
+     echo "  -h, --help:             Displays this usage information."
+-    echo "  (no args):              Sets up or updates the KernelSU environment to the latest tagged version."
++    echo "  (no args):              Links drivers/kernelsu to this checked-out SukiSU source tree."
+ }
+ 
+ initialize_variables() {
+@@ -31,28 +32,23 @@ perform_cleanup() {
+     [ -L "$DRIVER_DIR/kernelsu" ] && rm "$DRIVER_DIR/kernelsu" && echo "[-] Symlink removed."
+     grep -q "kernelsu" "$DRIVER_MAKEFILE" && sed -i '/kernelsu/d' "$DRIVER_MAKEFILE" && echo "[-] Makefile reverted."
+     grep -q "drivers/kernelsu/Kconfig" "$DRIVER_KCONFIG" && sed -i '/drivers\/kernelsu\/Kconfig/d' "$DRIVER_KCONFIG" && echo "[-] Kconfig reverted."
+-    if [ -d "$GKI_ROOT/KernelSU" ]; then
+-        rm -rf "$GKI_ROOT/KernelSU" && echo "[-] KernelSU directory deleted."
+-    fi
+ }
+ 
+ # Sets up or update KernelSU environment
+ setup_kernelsu() {
+-    echo "[+] Setting up KernelSU..."
+-    test -d "$GKI_ROOT/KernelSU" || git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra && echo "[+] Repository cloned."
+-    cd "$GKI_ROOT/KernelSU"
+-    git stash && echo "[-] Stashed current changes."
+-    if [ "$(git status | grep -Po 'v\d+(\.\d+)*' | head -n1)" ]; then
+-        git checkout main && echo "[-] Switched to main branch."
++    if [ "$#" -gt 0 ]; then
++        echo '[ERROR] Checkout the desired SukiSU branch/commit before running setup; setup.sh no longer fetches another repository.'
++        exit 2
+     fi
+-    git pull && echo "[+] Repository updated."
+-    if [ -z "${1-}" ]; then
+-        git checkout "$(git describe --abbrev=0 --tags)" && echo "[-] Checked out latest tag."
+-    else
+-        git checkout "$1" && echo "[-] Checked out $1." || echo "[-] Checkout default branch"
++
++    if [ ! -d "$SUKISU_ROOT/kernel" ]; then
++        echo "[ERROR] SukiSU kernel source not found: $SUKISU_ROOT/kernel"
++        exit 127
+     fi
++
++    echo "[+] Using checked-out SukiSU source: $SUKISU_ROOT"
+     cd "$DRIVER_DIR"
+-    ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$GKI_ROOT/KernelSU/kernel")" "kernelsu" && echo "[+] Symlink created."
++    ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$SUKISU_ROOT/kernel")" "kernelsu" && echo "[+] Symlink created."
+ 
+     # Add entries in Makefile and Kconfig if not already existing
+     grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index 3c339ac..c4dd842 100644
+index 3c339ac..344739c 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
-@@ -665,8 +665,9 @@ static int do_get_hook_type(void __user *arg)
- 	struct ksu_hook_type_cmd cmd = { 0 };
+@@ -666,7 +666,8 @@ static int do_get_hook_type(void __user *arg)
  	const char *type;
  
--#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK)
+ #if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK)
 -	type = "SUSFS Inline Hook";
-+#if defined(CONFIG_KSU_SUSFS)
 +	/* This builtin integration uses explicit in-kernel callsites, not inline patching. */
 +	type = "Manual";
  #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)

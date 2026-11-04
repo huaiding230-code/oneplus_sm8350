@@ -1,26 +1,28 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Kernel Patch Maintainer <noreply@example.invalid>
 Date: Mon, 2 Nov 2026 19:45:00 +0800
-Subject: [PATCH] kernel: sync SUSFS 5.10 updates for SM8350 Linux 5.4
+Subject: [PATCH] kernel: integrate SukiSU builtin-new and SUSFS for Android 17
 
-Target: OnePlus 9 Pro (SM8350), LineageOS 23.2, Linux 5.4.
+Target: OnePlus 9 Pro (SM8350), LineageOS 24.0 / Android 17, Linux 5.4.
 
-This is the kernel-side integration patch intended for the matching SukiSU
-builtin-new integration. It retains the existing 5.4 SUSFS filesystem/mount
-implementation and adds the compatible 5.10 updates:
+This is the complete kernel-side integration patch, updated against the
+latest supplied SukiSU builtin-new and SUSFS 5.10 sources. It retains the
+existing 5.4 SUSFS filesystem/mount implementation and adds the compatible
+5.10 updates:
   - packages.list-based Priority UID Filter and its independent Kconfig gate;
   - SUSFS hidden SELinux type tracking;
   - restoration of original allowed AV permissions for SELinux queries;
-  - Linux 5.4-specific SELinux policy/status integration.
+  - Linux 5.4-specific SELinux policy/status integration;
+  - manager-only seccomp exception for the exact KernelSU reboot-FD request.
 
-Use together with lemonadep.sukisu-synced-20261102.patch on the matching
-LineageOS 23.2 SM8350 kernel tree.
+Apply only in the LineageOS 24.0 SM8350 kernel tree. Apply the separate
+lemonadep-sukisu-builtin-new-android17-integrated.patch in the checked-out
+SukiSU-Ultra builtin-new repository before running its kernel/setup.sh.
 
-Validation: the patch parses; the four supplied SELinux baseline files pass
-`git apply --check --whitespace=error` with zero fuzz. The SELinux SUSFS type
-lookup holds an RCU read lock while using the RCU hash lookup. A full kernel-
-tree apply check and ARM64 build have not been performed because the complete
-kernel tree was not supplied.
+Validation: patch syntax/stat parsing passed. The complete LineageOS 24.0
+kernel source tree was not supplied, so a full-tree apply check and ARM64
+build have not been performed. Do not treat patch parsing as compile validation.
+
 ---
 
 diff --git a/drivers/Makefile b/drivers/Makefile
@@ -962,116 +964,11 @@ index 7df9ad4..f4f2572 100644
  		seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
  			   inode_mark->wd, inode->i_ino, inode->i_sb->s_dev,
  			   inotify_mark_user_mask(mark));
-diff --git a/fs/stat.c b/fs/stat.c
---- a/fs/stat.c
-+++ b/fs/stat.c
-@@ -17,9 +17,27 @@
- #include <linux/syscalls.h>
- #include <linux/pagemap.h>
- #include <linux/compat.h>
-+#ifdef CONFIG_KSU_SUSFS
-+#include <linux/susfs_def.h>
-+#endif
- 
- #include <linux/uaccess.h>
- #include <asm/unistd.h>
-+#include "internal.h"
-+
-+#ifdef CONFIG_KSU
-+#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-+extern int ksu_handle_stat_kernel(int *dfd, struct filename **filename_user, int *flags);
-+extern bool ksu_su_compat_is_enabled(void);
-+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
-+#elif !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-+extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
-+#endif
-+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-+extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
-+extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask);
-+#endif
-+#endif
- 
- /**
-  * generic_fillattr - Fill in the basic attributes from the inode struct
-@@ -77,12 +95,28 @@
- 	if (IS_AUTOMOUNT(inode))
- 		stat->attributes |= STATX_ATTR_AUTOMOUNT;
- 
-+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-+	{
-+		int error = 0;
-+		bool is_fuse = false;
-+		if (inode->i_op->getattr)
-+			error = inode->i_op->getattr(path, stat, request_mask, query_flags);
-+		else
-+			generic_fillattr(inode, stat);
-+		if (!error && susfs_is_current_app_uid() &&
-+		    susfs_is_inode_sus_kstat(inode, &is_fuse))
-+			susfs_sus_kstat_spoof_generic_fillattr(inode, stat,
-+				is_fuse ? STATX_SUS_KSTAT_FUSE : STATX_SUS_KSTAT);
-+		return error;
-+	}
-+#else
- 	if (inode->i_op->getattr)
- 		return inode->i_op->getattr(path, stat, request_mask,
- 					    query_flags);
- 
- 	generic_fillattr(inode, stat);
- 	return 0;
-+#endif
- }
- EXPORT_SYMBOL(vfs_getattr_nosec);
- 
-@@ -171,6 +205,12 @@
- 	struct path path;
- 	int error = -EINVAL;
- 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
-+#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-+	struct filename *fname;
-+#endif
-+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-+	ksu_handle_stat(&dfd, &filename, &flags);
-+#endif
- 
- 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
- 		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
-@@ -184,7 +224,16 @@
- 		lookup_flags |= LOOKUP_EMPTY;
- 
- retry:
-+#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-+	fname = getname_flags(filename, lookup_flags, NULL);
-+	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
-+	    ksu_su_compat_is_enabled())
-+		ksu_handle_stat_kernel(&dfd, &fname, &flags);
-+	/* filename_lookup consumes fname, including failure paths. */
-+	error = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
-+#else
- 	error = user_path_at(dfd, filename, lookup_flags, &path);
-+#endif
- 	if (error)
- 		goto out;
- 
-@@ -379,6 +428,14 @@
- 	if (!error)
- 		error = cp_new_stat(&stat, statbuf);
- 
-+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD)
-+#pragma GCC diagnostic push
-+#pragma GCC diagnostic ignored "-Wdeclaration-after-statement"
-+	extern void ksu_handle_newfstat_ret(unsigned int *, struct stat __user **);
-+	ksu_handle_newfstat_ret(&fd, &statbuf);
-+#pragma GCC diagnostic pop
-+#endif
-+
- 	return error;
- }
- #endif
 diff --git a/fs/open.c b/fs/open.c
 index 3f9f5fd..b9917cb 100644
 --- a/fs/open.c
 +++ b/fs/open.c
-@@ -33,8 +33,22 @@
+@@ -33,8 +33,21 @@
  #include <linux/dnotify.h>
  #include <linux/compat.h>
  
@@ -1082,10 +979,9 @@ index 3f9f5fd..b9917cb 100644
  #include "internal.h"
  
 +#ifdef CONFIG_KSU
-+#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +extern int ksu_handle_faccessat_kernel(int *dfd, struct filename **filename_user, int *mode, int *flags);
 +extern bool ksu_su_compat_is_enabled(void);
-+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
 +#elif !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *flags);
 +#endif
@@ -1098,7 +994,7 @@ index 3f9f5fd..b9917cb 100644
  	int res;
  	unsigned int lookup_flags = LOOKUP_FOLLOW;
  
-+#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	struct filename *fname;
 +#endif
 +#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
@@ -1111,7 +1007,7 @@ index 3f9f5fd..b9917cb 100644
  
  	old_cred = override_creds(override_cred);
  retry:
-+#if defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +	fname = getname_flags(filename, lookup_flags, NULL);
 +	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
 +	    ksu_su_compat_is_enabled())
@@ -2032,6 +1928,143 @@ index 07a3b5b..1e4807d 100644
  	return error;
  }
  #endif
+diff --git a/fs/stat.c b/fs/stat.c
+index 298eb77..9555f4b 100644
+--- a/fs/stat.c
++++ b/fs/stat.c
+@@ -17,9 +17,39 @@
+ #include <linux/syscalls.h>
+ #include <linux/pagemap.h>
+ #include <linux/compat.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif
+ 
+ #include <linux/uaccess.h>
+ #include <asm/unistd.h>
++#include "internal.h"
++
++#ifdef CONFIG_KSU
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++extern int ksu_handle_stat_kernel(int *dfd, struct filename **filename_user, int *flags);
++extern bool ksu_su_compat_is_enabled(void);
++#elif !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
++extern bool susfs_is_inode_sus_kstat(struct inode *inode, bool *out_is_fuse);
++extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat, u32 result_mask);
++#endif
++#endif
++
++/* Direct return hooks are needed for the SUSFS inline-hook backend. The
++ * other backends already invoke these handlers from their own wrappers.
++ */
++#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && \
++    !defined(CONFIG_KSU_KPROBES_KSUD) && \
++    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && \
++    !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
++#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
++extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);
++#endif
++#endif
+ 
+ /**
+  * generic_fillattr - Fill in the basic attributes from the inode struct
+@@ -77,12 +95,28 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
+ 	if (IS_AUTOMOUNT(inode))
+ 		stat->attributes |= STATX_ATTR_AUTOMOUNT;
+ 
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
++	{
++		int error = 0;
++		bool is_fuse = false;
++		if (inode->i_op->getattr)
++			error = inode->i_op->getattr(path, stat, request_mask, query_flags);
++		else
++			generic_fillattr(inode, stat);
++		if (!error && susfs_is_current_app_uid() &&
++		    susfs_is_inode_sus_kstat(inode, &is_fuse))
++			susfs_sus_kstat_spoof_generic_fillattr(inode, stat,
++				is_fuse ? STATX_SUS_KSTAT_FUSE : STATX_SUS_KSTAT);
++		return error;
++	}
++#else
+ 	if (inode->i_op->getattr)
+ 		return inode->i_op->getattr(path, stat, request_mask,
+ 					    query_flags);
+ 
+ 	generic_fillattr(inode, stat);
+ 	return 0;
++#endif
+ }
+ EXPORT_SYMBOL(vfs_getattr_nosec);
+ 
+@@ -171,6 +205,12 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+ 	struct path path;
+ 	int error = -EINVAL;
+ 	unsigned int lookup_flags = LOOKUP_FOLLOW | LOOKUP_AUTOMOUNT;
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	struct filename *fname;
++#endif
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_SUSFS) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	ksu_handle_stat(&dfd, &filename, &flags);
++#endif
+ 
+ 	if ((flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+ 		       AT_EMPTY_PATH | KSTAT_QUERY_FLAGS)) != 0)
+@@ -184,7 +224,16 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
+ 		lookup_flags |= LOOKUP_EMPTY;
+ 
+ retry:
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	fname = getname_flags(filename, lookup_flags, NULL);
++	if (!IS_ERR(fname) && !susfs_is_current_proc_no_su() &&
++	    ksu_su_compat_is_enabled())
++		ksu_handle_stat_kernel(&dfd, &fname, &flags);
++	/* filename_lookup consumes fname, including failure paths. */
++	error = filename_lookup(dfd, fname, lookup_flags, &path, NULL);
++#else
+ 	error = user_path_at(dfd, filename, lookup_flags, &path);
++#endif
+ 	if (error)
+ 		goto out;
+ 
+@@ -351,8 +369,15 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
+ {
+ 	struct kstat stat;
+ 	int error = vfs_fstat(fd, &stat);
+ 	if (!error)
+ 		error = cp_new_stat(&stat, statbuf);
++#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && \
++    !defined(CONFIG_KSU_KPROBES_KSUD) && \
++    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && \
++    !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	if (!error)
++		ksu_handle_newfstat_ret(&fd, &statbuf);
++#endif
+ 
+ 	return error;
+ }
+@@ -471,9 +495,16 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
+ {
+ 	struct kstat stat;
+ 	int error = vfs_fstat(fd, &stat);
+ 
+ 	if (!error)
+ 		error = cp_new_stat64(&stat, statbuf);
++#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && \
++    !defined(CONFIG_KSU_KPROBES_KSUD) && \
++    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && \
++    !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	if (!error)
++		ksu_handle_fstat64_ret(&fd, &statbuf);
++#endif
+ 
+ 	return error;
+ }
+
 diff --git a/fs/statfs.c b/fs/statfs.c
 index 4960c69..c07dc7b 100644
 --- a/fs/statfs.c
@@ -2194,7 +2227,7 @@ new file mode 100644
 index 0000000..c03cd25
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2199 @@
+@@ -0,0 +1,2204 @@
 +#include <linux/version.h>
 +#include <linux/cred.h>
 +#include <linux/fs.h>
@@ -2268,6 +2301,7 @@ index 0000000..c03cd25
 +
 +struct st_susfs_sus_type_hlist {
 +	struct hlist_node                       node;
++	u32                                     type_value;
 +};
 +
 +int susfs_add_sus_type(const char *secctx, u32 type_value) {
@@ -2277,6 +2311,8 @@ index 0000000..c03cd25
 +
 +	mutex_lock(&susfs_mutex_lock_sus_type);
 +	hash_for_each_possible_safe(SUS_TYPE_HLIST, tmp_entry, tmp_hlist_node, node, type_value) {
++		if (tmp_entry->type_value != type_value)
++			continue;
 +		SUSFS_LOGE("secctx '%s', type_value '%u', was added before already\n",
 +			secctx, type_value);
 +		err = -EINVAL;
@@ -2289,6 +2325,7 @@ index 0000000..c03cd25
 +		goto unlock;
 +	}
 +
++	new_entry->type_value = type_value;
 +	hash_add_rcu(SUS_TYPE_HLIST, &new_entry->node, type_value);
 +	SUSFS_LOGI("secctx '%s', type '%u', has been added to SUS_TYPE_HLIST\n",
 +					secctx, type_value);
@@ -2301,7 +2338,8 @@ index 0000000..c03cd25
 +	struct st_susfs_sus_type_hlist *entry = NULL;
 +
 +	hash_for_each_possible_rcu(SUS_TYPE_HLIST, entry, node, type_value) {
-+		return true;
++		if (entry->type_value == type_value)
++			return true;
 +	}
 +	return false;
 +}
@@ -6639,9 +6677,10 @@ index 7e1e6bc..b8e06c9 100644
  		audit_log_format(ab, " tsid=%d", sad->tsid);
  	else {
 diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
+index 55ec178..c5f4b20 100644
 --- a/security/selinux/ss/services.c
 +++ b/security/selinux/ss/services.c
-@@ -65,6 +65,11 @@
+@@ -62,5 +62,10 @@
  #include "xfrm.h"
  #include "ebitmap.h"
  #include "audit.h"
@@ -6650,22 +6689,17 @@ diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
 +extern bool susfs_is_sus_type_rcu(u32 type_value);
 +extern void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_allowed);
 +#endif
- 
  /* Policy capability names */
  const char *selinux_policycap_names[__POLICYDB_CAPABILITY_MAX] = {
-@@ -1140,6 +1145,10 @@
- 	}
+@@ -1081,3 +1086,7 @@
  	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd,
- 				  xperms);
+ 				  NULL);
 +#ifdef CONFIG_KSU_SUSFS
 +	susfs_spoof_avd_allowed_rcu(scontext->type, tcontext->type,
 +					tclass, &avd->allowed);
 +#endif
  	map_decision(&state->ss->map, orig_tclass, avd,
- 		     policydb->allow_unknown);
- out:
-@@ -1505,6 +1514,99 @@
- 
+@@ -1426,2 +1426,89 @@
  	return sidtab_context_to_sid(sidtab, context, sid);
  }
 +
@@ -6699,14 +6733,12 @@ diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
 +
 +		for (i = 1; i < SECINITSID_NUM; i++) {
 +			if (initial_sid_to_string[i] &&
-+			    !strcmp(initial_sid_to_string[i], scontext2)) {
++		    !strcmp(initial_sid_to_string[i], scontext2)) {
 +				*sid = i;
-+				rc = 0;
 +				goto out_free;
 +			}
 +		}
 +		*sid = SECINITSID_KERNEL;
-+		rc = 0;
 +		goto out_free;
 +	}
 +
@@ -6729,13 +6761,9 @@ diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
 +	typdatum = hashtab_search(policydb->p_types.table, type_name);
 +	if (type_end)
 +		*type_end = ':';
-+	rcu_read_lock();
 +	if (typdatum && !typdatum->attribute &&
-+	    susfs_is_sus_type_rcu(typdatum->value)) {
-+		rcu_read_unlock();
++	    susfs_is_sus_type_rcu(typdatum->value))
 +		goto invalid_context;
-+	}
-+	rcu_read_unlock();
 +
 +	rc = string_to_context_struct(policydb, sidtab, scontext2,
 +				      &context, SECSID_NULL);
@@ -6761,11 +6789,7 @@ diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
 +					     sid, gfp);
 +}
 +#endif
- 
- static int security_context_to_sid_core(struct selinux_state *state,
- 					const char *scontext, u32 scontext_len,
-@@ -2276,6 +2378,11 @@
- 	oldmapping = state->ss->map.mapping;
+@@ -2148,3 +2243,8 @@
  	state->ss->map.mapping = newmap.mapping;
  	state->ss->map.size = newmap.size;
 +#ifdef CONFIG_KSU_SUSFS
@@ -6774,20 +6798,16 @@ diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
 +	else
 +#endif
  	seqno = ++state->ss->latest_granting;
- 	write_unlock_irq(&state->ss->policy_rwlock);
- 
-@@ -2980,6 +3087,11 @@
- 			goto out;
- 	}
- 
+@@ -2821,2 +2921,7 @@
+-	seqno = ++state->ss->latest_granting;
 +#ifdef CONFIG_KSU_SUSFS
 +	if (susfs_is_current_ksu_domain())
 +		seqno = state->ss->latest_granting;
 +	else
 +#endif
- 	seqno = ++state->ss->latest_granting;
++	seqno = ++state->ss->latest_granting;
  	rc = 0;
- out:
+
 diff --git a/scripts/setlocalversion b/scripts/setlocalversion
 --- a/scripts/setlocalversion
 +++ b/scripts/setlocalversion
@@ -6857,61 +6877,103 @@ index f1e1b14..fe25d25 100644
 diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
 --- a/security/selinux/hooks.c
 +++ b/security/selinux/hooks.c
-@@ -107,6 +107,10 @@
+@@ -107,4 +107,10 @@
  struct selinux_state selinux_state __rticdata;
  #else
  struct selinux_state selinux_state;
 +#endif
 +
 +#ifdef CONFIG_KSU_SUSFS
++extern struct selinux_state fake_state;
++extern bool ksu_selinux_hide_running __read_mostly;
 +extern int susfs_security_context_to_sid(struct selinux_state *, const char *, u32, u32 *, gfp_t);
  #endif
- 
- /* SECMARK reference count */
-@@ -6474,6 +6478,10 @@
+@@ -6474,3 +6479,8 @@
  	u32 mysid = current_sid(), sid = 0, ptsid;
  	int error;
  	char *str = value;
 +#ifdef CONFIG_KSU_SUSFS
-+	bool should_check_current = likely(!strcmp(name, "current") &&
-+					   current_uid().val >= 10000);
++	bool should_check_current = (likely(!strcmp(name, "current") &&
++					     current_uid().val >= 10000 &&
++					     ksu_selinux_hide_running));
 +#endif
- 
- 	/*
- 	 * Basic control over ability to set these attributes at all.
-@@ -6509,6 +6517,12 @@
+@@ -6509,6 +6519,17 @@
  			str[size-1] = 0;
  			size--;
  		}
 +#ifdef CONFIG_KSU_SUSFS
-+		if (should_check_current)
++		if (should_check_current) {
++			u32 tmp_sid = 0;
++			int fake_error = security_context_to_sid(&fake_state, value, size,
++								 &tmp_sid, GFP_KERNEL);
++			if (fake_error)
++				return fake_error;
 +			error = susfs_security_context_to_sid(&selinux_state, value,
-+							 size, &sid, GFP_KERNEL);
-+		else
++								 size, &sid, GFP_KERNEL);
++		} else
 +#endif
  		error = security_context_to_sid(&selinux_state, value, size,
  						&sid, GFP_KERNEL);
  		if (error == -EINVAL && !strcmp(name, "fscreate")) {
+
 diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 --- a/security/selinux/selinuxfs.c
 +++ b/security/selinux/selinuxfs.c
-@@ -40,6 +40,12 @@
- #include "security.h"
+@@ -13,6 +13,7 @@
+  */
+ 
+ #include <linux/kernel.h>
++#include <linux/ksu_selinux_hide.h>
+ #include <linux/pagemap.h>
+ #include <linux/slab.h>
+ #include <linux/vmalloc.h>
+@@ -38,2 +39,9 @@
  #include "objsec.h"
  #include "conditional.h"
 +#ifdef CONFIG_KSU_SUSFS
++extern bool ksu_selinux_hide_running __read_mostly;
 +extern int susfs_security_context_to_sid(struct selinux_state *, const char *, u32, u32 *, gfp_t);
 +extern int susfs_security_context_str_to_sid(struct selinux_state *, const char *, u32 *, gfp_t);
 +static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size);
 +static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size);
 +#endif
- 
- enum sel_inos {
- 	SEL_ROOT_INO = 2,
-@@ -634,6 +640,43 @@
+@@ -118,1 +126,1 @@
+-			   enforcing_enabled(fsi->state));
++			   enforcing_enabled(ksu_selinux_hide_select_state(fsi->state)));
+@@ -128,1 +136,1 @@
+-	struct selinux_state *state = fsi->state;
++	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
+@@ -190,1 +198,1 @@
+-	struct selinux_state *state = fsi->state;
++	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
+@@ -210,1 +218,1 @@
+-	struct page    *status = selinux_kernel_status_page(fsi->state);
++	struct page    *status = selinux_kernel_status_page(ksu_selinux_hide_select_state(fsi->state));
+@@ -295,1 +303,1 @@
+-		enforcing = enforcing_enabled(fsi->state);
++		enforcing = enforcing_enabled(ksu_selinux_hide_select_state(fsi->state));
+@@ -355,1 +363,1 @@
+-			   security_mls_enabled(fsi->state));
++			   security_mls_enabled(ksu_selinux_hide_select_state(fsi->state)));
+@@ -372,1 +380,1 @@
+-	struct selinux_state *state = fsi->state;
++	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
+@@ -564,7 +572,7 @@
+ static ssize_t sel_write_context(struct file *file, char *buf, size_t size)
+ {
+ 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
+-	struct selinux_state *state = fsi->state;
++	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
+ 	char *canon = NULL;
+ 	u32 sid, len;
+ 	ssize_t length;
+@@ -593,5 +602,42 @@
+ 	length = len;
+ out:
+ 	kfree(canon);
  	return length;
  }
- 
++
 +#ifdef CONFIG_KSU_SUSFS
 +static ssize_t susfs_sel_write_context(struct file *file, char *buf, size_t size)
 +{
@@ -6943,28 +7005,22 @@ diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 +
 +static ssize_t handle_sel_write_context(struct file *file, char *buf, size_t size)
 +{
-+	if (current_uid().val >= 10000)
++	if (current_uid().val >= 10000 && ksu_selinux_hide_running)
 +		return susfs_sel_write_context(file, buf, size);
 +	return sel_write_context(file, buf, size);
 +}
 +#endif
-+
- static ssize_t sel_read_checkreqprot(struct file *filp, char __user *buf,
- 				     size_t count, loff_t *ppos)
- {
-@@ -774,14 +817,26 @@
- static ssize_t sel_write_relabel(struct file *file, char *buf, size_t size);
- static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
+@@ -725,9 +773,21 @@
  static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
 +#ifdef CONFIG_KSU_SUSFS
 +static ssize_t susfs_sel_write_access(struct file *file, char *buf, size_t size);
 +#endif
- 
  static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
+-	[SEL_ACCESS] = sel_write_access,
 +#ifdef CONFIG_KSU_SUSFS
 +	[SEL_ACCESS] = handle_sel_write_access,
 +#else
- 	[SEL_ACCESS] = sel_write_access,
++	[SEL_ACCESS] = sel_write_access,
 +#endif
  	[SEL_CREATE] = sel_write_create,
  	[SEL_RELABEL] = sel_write_relabel,
@@ -6978,9 +7034,9 @@ diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 +		sel_write_context,
 +#endif
  };
- 
- static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
-@@ -868,6 +923,54 @@
+@@ -814,5 +870,53 @@
+ out:
+ 	kfree(tcon);
  	kfree(scon);
  	return length;
  }
@@ -7027,29 +7083,22 @@ diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 +
 +static ssize_t handle_sel_write_access(struct file *file, char *buf, size_t size)
 +{
-+	if (current_uid().val >= 10000)
++	if (current_uid().val >= 10000 && ksu_selinux_hide_running)
 +		return susfs_sel_write_access(file, buf, size);
 +	return sel_write_access(file, buf, size);
 +}
 +#endif
- 
- static ssize_t sel_write_create(struct file *file, char *buf, size_t size)
- {
+
 diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 --- a/security/selinux/ss/status.c
 +++ b/security/selinux/ss/status.c
-@@ -12,6 +12,9 @@
- #include <linux/mutex.h>
+@@ -12,2 +12,5 @@
  #include "avc.h"
  #include "services.h"
 +#ifdef CONFIG_KSU_SUSFS
 +extern bool susfs_is_current_ksu_domain(void);
 +#endif
- 
- /*
-  * The selinux_status_page shall be exposed to userspace applications
-@@ -85,6 +88,15 @@
- 	if (state->ss->status_page) {
+@@ -78,4 +82,13 @@
  		status = page_address(state->ss->status_page);
  
 +#ifdef CONFIG_KSU_SUSFS
@@ -7063,9 +7112,7 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 +#endif
  		status->sequence++;
  		smp_wmb();
- 
-@@ -111,6 +123,16 @@
- 	if (state->ss->status_page) {
+@@ -103,5 +116,15 @@
  		status = page_address(state->ss->status_page);
  
 +#ifdef CONFIG_KSU_SUSFS
@@ -7080,48 +7127,65 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 +#endif
  		status->sequence++;
  		smp_wmb();
- 
-
-
+ 		status->policyload = seqno;
 
 diff --git a/kernel/seccomp.c b/kernel/seccomp.c
 --- a/kernel/seccomp.c
 +++ b/kernel/seccomp.c
-@@ -1227,6 +1227,17 @@
- }
- #endif
- 
-+#ifdef CONFIG_KSU
-+#include <asm/unistd.h>
-+/*
-+ * Defined in kernel/hook/setuid_hook.c. Lets the KernelSU/SukiSU manager's
-+ * documented magic-reboot descriptor handshake (see kernel/reboot.c) pass
-+ * through an app's inherited seccomp-bpf filter untouched, instead of the
-+ * manager process having its whole filter disabled.
-+ */
+@@ -25,7 +25,11 @@
+ #include <linux/seccomp.h>
+ #include <linux/slab.h>
+ #include <linux/syscalls.h>
+ #include <linux/sysctl.h>
++
++#if defined(CONFIG_KSU) && defined(CONFIG_SECCOMP_FILTER)
 +extern bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd);
 +#endif
-+
- int __secure_computing(const struct seccomp_data *sd)
- {
- 	int mode = current->seccomp.mode;
-@@ -1239,6 +1250,19 @@
- 	this_syscall = sd ? sd->nr :
- 		syscall_get_nr(current, current_pt_regs());
  
-+#ifdef CONFIG_KSU
-+	if (unlikely(this_syscall == __NR_reboot)) {
-+		struct seccomp_data sd_local;
+ /* Not exposed in headers: strictly internal use only. */
+ #define SECCOMP_MODE_DEAD	(SECCOMP_MODE_FILTER + 1)
+@@ -1162,6 +1166,19 @@ int __secure_computing(const struct seccomp_data *sd)
+ 		__secure_computing_strict(this_syscall);  /* may call do_exit */
+ 		return 0;
+ 	case SECCOMP_MODE_FILTER:
++	#if defined(CONFIG_KSU) && defined(CONFIG_SECCOMP_FILTER)
++		{
++			struct seccomp_data ksu_sd;
 +
-+		if (!sd) {
-+			populate_seccomp_data(&sd_local);
-+			sd = &sd_local;
++			/* The architecture may call secure_computing() with NULL. */
++			if (!sd) {
++				populate_seccomp_data(&ksu_sd);
++				sd = &ksu_sd;
++			}
++			if (ksu_seccomp_allow_reboot(sd))
++				return 0;
 +		}
-+		if (ksu_seccomp_allow_reboot(sd))
-+			return 0;
-+	}
++	#endif
+ 		return __seccomp_filter(this_syscall, sd, false);
+ 	/* Surviving SECCOMP_RET_KILL_* must be proactively impossible. */
+ 	case SECCOMP_MODE_DEAD:
+
+diff --git a/include/linux/ksu_selinux_hide.h b/include/linux/ksu_selinux_hide.h
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/include/linux/ksu_selinux_hide.h
+@@ -0,0 +1,18 @@
++#ifndef _LINUX_KSU_SELINUX_HIDE_H
++#define _LINUX_KSU_SELINUX_HIDE_H
++
++#include <linux/version.h>
++
++struct selinux_state;
++
++#if defined(CONFIG_KSU) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state);
++#else
++static inline struct selinux_state *
++ksu_selinux_hide_select_state(struct selinux_state *state)
++{
++	return state;
++}
 +#endif
 +
- 	switch (mode) {
- 	case SECCOMP_MODE_STRICT:
- 		__secure_computing_strict(this_syscall);  /* may call do_exit */
++#endif /* _LINUX_KSU_SELINUX_HIDE_H */
