@@ -128,6 +128,8 @@ jobs:
               "CONFIG_KSU_SUSFS_SUS_MAP": "y",
               "CONFIG_KSU_SUSFS_SUS_MOUNT": "y",
               "CONFIG_KSU_SUSFS_SUS_KSTAT": "y",
+              "CONFIG_KSU_SUSFS_INLINE_HOOK": "y",
+              "CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER": "y",
               "CONFIG_KSU_SUSFS_OPEN_REDIRECT": "y",
               "CONFIG_KSU_SUSFS_SPOOF_UNAME": "y",
               "CONFIG_KSU_SUSFS_ENABLE_LOG": "y",
@@ -204,6 +206,8 @@ jobs:
             CONFIG_KSU_SUSFS_SUS_MAP \
             CONFIG_KSU_SUSFS_SUS_MOUNT \
             CONFIG_KSU_SUSFS_SUS_KSTAT \
+            CONFIG_KSU_SUSFS_INLINE_HOOK \
+            CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER \
             CONFIG_KSU_SUSFS_OPEN_REDIRECT \
             CONFIG_KSU_SUSFS_SPOOF_UNAME \
             CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
