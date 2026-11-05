@@ -875,12 +875,69 @@ index 4efbf91ddbd94c9eca732971408f07a47649b6fb..d2b3a92eaf6c968e2ed0f1d8688183c1
  }
  
  // take note: char *filename, for do_execve_common on < 3.14
+diff --git a/kernel/hook/lsm_hooks_list.c b/kernel/hook/lsm_hooks_list.c
+index c4ea79d721cb3cf43328dd7ebd69c1ce517393ef..0c38b29823202abc36ed27be745abb31d0539de9 100644
+--- a/kernel/hook/lsm_hooks_list.c
++++ b/kernel/hook/lsm_hooks_list.c
+@@ -42,9 +42,15 @@ static __nocfi void ksu_bprm_committing_creds(struct linux_binprm *bprm)
+ static int (*file_permission_fn)(struct file *file, int mask) __read_mostly = nullptr;
+ static __nocfi int ksu_file_permission(struct file *file, int mask)
+ {
++#if !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
+ 	if (unlikely(ksu_vfs_read_hook))
+ 		ksu_install_rc_hook(file);
++#endif
++
++	/* Mount hiding is an additional filter, not a replacement LSM hook. */
++	ksu_mount_hide_file_permission(file, mask);
+ 
++	/* Preserve the original SELinux/LSM file_permission result. */
+ 	return file_permission_fn(file, mask);
+ }
+ 
+@@ -272,21 +278,6 @@ do {												\
+ 	ksu_hack_lsm_slot(hook_head, &dummy_int, (uintptr_t)hook_name##_fn, #hook_name);	\
+ } while (0)
+ 
+-static int ksu_restore_file_permission(void *data)
+-{
+-	set_user_nice(current, 19); // low prio
+-
+-loop_start:
+-	msleep(1000);
+-	if (*(volatile bool *)&ksu_vfs_read_hook)
+-		goto loop_start;
+-
+-	msleep(1000);
+-
+-	LSM_HACK_RESTORE(file_permission);
+-	return 0;
+-}
+-
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
+ static int ksu_restore_bprm_set_creds(void *data)
+ {
+@@ -316,12 +307,8 @@ static __init void ksu_lsm_hook_init(void)
+ 	LSM_HACK_INIT(bprm_committing_creds, ksu_bprm_committing_creds);
+ #endif
+ 
+-	LSM_HACK_INIT(file_permission, ksu_mount_hide_file_permission);
+-
+-#if !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	/* One permanent wrapper chains init.rc handling, mount hiding and SELinux. */
+ 	LSM_HACK_INIT(file_permission, ksu_file_permission);
+-	kthread_run(ksu_restore_file_permission, NULL, "kthread");
+-#endif
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
+ 	LSM_HACK_INIT(bprm_set_creds, ksu_bprm_set_creds);
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
-index 925798048a86548b33ec0717b45a730a1e21a058..d22b19f0cbc2378aef0811569c20ee82a9dbf875 100644
+index 925798048a86548b33ec0717b45a730a1e21a058..99290afb239dd677ab340ac2afa064fe3f08fd04 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -1,3 +1,29 @@
+@@ -1,3 +1,41 @@
 +#include <asm/unistd.h>
++#include <linux/audit.h>
 +
 +/*
 + * Called by the Linux seccomp core before evaluating installed filters.
@@ -894,9 +951,20 @@ index 925798048a86548b33ec0717b45a730a1e21a058..d22b19f0cbc2378aef0811569c20ee82
 +	    (__u32)sd->args[0] != KSU_INSTALL_MAGIC1)
 +		return false;
 +
++#if defined(CONFIG_ARM64)
++	/* Do not exempt compat AArch32 syscall number 142 (_newselect). */
++	if (sd->arch != AUDIT_ARCH_AARCH64)
++		return false;
++#elif defined(CONFIG_ARM)
++	if (sd->arch != AUDIT_ARCH_ARM)
++		return false;
++#endif
++
 +	if ((__u32)sd->args[1] == KSU_INSTALL_MAGIC2)
-+		return ksu_is_manager_appid_valid() &&
-+		       is_uid_manager(current_uid().val);
++		/* ksud also obtains its initial driver FD while running as root.
++		 * is_uid_manager() already covers both static and dynamic managers.
++		 */
++		return current_uid().val == 0 || is_uid_manager(current_uid().val);
 +
 +#ifdef CONFIG_KSU_SUSFS
 +	if ((__u32)sd->args[1] == SUSFS_MAGIC)
@@ -909,7 +977,7 @@ index 925798048a86548b33ec0717b45a730a1e21a058..d22b19f0cbc2378aef0811569c20ee82
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +39,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -13,10 +51,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -928,7 +996,7 @@ index 925798048a86548b33ec0717b45a730a1e21a058..d22b19f0cbc2378aef0811569c20ee82
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +55,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -25,10 +67,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	ksu_handle_umount(new, old);
  	return;
  
@@ -1219,22 +1287,8 @@ index 6bb20394137f1a04223a4b5194fd7fb70e53ea6c..1bd0566bdd26a646da4197035eea244a
  
      # Add entries in Makefile and Kconfig if not already existing
      grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
-diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index 3c339accc7d45144605dc288f4130423e7910d98..344739cf3ba442e23938870db331b82d4cb9154d 100644
---- a/kernel/supercall/dispatch.c
-+++ b/kernel/supercall/dispatch.c
-@@ -666,7 +666,8 @@ static int do_get_hook_type(void __user *arg)
- 	const char *type;
- 
- #if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK)
--	type = "SUSFS Inline Hook";
-+	/* This builtin integration uses explicit in-kernel callsites, not inline patching. */
-+	type = "Manual";
- #elif defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
- 	type = "ARM64 Branch Link Hijack";
- #elif defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
-index 59ec582f5d25375032e8d691e965f7646c8adf9e..3dfb34b06050d857b78e8e695e53495f8f7f8106 100644
+index 59ec582f5d25375032e8d691e965f7646c8adf9e..d600b8df55f2b42efa19ab20c23653bea2121824 100644
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
 @@ -95,7 +95,18 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
@@ -1244,11 +1298,11 @@ index 59ec582f5d25375032e8d691e965f7646c8adf9e..3dfb34b06050d857b78e8e695e53495f
 -		int fd = ksu_install_fd();
 +		int fd;
 +
-+		/* The reboot transport is dispatched before CAP_SYS_BOOT checks.
-+		 * Enforce the same verified-manager gate as the seccomp exception.
++		/* ksud obtains the initial driver FD as root before switching to
++		 * the manager UID in temporary_root::as_manager().  Non-root callers
++		 * must be recognized by is_uid_manager(), including Dynamic Manager.
 +		 */
-+		if (!ksu_is_manager_appid_valid() ||
-+		    !is_uid_manager(current_uid().val)) {
++		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
 +			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
 +					    current_uid().val);
 +			return -EPERM;

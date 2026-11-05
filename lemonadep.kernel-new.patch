@@ -1957,13 +1957,13 @@ index 298eb77..e2cf4dc 100644
 +#endif
 +#endif
 +
-+/* Direct return hooks are needed for the SUSFS inline-hook backend. The
-+ * other backends already invoke these handlers from their own wrappers.
++/* Android init calls fstat() before reading init.rc. Keep the return hook
++ * enabled for builtin/manual and branch-link builds; kprobes and syscall-table
++ * backends provide their own newfstat return hooks.
 + */
-+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && \
++#if defined(CONFIG_KSU) && \
 +    !defined(CONFIG_KSU_KPROBES_KSUD) && \
-+    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && \
-+    !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
 +extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
 +#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
 +extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);
@@ -2031,29 +2031,27 @@ index 298eb77..e2cf4dc 100644
  	if (error)
  		goto out;
  
-@@ -378,7 +439,13 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
+@@ -378,7 +439,12 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
  
  	if (!error)
  		error = cp_new_stat(&stat, statbuf);
 -
-+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && \
++#if defined(CONFIG_KSU) && \
 +    !defined(CONFIG_KSU_KPROBES_KSUD) && \
-+    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && \
-+    !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
 +	if (!error)
 +		ksu_handle_newfstat_ret(&fd, &statbuf);
 +#endif
  	return error;
  }
  #endif
-@@ -505,6 +572,13 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
+@@ -505,6 +572,12 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
  
  	if (!error)
  		error = cp_new_stat64(&stat, statbuf);
-+#if defined(CONFIG_KSU) && defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && \
++#if defined(CONFIG_KSU) && \
 +    !defined(CONFIG_KSU_KPROBES_KSUD) && \
-+    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && \
-+    !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
 +	if (!error)
 +		ksu_handle_fstat64_ret(&fd, &statbuf);
 +#endif
