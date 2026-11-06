@@ -7646,7 +7646,8 @@ index 3c554a442467d1f09cf27103b63ae316f9ce38ea..5b282c896dbf6621e259dbce3434f362
 diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/msm/cvp/msm_cvp.c
 --- a/drivers/media/platform/msm/cvp/msm_cvp.c
 +++ b/drivers/media/platform/msm/cvp/msm_cvp.c
-@@ -2,6 +2,8 @@
+@@ -1148,8 +1148,10 @@
+ 	params.name = "cvp-kernel-client";
  	if (synx_initialize(&inst->synx_session_id, &params)) {
  		dprintk(CVP_ERR, "%s synx_initialize failed\n", __func__);
  		rc = -EFAULT;
@@ -7655,10 +7656,12 @@ diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/m
  	}
  
  fail_init:
+ 	return rc;
 diff --git a/drivers/media/platform/msm/cvp/msm_cvp_core.c b/drivers/media/platform/msm/cvp/msm_cvp_core.c
 --- a/drivers/media/platform/msm/cvp/msm_cvp_core.c
 +++ b/drivers/media/platform/msm/cvp/msm_cvp_core.c
-@@ -2,7 +2,10 @@
+@@ -366,9 +366,12 @@
+ 	msm_cvp_debugfs_deinit_inst(inst);
  
  	__deinit_session_queue(inst);
  	__deinit_fence_queue(inst);
@@ -7670,20 +7673,26 @@ diff --git a/drivers/media/platform/msm/cvp/msm_cvp_core.c b/drivers/media/platf
  
  	pr_info(CVP_DBG_TAG "Closed cvp instance: %pK session_id = %d\n",
  		"sess", inst, inst->sess_id);
+ 	if (inst->cur_cmd_type)
 diff --git a/drivers/media/platform/msm/cvp/msm_cvp_internal.h b/drivers/media/platform/msm/cvp/msm_cvp_internal.h
 --- a/drivers/media/platform/msm/cvp/msm_cvp_internal.h
 +++ b/drivers/media/platform/msm/cvp/msm_cvp_internal.h
-@@ -1,5 +1,6 @@
+@@ -320,8 +320,9 @@
+ 	struct kref kref;
  	struct cvp_session_prop prop;
  	u32 cur_cmd_type;
  	struct synx_session synx_session_id;
 +	bool synx_session_initialized;
  	struct cvp_fence_queue fence_cmd_queue;
  };
+ 
+ extern struct msm_cvp_drv *cvp_driver;
 diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/dsi_display.c
 --- a/techpack/display/msm/dsi/dsi_display.c
 +++ b/techpack/display/msm/dsi/dsi_display.c
-@@ -1,6 +1,7 @@
+@@ -6259,9 +6259,10 @@
+ 	dsi_display_register_te_irq(display);
+ 
  	msm_register_vm_event(master, dev, &vm_event_ops, (void *)display);
  #ifdef OPLUS_BUG_STABILITY
 -	oplus_display_private_api_init();
@@ -7692,7 +7701,9 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  	if(display->panel->esd_config.esd_err_flag_enabled) {
  		DSI_INFO("20627 panel add esd err flag detect\n");
  		dsi_display_register_esd_err_irq(display);
-@@ -14,7 +15,8 @@
+ 		dsi_display_err_flag_work_init(display);
+@@ -6320,9 +6321,10 @@
+ 		return;
  	}
  
  #ifdef OPLUS_BUG_STABILITY
@@ -7702,6 +7713,7 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  #endif
  	mutex_lock(&display->display_lock);
  
+ 	rc = dsi_display_mipi_host_deinit(display);
 diff --git a/techpack/display/oplus/oplus_display_private_api.c b/techpack/display/oplus/oplus_display_private_api.c
 --- a/techpack/display/oplus/oplus_display_private_api.c
 +++ b/techpack/display/oplus/oplus_display_private_api.c
@@ -7849,7 +7861,7 @@ diff --git a/techpack/display/oplus/oplus_display_private_api.c b/techpack/displ
 diff --git a/techpack/display/oplus/oplus_display_panel.c b/techpack/display/oplus/oplus_display_panel.c
 --- a/techpack/display/oplus/oplus_display_panel.c
 +++ b/techpack/display/oplus/oplus_display_panel.c
-@@ -276,6 +276,7 @@
+@@ -276,8 +276,9 @@
  err_export_dmabuf:
  	free_pages(vaddr, page_order);
  err_dmabuf:
@@ -7857,7 +7869,10 @@ diff --git a/techpack/display/oplus/oplus_display_panel.c b/techpack/display/opl
 +	p_apollo_backlight = NULL;
  err_backlightbuf:
  	return retcode;
-@@ -467,10 +468,12 @@
+ }
+ 
+@@ -466,13 +467,15 @@
+ 
  	rc = oplus_export_dmabuf(APOLLO_BACKLIGHT_LENS);
  	if (rc < 0) {
  		pr_err("%s dmabuf alloc fail", __func__);
@@ -7871,10 +7886,13 @@ diff --git a/techpack/display/oplus/oplus_display_panel.c b/techpack/display/opl
 +	device_destroy(panel_class, dev_num);
  err_device_create:
  	cdev_del(&panel_cdev);
+ err_cdev_add:
+ 	class_destroy(panel_class);
 diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_adfr.c
 --- a/techpack/display/oplus/oplus_adfr.c
 +++ b/techpack/display/oplus/oplus_adfr.c
-@@ -1865,9 +1865,17 @@
+@@ -1864,11 +1864,19 @@
+ 	struct dsi_display *display = dsi_display;
  	int h_skew = SDC_ADFR;
  	int rc = 0;
  
@@ -7883,14 +7901,15 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
 +	if (!display) {
 +		DSI_ERR("kVRR dsi_display_auto_mode_update Invalid display\n");
  		return -EINVAL;
- 	}
- 
++	}
++
 +	/* The pre-commit callback can run while the panel is off or modeset is
 +	 * tearing down.  Keep pending ADFR updates for the next valid mode.
 +	 */
 +	if (!display->panel || !display->panel->cur_mode) {
 +		DSI_DEBUG("kVRR skip auto mode update: panel mode is not ready\n");
 +		return 0;
-+	}
-+
+ 	}
+ 
  	h_skew = display->panel->cur_mode->timing.h_skew;
+ 	if ((h_skew != SDC_ADFR) && (h_skew != SDC_MFR)) {
