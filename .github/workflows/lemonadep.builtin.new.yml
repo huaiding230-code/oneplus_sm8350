@@ -75,14 +75,9 @@ jobs:
           cat << 'EOF' >> "$DEFCONFIG"
 
           # SukiSU / SUSFS
-          CONFIG_NET=y
           CONFIG_RPS=y
           CONFIG_BOOT_CONFIG=y
-          CONFIG_SECCOMP=y
           CONFIG_SECCOMP_FILTER=y
-          CONFIG_SECURITY=y
-          CONFIG_SECURITY_SELINUX=y
-          CONFIG_SECURITYFS=y
           CONFIG_KSU=y
           CONFIG_KSU_FEATURE_ADBROOT=y
           CONFIG_KSU_SUSFS=y
@@ -100,7 +95,6 @@ jobs:
           # CPU Spoof 需要在运行时解析内核符号
           CONFIG_DEBUG_KERNEL=y
           CONFIG_KALLSYMS=y
-          CONFIG_KALLSYMS_ALL=y
           # KPM 不启用
           # CONFIG_KPM is not set
           EOF
