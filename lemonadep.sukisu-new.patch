@@ -333,101 +333,6 @@ index f00aebd..5e36011 100644
      if (ksu_register_extension_handler(&version_spoof_handler))
          pr_err("extension: failed to register version_spoof\n");
  
-diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
-new file mode 100644
-index 0000000..8cf23ab
---- /dev/null
-+++ b/kernel/extension/susfs_extension.c
-@@ -0,0 +1,52 @@
-+// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * SuSFS extension handler stub.
-+ *
-+ * SuSFS has no sticky bit, no ioctl passthrough, and no
-+ * force_extension= replay. Its presence is advertised by the
-+ * mere fact that this handler is registered with the extension
-+ * subsystem — the framework itself sets `supported = true`
-+ * whenever a handler is found, and `ops->get` only fills the
-+ * optional value field.
-+ *
-+ * The SuSFS sub-screen independently checks whether the SuSFS
-+ * module is installed (via `ksud susfs status`) and prompts the
-+ * user accordingly. No additional runtime probing is needed here.
-+ */
-+#include "susfs_extension.h"
-+#include "../include/klog.h" // IWYU pragma: keep
-+
-+#include <linux/errno.h>
-+
-+int ksu_extension_susfs_get(u32 extension_id, u64 *value)
-+{
-+    if (value)
-+        *value = 0;
-+    return 0;
-+}
-+
-+int ksu_extension_susfs_set(u32 extension_id, u64 value)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+int ksu_extension_susfs_io(u32 extension_id, void __user *arg)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+int ksu_extension_susfs_wipe(u32 extension_id)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value)
-+{
-+    /* No-op: SuSFS state is managed entirely by the userspace
-+     * module management flow, not by force_extension=. */
-+}
-+
-+const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
-+    .get = ksu_extension_susfs_get,
-+    .set = NULL,
-+};
-diff --git a/kernel/extension/susfs_extension.h b/kernel/extension/susfs_extension.h
-new file mode 100644
-index 0000000..d2bdbf6
---- /dev/null
-+++ b/kernel/extension/susfs_extension.h
-@@ -0,0 +1,31 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+/*
-+ * SuSFS extension handler.
-+ *
-+ * This is a thin shim that bridges the kernel extension subsystem
-+ * (kernel/extension/extension.c) with the SuSFS module. The
-+ * extension framework sets `supported = true` whenever a handler
-+ * is registered; ops->get only fills the optional value field.
-+ *
-+ * SuSFS has no sticky bit, no ioctl passthrough, and no
-+ * force_extension= replay. The SuSFS sub-screen independently
-+ * probes `ksud susfs status` to determine whether the module is
-+ * actually installed.
-+ */
-+#ifndef __KSU_H_EXTENSION_SUSFS
-+#define __KSU_H_EXTENSION_SUSFS
-+
-+#include <linux/types.h>
-+
-+#include "extension.h"
-+
-+int ksu_extension_susfs_get(u32 extension_id, u64 *value);
-+int ksu_extension_susfs_set(u32 extension_id, u64 value);
-+int ksu_extension_susfs_io(u32 extension_id, void __user *arg);
-+int ksu_extension_susfs_wipe(u32 extension_id);
-+void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value);
-+
-+/* ops table consumed by ksu_register_extension_handler() in extension.c */
-+extern const struct ksu_extension_handler_ops ksu_extension_susfs_ops;
-+
-+#endif /* __KSU_H_EXTENSION_SUSFS */
 diff --git a/kernel/feature/mount_hide.c b/kernel/feature/mount_hide.c
 index 33d4e62..55a55c1 100644
 --- a/kernel/feature/mount_hide.c
@@ -1298,10 +1203,10 @@ index 8a7d780..1a74995 100644
  
  slow_path:
 diff --git a/kernel/policy/feature.c b/kernel/policy/feature.c
-index f910e4f..73fec29 100644
+index f910e4f..ffae095 100644
 --- a/kernel/policy/feature.c
 +++ b/kernel/policy/feature.c
-@@ -10,6 +10,7 @@ static const char *const feature_names[KSU_FEATURE_MAX] = {
+@@ -10,14 +10,15 @@ static const char *const feature_names[KSU_FEATURE_MAX] = {
  	[KSU_FEATURE_SELINUX_HIDE] = "selinux_hide",
  	[KSU_FEATURE_SHELL_SU_ADB_ONLY] = "shell_su_adb_only",
  	[KSU_FEATURE_MOUNT_HIDE] = "mount_hide",
@@ -1309,6 +1214,63 @@ index f910e4f..73fec29 100644
  };
  
  // Features forced by boot config. Written only while parsing module params
+ // (before kernelsu_init), read-only afterwards.
+ static u64 forced_values[KSU_FEATURE_MAX];
+-static DECLARE_BITMAP(forced_mask, KSU_FEATURE_MAX);
++static DECLARE_BITMAP(feature_forced_mask, KSU_FEATURE_MAX);
+ // Forced features whose value has not been applied successfully yet
+-static DECLARE_BITMAP(forced_pending, KSU_FEATURE_MAX);
++static DECLARE_BITMAP(feature_forced_pending, KSU_FEATURE_MAX);
+ 
+ static int parse_feature_id(const char *name, u32 *id)
+ {
+@@ -78,8 +79,8 @@ static int force_feature_param_set(const char *val, const struct kernel_param *k
+ 		}
+ 
+ 		forced_values[id] = value;
+-		set_bit(id, forced_mask);
+-		set_bit(id, forced_pending);
++		set_bit(id, feature_forced_mask);
++		set_bit(id, feature_forced_pending);
+ 		pr_info("feature: %s (id=%u) forced to %llu\n", feature_names[id], id, value);
+ 	}
+ 
+@@ -207,7 +208,7 @@ int ksu_set_feature(u32 feature_id, u64 value)
+ 		return -EINVAL;
+ 	}
+ 
+-	if (test_bit(feature_id, forced_mask)) {
++	if (test_bit(feature_id, feature_forced_mask)) {
+ 		pr_warn("feature: feature %u is forced by boot config\n", feature_id);
+ 		return -EPERM;
+ 	}
+@@ -240,7 +241,7 @@ out:
+ 
+ bool ksu_feature_is_forced(u32 feature_id)
+ {
+-	return feature_id < KSU_FEATURE_MAX && test_bit(feature_id, forced_mask);
++	return feature_id < KSU_FEATURE_MAX && test_bit(feature_id, feature_forced_mask);
+ }
+ 
+ void ksu_feature_apply_forced(void)
+@@ -251,7 +252,7 @@ void ksu_feature_apply_forced(void)
+ 
+ 	mutex_lock(&feature_mutex);
+ 
+-	for_each_set_bit (id, forced_pending, KSU_FEATURE_MAX) {
++	for_each_set_bit (id, feature_forced_pending, KSU_FEATURE_MAX) {
+ 		handler = feature_handlers[id];
+ 		if (!handler || !handler->set_handler) {
+ 			continue;
+@@ -263,7 +264,7 @@ void ksu_feature_apply_forced(void)
+ 			continue;
+ 		}
+ 
+-		clear_bit(id, forced_pending);
++		clear_bit(id, feature_forced_pending);
+ 		pr_info("feature: applied forced %s=%llu\n", feature_names[id], forced_values[id]);
+ 	}
+ 
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 index 604cad9..41895ca 100644
 --- a/kernel/runtime/boot_event.c
