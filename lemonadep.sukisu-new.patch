@@ -78,6 +78,65 @@ index 1ead162..4d3d1b4 100644
 +endmenu
 +
  endmenu
+diff --git a/kernel/downstream/slow_avc_audit_defs.h b/kernel/downstream/slow_avc_audit_defs.h
+index 0b7e836..e43ee84 100644
+--- a/kernel/downstream/slow_avc_audit_defs.h
++++ b/kernel/downstream/slow_avc_audit_defs.h
+@@ -15,6 +15,8 @@
+ #define __KSU_H_SLOW_AVC_AUDIT_HOOK
+ 
+ static bool ksu_selinux_hide_enabled;
++/* AVC spoof is a distinct Manager feature (ID 10003), independent of SELinux hide. */
++static bool ksu_avc_spoof_enabled __read_mostly = true;
+ static u32 cached_su_sid;
+ static u32 priv_app_sid __read_mostly = 0;
+ 
+@@ -32,7 +34,7 @@ static inline int ksu_selinux_get_sids()
+ 
+ static __always_inline void ksu_slow_avc_audit_inline(u32 *tsid)
+ {
+-	if (unlikely(!ksu_selinux_hide_enabled))
++	if (unlikely(!READ_ONCE(ksu_avc_spoof_enabled)))
+ 		return;
+ 
+ 	// won't happen. this is unreachable if so
+@@ -46,6 +48,36 @@ static __always_inline void ksu_slow_avc_audit_inline(u32 *tsid)
+ 	*tsid = priv_app_sid;
+ }
+ 
++static int ksu_avc_spoof_feature_get(u64 *value)
++{
++	*value = READ_ONCE(ksu_avc_spoof_enabled) ? 1 : 0;
++	return 0;
++}
++
++static int ksu_avc_spoof_feature_set(u64 value)
++{
++	bool enable = value != 0;
++
++	WRITE_ONCE(ksu_avc_spoof_enabled, enable);
++	pr_info("avc_spoof: set to %d\n", enable);
++	return 0;
++}
++
++static const struct ksu_feature_handler ksu_avc_spoof_feature_handler = {
++	.feature_id = KSU_FEATURE_AVC_SPOOF,
++	.name = "avc_spoof",
++	.get_handler = ksu_avc_spoof_feature_get,
++	.set_handler = ksu_avc_spoof_feature_set,
++};
++
++static void __init ksu_avc_spoof_feature_init(void)
++{
++	int ret = ksu_register_feature_handler(&ksu_avc_spoof_feature_handler);
++
++	if (ret)
++		pr_err("avc_spoof: failed to register feature handler: %d\n", ret);
++}
++
+ #if defined(CONFIG_AUDIT) && defined(CONFIG_ARM64) && defined(CONFIG_KALLSYMS)
+ 
+ struct selinux_state;
 diff --git a/kernel/downstream/toolkit.h b/kernel/downstream/toolkit.h
 index 0636437..052b4ac 100644
 --- a/kernel/downstream/toolkit.h
@@ -274,6 +333,101 @@ index f00aebd..5e36011 100644
      if (ksu_register_extension_handler(&version_spoof_handler))
          pr_err("extension: failed to register version_spoof\n");
  
+diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
+new file mode 100644
+index 0000000..8cf23ab
+--- /dev/null
++++ b/kernel/extension/susfs_extension.c
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SuSFS extension handler stub.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. Its presence is advertised by the
++ * mere fact that this handler is registered with the extension
++ * subsystem — the framework itself sets `supported = true`
++ * whenever a handler is found, and `ops->get` only fills the
++ * optional value field.
++ *
++ * The SuSFS sub-screen independently checks whether the SuSFS
++ * module is installed (via `ksud susfs status`) and prompts the
++ * user accordingly. No additional runtime probing is needed here.
++ */
++#include "susfs_extension.h"
++#include "../include/klog.h" // IWYU pragma: keep
++
++#include <linux/errno.h>
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value)
++{
++    if (value)
++        *value = 0;
++    return 0;
++}
++
++int ksu_extension_susfs_set(u32 extension_id, u64 value)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_wipe(u32 extension_id)
++{
++    return -EOPNOTSUPP;
++}
++
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value)
++{
++    /* No-op: SuSFS state is managed entirely by the userspace
++     * module management flow, not by force_extension=. */
++}
++
++const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
++    .get = ksu_extension_susfs_get,
++    .set = NULL,
++};
+diff --git a/kernel/extension/susfs_extension.h b/kernel/extension/susfs_extension.h
+new file mode 100644
+index 0000000..d2bdbf6
+--- /dev/null
++++ b/kernel/extension/susfs_extension.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * SuSFS extension handler.
++ *
++ * This is a thin shim that bridges the kernel extension subsystem
++ * (kernel/extension/extension.c) with the SuSFS module. The
++ * extension framework sets `supported = true` whenever a handler
++ * is registered; ops->get only fills the optional value field.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. The SuSFS sub-screen independently
++ * probes `ksud susfs status` to determine whether the module is
++ * actually installed.
++ */
++#ifndef __KSU_H_EXTENSION_SUSFS
++#define __KSU_H_EXTENSION_SUSFS
++
++#include <linux/types.h>
++
++#include "extension.h"
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value);
++int ksu_extension_susfs_set(u32 extension_id, u64 value);
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg);
++int ksu_extension_susfs_wipe(u32 extension_id);
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value);
++
++/* ops table consumed by ksu_register_extension_handler() in extension.c */
++extern const struct ksu_extension_handler_ops ksu_extension_susfs_ops;
++
++#endif /* __KSU_H_EXTENSION_SUSFS */
 diff --git a/kernel/feature/mount_hide.c b/kernel/feature/mount_hide.c
 index 33d4e62..55a55c1 100644
 --- a/kernel/feature/mount_hide.c
@@ -1053,8 +1207,22 @@ index 571c6de..47ddb5a 100644
      KSU_EXTENSION_VERSION_SPOOF = 5,
  
      KSU_EXTENSION_MAX
+diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
+index 44a99bd..b8fcba1 100644
+--- a/kernel/include/uapi/feature.h
++++ b/kernel/include/uapi/feature.h
+@@ -17,6 +17,9 @@ enum ksu_feature_id {
+ 	 */
+ 	KSU_FEATURE_MOUNT_HIDE = 16,
+ 
++	/* Keep in sync with KernelSU-Next Manager's AVC spoof feature. */
++	KSU_FEATURE_AVC_SPOOF = 10003,
++
+ 	KSU_FEATURE_MAX
+ };
+ 
 diff --git a/kernel/ksu.c b/kernel/ksu.c
-index 338fe98..998dd3a 100644
+index 338fe98..f6e89f1 100644
 --- a/kernel/ksu.c
 +++ b/kernel/ksu.c
 @@ -46,6 +46,10 @@
@@ -1076,7 +1244,7 @@ index 338fe98..998dd3a 100644
  #include "extension/cpu_spoof.c"
  #include "extension/umount_paths.c"
  #include "extension/dynamic_manager.c"
-@@ -286,6 +291,11 @@ static int __init kernelsu_init(void)
+@@ -286,11 +291,17 @@ static int __init kernelsu_init(void)
  		return -ENOSYS;
  	}
  
@@ -1088,6 +1256,12 @@ index 338fe98..998dd3a 100644
  #ifdef KSU_CAN_USE_MODULE_BLACKLIST
  	ksu_module_blacklist_init(); // Block modules early, before vendor modules are loaded in second stage.
  #endif
+ 	// register features
+ 	ksu_feature_init();
++	ksu_avc_spoof_feature_init();
+ 	ksu_extension_init();
+ 	ksu_extension_register_all();
+ 	ksu_sucompat_init();
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 index 8a7d780..1a74995 100644
 --- a/kernel/manager/pkg_observer.c
@@ -1123,6 +1297,18 @@ index 8a7d780..1a74995 100644
  	return;
  
  slow_path:
+diff --git a/kernel/policy/feature.c b/kernel/policy/feature.c
+index f910e4f..73fec29 100644
+--- a/kernel/policy/feature.c
++++ b/kernel/policy/feature.c
+@@ -10,6 +10,7 @@ static const char *const feature_names[KSU_FEATURE_MAX] = {
+ 	[KSU_FEATURE_SELINUX_HIDE] = "selinux_hide",
+ 	[KSU_FEATURE_SHELL_SU_ADB_ONLY] = "shell_su_adb_only",
+ 	[KSU_FEATURE_MOUNT_HIDE] = "mount_hide",
++	[KSU_FEATURE_AVC_SPOOF] = "avc_spoof",
+ };
+ 
+ // Features forced by boot config. Written only while parsing module params
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 index 604cad9..41895ca 100644
 --- a/kernel/runtime/boot_event.c
@@ -1345,100 +1531,3 @@ index 59ec582..d600b8d 100644
  
  		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
-
-diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
-new file mode 100644
-index 0000000000000000000000000000000000000000..8cf23ab374f2f73970497a8e772caf9aa6f3cee1
---- /dev/null
-+++ b/kernel/extension/susfs_extension.c
-@@ -0,0 +1,52 @@
-+// SPDX-License-Identifier: GPL-2.0
-+/*
-+ * SuSFS extension handler stub.
-+ *
-+ * SuSFS has no sticky bit, no ioctl passthrough, and no
-+ * force_extension= replay. Its presence is advertised by the
-+ * mere fact that this handler is registered with the extension
-+ * subsystem — the framework itself sets `supported = true`
-+ * whenever a handler is found, and `ops->get` only fills the
-+ * optional value field.
-+ *
-+ * The SuSFS sub-screen independently checks whether the SuSFS
-+ * module is installed (via `ksud susfs status`) and prompts the
-+ * user accordingly. No additional runtime probing is needed here.
-+ */
-+#include "susfs_extension.h"
-+#include "../include/klog.h" // IWYU pragma: keep
-+
-+#include <linux/errno.h>
-+
-+int ksu_extension_susfs_get(u32 extension_id, u64 *value)
-+{
-+    if (value)
-+        *value = 0;
-+    return 0;
-+}
-+
-+int ksu_extension_susfs_set(u32 extension_id, u64 value)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+int ksu_extension_susfs_io(u32 extension_id, void __user *arg)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+int ksu_extension_susfs_wipe(u32 extension_id)
-+{
-+    return -EOPNOTSUPP;
-+}
-+
-+void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value)
-+{
-+    /* No-op: SuSFS state is managed entirely by the userspace
-+     * module management flow, not by force_extension=. */
-+}
-+
-+const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
-+    .get = ksu_extension_susfs_get,
-+    .set = NULL,
-+};
-
-diff --git a/kernel/extension/susfs_extension.h b/kernel/extension/susfs_extension.h
-new file mode 100644
-index 0000000000000000000000000000000000000000..d2bdbf6f489001d12c22db4a835c9aa2bd184c1b
---- /dev/null
-+++ b/kernel/extension/susfs_extension.h
-@@ -0,0 +1,31 @@
-+/* SPDX-License-Identifier: GPL-2.0 */
-+/*
-+ * SuSFS extension handler.
-+ *
-+ * This is a thin shim that bridges the kernel extension subsystem
-+ * (kernel/extension/extension.c) with the SuSFS module. The
-+ * extension framework sets `supported = true` whenever a handler
-+ * is registered; ops->get only fills the optional value field.
-+ *
-+ * SuSFS has no sticky bit, no ioctl passthrough, and no
-+ * force_extension= replay. The SuSFS sub-screen independently
-+ * probes `ksud susfs status` to determine whether the module is
-+ * actually installed.
-+ */
-+#ifndef __KSU_H_EXTENSION_SUSFS
-+#define __KSU_H_EXTENSION_SUSFS
-+
-+#include <linux/types.h>
-+
-+#include "extension.h"
-+
-+int ksu_extension_susfs_get(u32 extension_id, u64 *value);
-+int ksu_extension_susfs_set(u32 extension_id, u64 value);
-+int ksu_extension_susfs_io(u32 extension_id, void __user *arg);
-+int ksu_extension_susfs_wipe(u32 extension_id);
-+void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value);
-+
-+/* ops table consumed by ksu_register_extension_handler() in extension.c */
-+extern const struct ksu_extension_handler_ops ksu_extension_susfs_ops;
-+
-+#endif /* __KSU_H_EXTENSION_SUSFS */

@@ -1,5 +1,5 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4
-# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH
+# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v3
 # This file REPLACES the previous separate kernel integration patch and
 # review-fix patches. Apply this file ONCE to a clean lineage-24.0 kernel tree.
 # Do NOT apply lemonadep-lineage24-android17-kernel-final.patch or any
@@ -12,6 +12,10 @@
 # filtering; Open Redirect declarations, generation checks, VFS readlink/open
 # path wiring and SRCU rule lifetime; SELinux 5.4 fake-policy SID-table/map
 # lifetime across policy reload; proc bootconfig NULL-safe serialization.
+# Additional confirmed driver fixes: make the global Oplus display sysfs node
+# primary-display-only; serialize its singleton setup/teardown and roll back
+# sysfs/notifier/FFL resources; clean up Oplus panel allocation failures;
+# track CVP SYNX initialization; skip ADFR updates until a valid panel mode.
 #
 # Validation: generated as a single net diff from the supplied unpatched
 # kernel source subset to the tree after applying the original integration
@@ -7638,4 +7642,255 @@ index 3c554a442467d1f09cf27103b63ae316f9ce38ea..5b282c896dbf6621e259dbce3434f362
 +#endif
  		status->sequence++;
  		smp_wmb();
+
+diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/msm/cvp/msm_cvp.c
+--- a/drivers/media/platform/msm/cvp/msm_cvp.c
++++ b/drivers/media/platform/msm/cvp/msm_cvp.c
+@@ -2,6 +2,8 @@
+ 	if (synx_initialize(&inst->synx_session_id, &params)) {
+ 		dprintk(CVP_ERR, "%s synx_initialize failed\n", __func__);
+ 		rc = -EFAULT;
++	} else {
++		inst->synx_session_initialized = true;
+ 	}
  
+ fail_init:
+diff --git a/drivers/media/platform/msm/cvp/msm_cvp_core.c b/drivers/media/platform/msm/cvp/msm_cvp_core.c
+--- a/drivers/media/platform/msm/cvp/msm_cvp_core.c
++++ b/drivers/media/platform/msm/cvp/msm_cvp_core.c
+@@ -2,7 +2,10 @@
+ 
+ 	__deinit_session_queue(inst);
+ 	__deinit_fence_queue(inst);
+-	synx_uninitialize(inst->synx_session_id);
++	if (inst->synx_session_initialized) {
++		synx_uninitialize(inst->synx_session_id);
++		inst->synx_session_initialized = false;
++	}
+ 
+ 	pr_info(CVP_DBG_TAG "Closed cvp instance: %pK session_id = %d\n",
+ 		"sess", inst, inst->sess_id);
+diff --git a/drivers/media/platform/msm/cvp/msm_cvp_internal.h b/drivers/media/platform/msm/cvp/msm_cvp_internal.h
+--- a/drivers/media/platform/msm/cvp/msm_cvp_internal.h
++++ b/drivers/media/platform/msm/cvp/msm_cvp_internal.h
+@@ -1,5 +1,6 @@
+ 	struct cvp_session_prop prop;
+ 	u32 cur_cmd_type;
+ 	struct synx_session synx_session_id;
++	bool synx_session_initialized;
+ 	struct cvp_fence_queue fence_cmd_queue;
+ };
+diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/dsi_display.c
+--- a/techpack/display/msm/dsi/dsi_display.c
++++ b/techpack/display/msm/dsi/dsi_display.c
+@@ -1,6 +1,7 @@
+ 	msm_register_vm_event(master, dev, &vm_event_ops, (void *)display);
+ #ifdef OPLUS_BUG_STABILITY
+-	oplus_display_private_api_init();
++	if (display == get_main_display())
++		oplus_display_private_api_init();
+ 	if(display->panel->esd_config.esd_err_flag_enabled) {
+ 		DSI_INFO("20627 panel add esd err flag detect\n");
+ 		dsi_display_register_esd_err_irq(display);
+@@ -14,7 +15,8 @@
+ 	}
+ 
+ #ifdef OPLUS_BUG_STABILITY
+-    oplus_display_private_api_exit();
++    if (display == get_main_display())
++		oplus_display_private_api_exit();
+ #endif
+ 	mutex_lock(&display->display_lock);
+ 
+diff --git a/techpack/display/oplus/oplus_display_private_api.c b/techpack/display/oplus/oplus_display_private_api.c
+--- a/techpack/display/oplus/oplus_display_private_api.c
++++ b/techpack/display/oplus/oplus_display_private_api.c
+@@ -3107,3 +3107,6 @@
+ static struct kobject *oplus_display_kobj;
++static DEFINE_MUTEX(oplus_display_private_api_lock);
++static bool oplus_display_notifier_registered;
++static bool oplus_display_ffl_started;
+ 
+ static OPLUS_ATTR(hbm, S_IRUGO | S_IWUSR, oplus_display_get_hbm,
+@@ -3285,65 +3289,93 @@
+ extern int oplus_display_panel_init(void);
+ int oplus_display_private_api_init(void)
+ {
+-	struct dsi_display *display = get_main_display();
++	struct dsi_display *display;
++	struct kobject *kobj;
+ 	int retval;
+ 
+-	if (!display) {
+-		return -EPROBE_DEFER;
++	mutex_lock(&oplus_display_private_api_lock);
++	if (oplus_display_kobj) {
++		mutex_unlock(&oplus_display_private_api_lock);
++		return 0;
+ 	}
+ 
+-	oplus_display_kobj = kobject_create_and_add("oplus_display", kernel_kobj);
+-
+-	if (!oplus_display_kobj) {
+-		return -ENOMEM;
++	display = get_main_display();
++	if (!display || !display->pdev) {
++		retval = -EPROBE_DEFER;
++		goto out_unlock;
+ 	}
+ 
+-	/* Create the files associated with this kobject */
+-	retval = sysfs_create_group(oplus_display_kobj, &oplus_display_attr_group);
+-
+-	if (retval) {
+-		goto error_remove_kobj;
++	/* Keep the singleton pointer untouched until setup has succeeded. */
++	kobj = kobject_create_and_add("oplus_display", kernel_kobj);
++	if (!kobj) {
++		retval = -ENOMEM;
++		goto out_unlock;
+ 	}
+ 
+-	retval = sysfs_create_link(oplus_display_kobj,
+-				   &display->pdev->dev.kobj, "panel");
++	retval = sysfs_create_group(kobj, &oplus_display_attr_group);
++	if (retval)
++		goto error_put_kobj;
+ 
+-	if (retval) {
+-		goto error_remove_sysfs_group;
+-	}
++	retval = sysfs_create_link(kobj, &display->pdev->dev.kobj, "panel");
++	if (retval)
++		goto error_remove_group;
+ 
+-	if (oplus_ffl_thread_init()) {
++	oplus_display_ffl_started = false;
++	oplus_display_notifier_registered = false;
++
++	/* Register the notifier before starting resources that need teardown. */
++	retval = touchpanel_event_register_notifier(&oplus_input_event_notifier);
++	if (retval)
++		goto error_remove_link;
++	oplus_display_notifier_registered = true;
++
++	if (!oplus_ffl_thread_init())
++		oplus_display_ffl_started = true;
++	else
+ 		pr_err("fail to init oplus_ffl_thread\n");
+-	}
+ 
+-	if(oplus_display_panel_init())
++	if (oplus_display_panel_init())
+ 		pr_err("fail to init oplus_display_panel_init\n");
+ 	/*mm_kevent_init();*/
+ 
+-	retval = touchpanel_event_register_notifier(&oplus_input_event_notifier);
+-
+-	if (retval) {
+-		goto error_remove_sysfs_group;
+-	}
+-
++	oplus_display_kobj = kobj;
++	mutex_unlock(&oplus_display_private_api_lock);
+ 	return 0;
+ 
+-error_remove_sysfs_group:
+-	sysfs_remove_group(oplus_display_kobj, &oplus_display_attr_group);
+-error_remove_kobj:
+-	kobject_put(oplus_display_kobj);
+-	oplus_display_kobj = NULL;
+-	/*mm_kevent_deinit();*/
+-
++error_remove_link:
++	sysfs_remove_link(kobj, "panel");
++error_remove_group:
++	sysfs_remove_group(kobj, &oplus_display_attr_group);
++error_put_kobj:
++	kobject_put(kobj);
++out_unlock:
++	mutex_unlock(&oplus_display_private_api_lock);
+ 	return retval;
+ }
+ 
+-void  oplus_display_private_api_exit(void)
++void oplus_display_private_api_exit(void)
+ {
+-	/*mm_kevent_deinit();*/
+-	oplus_ffl_thread_exit();
+-	touchpanel_event_unregister_notifier(&oplus_input_event_notifier);
+-	sysfs_remove_link(oplus_display_kobj, "panel");
+-	sysfs_remove_group(oplus_display_kobj, &oplus_display_attr_group);
+-	kobject_put(oplus_display_kobj);
++	struct kobject *kobj;
++
++	mutex_lock(&oplus_display_private_api_lock);
++	kobj = oplus_display_kobj;
++	if (!kobj)
++		goto out_unlock;
++
++	/* Detach the published singleton before tearing down its sysfs files. */
++	oplus_display_kobj = NULL;
++	if (oplus_display_notifier_registered) {
++		touchpanel_event_unregister_notifier(&oplus_input_event_notifier);
++		oplus_display_notifier_registered = false;
++	}
++	sysfs_remove_link(kobj, "panel");
++	sysfs_remove_group(kobj, &oplus_display_attr_group);
++	if (oplus_display_ffl_started) {
++		oplus_ffl_thread_exit();
++		oplus_display_ffl_started = false;
++	}
++	kobject_put(kobj);
++
++out_unlock:
++	mutex_unlock(&oplus_display_private_api_lock);
+ }
+diff --git a/techpack/display/oplus/oplus_display_panel.c b/techpack/display/oplus/oplus_display_panel.c
+--- a/techpack/display/oplus/oplus_display_panel.c
++++ b/techpack/display/oplus/oplus_display_panel.c
+@@ -276,6 +276,7 @@
+ err_export_dmabuf:
+ 	free_pages(vaddr, page_order);
+ err_dmabuf:
+ 	kfree(p_apollo_backlight);
++	p_apollo_backlight = NULL;
+ err_backlightbuf:
+ 	return retcode;
+@@ -467,10 +468,12 @@
+ 	rc = oplus_export_dmabuf(APOLLO_BACKLIGHT_LENS);
+ 	if (rc < 0) {
+ 		pr_err("%s dmabuf alloc fail", __func__);
+-		goto err_device_create;
++		goto err_destroy_device;
+ 	}
+ 
+ 	return 0;
+ 
++err_destroy_device:
++	device_destroy(panel_class, dev_num);
+ err_device_create:
+ 	cdev_del(&panel_cdev);
+diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_adfr.c
+--- a/techpack/display/oplus/oplus_adfr.c
++++ b/techpack/display/oplus/oplus_adfr.c
+@@ -1865,9 +1865,17 @@
+ 	int h_skew = SDC_ADFR;
+ 	int rc = 0;
+ 
+-	if (!display || !display->panel || !display->panel->cur_mode) {
+-		DSI_ERR("kVRR dsi_display_auto_mode_update Invalid params\n");
++	if (!display) {
++		DSI_ERR("kVRR dsi_display_auto_mode_update Invalid display\n");
+ 		return -EINVAL;
+ 	}
+ 
++	/* The pre-commit callback can run while the panel is off or modeset is
++	 * tearing down.  Keep pending ADFR updates for the next valid mode.
++	 */
++	if (!display->panel || !display->panel->cur_mode) {
++		DSI_DEBUG("kVRR skip auto mode update: panel mode is not ready\n");
++		return 0;
++	}
++
+ 	h_skew = display->panel->cur_mode->timing.h_skew;
