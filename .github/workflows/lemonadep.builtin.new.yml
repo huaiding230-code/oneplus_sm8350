@@ -33,12 +33,13 @@ jobs:
           fetch-depth: 1
 
       # 4. 拉取 AOSP 官方 Clang 工具链（Google 官方预编译，和 LineageOS 24.0 官方构建一致）
-      - name: Setup Proton-Clang Toolchain
+      - name: "4. Setup AOSP Clang Toolchain"
         run: |
-          mkdir -p toolchain
-          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
-          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> $GITHUB_PATH
-
+          mkdir -p toolchain/clang
+          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz" \
+            | tar -xz -C toolchain/clang
+          echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
+          
       # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
       #    必须先于 SukiSU 接入，因为会改 drivers/Makefile。
       - name: "5. Apply kernel patches"
@@ -98,13 +99,6 @@ jobs:
           CONFIG_KALLSYMS=y
           # KPM 不启用
           # CONFIG_KPM is not set
-          # 网络优化：解锁可选拥塞控制算法和现代排队算法
-          CONFIG_TCP_CONG_ADVANCED=y
-          CONFIG_TCP_CONG_WESTWOOD=y
-          CONFIG_TCP_CONG_BBR=y
-          CONFIG_NET_SCH_FQ=y
-          CONFIG_NET_SCH_FQ_CODEL=y
-          CONFIG_NET_SCH_CAKE=y
           # 精简调试：关掉用不上的调度器调试统计
           # CONFIG_SCHED_DEBUG is not set
           EOF
@@ -133,9 +127,7 @@ jobs:
                      CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
                      CONFIG_NET CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
                      CONFIG_SECURITY CONFIG_SECURITY_SELINUX CONFIG_SECURITYFS \
-                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
-                     CONFIG_TCP_CONG_ADVANCED CONFIG_TCP_CONG_WESTWOOD CONFIG_TCP_CONG_BBR \
-                     CONFIG_NET_SCH_FQ CONFIG_NET_SCH_FQ_CODEL CONFIG_NET_SCH_CAKE; do
+                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
           grep -qx '# CONFIG_SCHED_DEBUG is not set' "$OUT/.config" || { echo "CONFIG_SCHED_DEBUG 应保持关闭"; exit 1; }
