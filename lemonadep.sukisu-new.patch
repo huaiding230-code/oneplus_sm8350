@@ -1386,7 +1386,7 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 index 07b9717..8e8eab4 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -99,6 +99,22 @@ static int apply_kernelsu_rules_fn(void *ptr)
+@@ -99,6 +99,28 @@ static int apply_kernelsu_rules_fn(void *ptr)
  	ksu_allow(db, "init", "adb_data_file", "file", ALL);
  	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
  
@@ -1405,6 +1405,12 @@ index 07b9717..8e8eab4 100644
 +	ksu_allow(db, "init", "system_lib_file", "file", "getattr");
 +	ksu_allow(db, "init", "system_lib_file", "file", "relabelfrom");
 +	ksu_allow(db, "init", "adb_data_file", "lnk_file", "relabelto");
++
++	// rild (信号/基带相关守护进程) 读取 cache_file 符号链接被拒，只放行这一个具体权限
++	ksu_allow(db, "rild", "cache_file", "lnk_file", "read");
++
++	// 定时开关机闹钟 app 写 property_socket 被拒，只放行这一个具体权限
++	ksu_allow(db, "vendor_qti_poweroffalarm_app", "property_socket", "sock_file", "write");
 +
  	// copied from Magisk rules
  	// suRights
