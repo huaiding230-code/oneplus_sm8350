@@ -33,13 +33,12 @@ jobs:
           fetch-depth: 1
 
       # 4. 拉取 AOSP 官方 Clang 工具链（Google 官方预编译，和 LineageOS 24.0 官方构建一致）
-      - name: "4. Setup AOSP Clang Toolchain"
+      - name: Setup Proton-Clang Toolchain
         run: |
-          mkdir -p toolchain/clang
-          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r596125.tar.gz" \
-            | tar -xz -C toolchain/clang
-          echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
-          
+          mkdir -p toolchain
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> $GITHUB_PATH
+
       # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
       #    必须先于 SukiSU 接入，因为会改 drivers/Makefile。
       - name: "5. Apply kernel patches"
