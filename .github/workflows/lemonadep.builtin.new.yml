@@ -99,6 +99,22 @@ jobs:
           CONFIG_KALLSYMS=y
           # KPM 不启用
           # CONFIG_KPM is not set
+
+          # 网络优化：解锁可选拥塞控制算法和现代排队算法
+          CONFIG_TCP_CONG_ADVANCED=y
+          CONFIG_TCP_CONG_WESTWOOD=y
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_NET_SCH_FQ=y
+          CONFIG_NET_SCH_FQ_CODEL=y
+          CONFIG_NET_SCH_CAKE=y
+
+          # 精简调试：关掉用不上的调度器调试统计
+          # CONFIG_SCHED_DEBUG is not set
+
+          # 文件系统：补齐 NTFS / CIFS(Windows共享) / NFS 支持
+          CONFIG_NTFS_FS=y
+          CONFIG_CIFS=y
+          CONFIG_NFS_FS=y
           EOF
 
           MAKE_ARGS=(
@@ -125,9 +141,13 @@ jobs:
                      CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
                      CONFIG_NET CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
                      CONFIG_SECURITY CONFIG_SECURITY_SELINUX CONFIG_SECURITYFS \
-                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
+                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
+                     CONFIG_TCP_CONG_ADVANCED CONFIG_TCP_CONG_WESTWOOD CONFIG_TCP_CONG_BBR \
+                     CONFIG_NET_SCH_FQ CONFIG_NET_SCH_FQ_CODEL CONFIG_NET_SCH_CAKE \
+                     CONFIG_NTFS_FS CONFIG_CIFS CONFIG_NFS_FS; do
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
+          grep -qx '# CONFIG_SCHED_DEBUG is not set' "$OUT/.config" || { echo "CONFIG_SCHED_DEBUG 应保持关闭"; exit 1; }
 
           # prepare/scripts 单线程先跑一遍，避免并行编译时的竞争问题
           make "${MAKE_ARGS[@]}" -j1 prepare
