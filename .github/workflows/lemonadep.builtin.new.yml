@@ -32,14 +32,13 @@ jobs:
           path: kernel_source
           fetch-depth: 1
 
-      # 4. 拉取 Google 官方 AOSP Clang r416183b
-      - name: "4. Setup AOSP Clang Toolchain"
+      # 4. 拉取官方 Proton-Clang 工具链
+      - name: Setup Proton-Clang Toolchain
         run: |
-          mkdir -p toolchain/clang
-          curl -fL --retry 3 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/b54cd2c8e9e0bb057aef3804d42d39c5ac4674c7/clang-r563880c.tar.gz" \
-            | tar -xz -C toolchain/clang
-          echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
-          
+          mkdir -p toolchain
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git toolchain/proton-clang
+          echo "${GITHUB_WORKSPACE}/toolchain/proton-clang/bin" >> $GITHUB_PATH
+
       # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
       #    必须先于 SukiSU 接入，因为会改 drivers/Makefile。
       - name: "5. Apply kernel patches"
