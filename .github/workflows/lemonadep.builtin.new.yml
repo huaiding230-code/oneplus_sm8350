@@ -32,11 +32,11 @@ jobs:
           path: kernel_source
           fetch-depth: 1
 
-      # 4. 拉取 AOSP 官方 Clang 工具链（Google 官方预编译，和 LineageOS 24.0 官方构建一致）
+      # 4. 拉取 Google 官方 AOSP Clang r416183b
       - name: "4. Setup AOSP Clang Toolchain"
         run: |
           mkdir -p toolchain/clang
-          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r416183b.tar.gz" \
+          curl -fL --retry 3 "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/bd96dfe349c962681f0e5388af874c771ef96670/clang-r416183b.tar.gz" \
             | tar -xz -C toolchain/clang
           echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
           
