@@ -5130,9 +5130,9 @@ index 0000000000000000000000000000000000000000..b1d8c17df87551b3ded6403f907b1a0f
 +#include <linux/susfs_def.h>
 +#include <linux/statfs.h>
 +
-+#define SUSFS_VERSION "v2.3.0"
-+/* This tree is the OnePlus SM8350 vendor 5.4 backport. */
-+#define SUSFS_VARIANT "NON-GKI"
++#define SUSFS_VERSION "v2.4.0"
++/* OnePlus SM8350 Qualcomm GKI 1.0 (Linux 5.4). */
++#define SUSFS_VARIANT "GKI"
 +
 +/*********/
 +/* MACRO */
