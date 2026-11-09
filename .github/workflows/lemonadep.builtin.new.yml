@@ -33,9 +33,12 @@ jobs:
           fetch-depth: 1
 
       # 4. 拉取官方 Clang 工具链
-      - name: Setup Google Clang 
-        run: mkdir -p toolchain/clang-r596125 && curl -fsSL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r596125.tar.gz" | tar -xz -C toolchain/clang-r596125 && echo "$GITHUB_WORKSPACE/toolchain/clang-r596125/bin" >> "$GITHUB_PATH"
-      
+      - name: Setup Google Clang
+        run: |
+          mkdir -p toolchain/clang
+          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r596125.tar.gz" | tar -xz -C toolchain/clang
+          echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
+          
       # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
       #    必须先于 SukiSU 接入，因为会改 drivers/Makefile。
       - name: "5. Apply kernel patches"
