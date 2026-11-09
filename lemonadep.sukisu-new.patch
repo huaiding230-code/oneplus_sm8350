@@ -1,0 +1,1593 @@
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index 1ead162..4d3d1b4 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -154,4 +154,75 @@ config KPM
+     select KALLSYMS
+     select KALLSYMS_ALL
+ 
++menu "SUSFS support"
++
++config KSU_SUSFS
++	bool "Enable SUSFS integration"
++	depends on KSU
++	default y
++	help
++	  Enable the SUSFS kernel integration supplied by the kernel patch.
++
++config KSU_SUSFS_INLINE_HOOK
++	bool "Use SUSFS inline kernel hooks"
++	depends on KSU_SUSFS
++	default y
++	help
++	  Report and select the direct kernel hook backend integrated by the
++	  companion LineageOS kernel patch.
++
++config KSU_SUSFS_SUS_PATH
++	bool "SUSFS path hiding"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SUS_MAP
++	bool "SUSFS map hiding"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SUS_MOUNT
++	bool "SUSFS mount hiding"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SUS_KSTAT
++	bool "SUSFS stat spoofing"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_OPEN_REDIRECT
++	bool "SUSFS open redirect"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SPOOF_UNAME
++	bool "SUSFS uname spoofing"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++	bool "SUSFS cmdline/bootconfig spoofing"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_ENABLE_LOG
++	bool "SUSFS debug logging"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS
++	bool "Hide SUSFS symbols from kallsyms"
++	depends on KSU_SUSFS
++	default y
++
++config KSU_SUSFS_PRIORITY_UID_FILTER
++	bool "SUSFS priority UID filter"
++	depends on KSU_SUSFS
++	default y
++	help
++	  Hide selected application UIDs from priority-related system calls.
++
++endmenu
++
+ endmenu
+diff --git a/kernel/downstream/slow_avc_audit_defs.h b/kernel/downstream/slow_avc_audit_defs.h
+index 0b7e836..e43ee84 100644
+--- a/kernel/downstream/slow_avc_audit_defs.h
++++ b/kernel/downstream/slow_avc_audit_defs.h
+@@ -15,6 +15,8 @@
+ #define __KSU_H_SLOW_AVC_AUDIT_HOOK
+ 
+ static bool ksu_selinux_hide_enabled;
++/* AVC spoof is a distinct Manager feature (ID 10003), independent of SELinux hide. */
++static bool ksu_avc_spoof_enabled __read_mostly = true;
+ static u32 cached_su_sid;
+ static u32 priv_app_sid __read_mostly = 0;
+ 
+@@ -32,7 +34,7 @@ static inline int ksu_selinux_get_sids()
+ 
+ static __always_inline void ksu_slow_avc_audit_inline(u32 *tsid)
+ {
+-	if (unlikely(!ksu_selinux_hide_enabled))
++	if (unlikely(!READ_ONCE(ksu_avc_spoof_enabled)))
+ 		return;
+ 
+ 	// won't happen. this is unreachable if so
+@@ -46,6 +48,36 @@ static __always_inline void ksu_slow_avc_audit_inline(u32 *tsid)
+ 	*tsid = priv_app_sid;
+ }
+ 
++static int ksu_avc_spoof_feature_get(u64 *value)
++{
++	*value = READ_ONCE(ksu_avc_spoof_enabled) ? 1 : 0;
++	return 0;
++}
++
++static int ksu_avc_spoof_feature_set(u64 value)
++{
++	bool enable = value != 0;
++
++	WRITE_ONCE(ksu_avc_spoof_enabled, enable);
++	pr_info("avc_spoof: set to %d\n", enable);
++	return 0;
++}
++
++static const struct ksu_feature_handler ksu_avc_spoof_feature_handler = {
++	.feature_id = KSU_FEATURE_AVC_SPOOF,
++	.name = "avc_spoof",
++	.get_handler = ksu_avc_spoof_feature_get,
++	.set_handler = ksu_avc_spoof_feature_set,
++};
++
++static void __init ksu_avc_spoof_feature_init(void)
++{
++	int ret = ksu_register_feature_handler(&ksu_avc_spoof_feature_handler);
++
++	if (ret)
++		pr_err("avc_spoof: failed to register feature handler: %d\n", ret);
++}
++
+ #if defined(CONFIG_AUDIT) && defined(CONFIG_ARM64) && defined(CONFIG_KALLSYMS)
+ 
+ struct selinux_state;
+diff --git a/kernel/downstream/toolkit.h b/kernel/downstream/toolkit.h
+index 0636437..052b4ac 100644
+--- a/kernel/downstream/toolkit.h
++++ b/kernel/downstream/toolkit.h
+@@ -14,6 +14,10 @@
+ #ifndef __KSU_H_TOOLKIT
+ #define __KSU_H_TOOLKIT
+ 
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs.h>
++#endif
++
+ // extensions
+ #define CHANGE_MANAGER_UID 	10006
+ #define KSU_UMOUNT_GETSIZE 	107	// get list size // shit is u8 we cant fit 10k+ on it
+@@ -32,6 +36,86 @@ static inline int toolkit_handle_sys_reboot(int magic1, int magic2, unsigned int
+ 	// only root is allowed for these commands
+ 	if (!!current_uid().val)
+ 		return 0;
++
++#ifdef CONFIG_KSU_SUSFS
++	/*
++	 * SUSFS commands share the reboot-syscall transport but use
++	 * SUSFS_MAGIC as magic2.  Forward them to the kernel SUSFS
++	 * handlers instead of silently swallowing them as unknown toolkit
++	 * commands.  Each handler writes its result into the user structure.
++	 */
++	if ((unsigned int)magic2 == SUSFS_MAGIC) {
++		switch (cmd) {
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++		case CMD_SUSFS_ADD_SUS_PATH:
++			susfs_add_sus_path(arg);
++			break;
++		case CMD_SUSFS_ADD_SUS_PATH_LOOP:
++			susfs_add_sus_path_loop(arg);
++			break;
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++		case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
++			susfs_set_hide_sus_mnts_for_non_su_procs(arg);
++			break;
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
++		case CMD_SUSFS_ADD_SUS_KSTAT:
++		case CMD_SUSFS_ADD_SUS_KSTAT_STATICALLY:
++			susfs_add_sus_kstat(arg);
++			break;
++		case CMD_SUSFS_UPDATE_SUS_KSTAT:
++			susfs_update_sus_kstat(arg);
++			break;
++#endif
++#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
++		case CMD_SUSFS_SET_UNAME:
++			susfs_set_uname(arg);
++			break;
++#endif
++#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
++		case CMD_SUSFS_ENABLE_LOG:
++			susfs_enable_log(arg);
++			break;
++#endif
++#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++		case CMD_SUSFS_SET_CMDLINE_OR_BOOTCONFIG:
++			susfs_set_cmdline_or_bootconfig(arg);
++			break;
++#endif
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++		case CMD_SUSFS_ADD_OPEN_REDIRECT:
++			susfs_add_open_redirect(arg);
++			break;
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++		case CMD_SUSFS_ADD_SUS_MAP:
++			susfs_add_sus_map(arg);
++			break;
++#endif
++		#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
++		case CMD_SUSFS_SET_PRIORITY_UID_FILTER:
++			susfs_set_priority_uid_filter(arg);
++			break;
++		#endif
++		case CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING:
++			susfs_set_avc_log_spoofing(arg);
++			break;
++		case CMD_SUSFS_SHOW_ENABLED_FEATURES:
++			susfs_get_enabled_features(arg);
++			break;
++		case CMD_SUSFS_SHOW_VARIANT:
++			susfs_show_variant(arg);
++			break;
++		case CMD_SUSFS_SHOW_VERSION:
++			susfs_show_version(arg);
++			break;
++		default:
++			break;
++		}
++		return 0;
++	}
++#endif
+ 	
+ 	// extensions
+ 	uint64_t reply = (uint64_t)*(void **)arg;
+diff --git a/kernel/extension/cpu_spoof.c b/kernel/extension/cpu_spoof.c
+index a03f5f6..b1525c6 100644
+--- a/kernel/extension/cpu_spoof.c
++++ b/kernel/extension/cpu_spoof.c
+@@ -166,6 +166,7 @@ static int set_spoof_cpu(const struct ksu_set_spoof_cpu_cmd *cmd)
+ 				}
+ #endif
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+ 				{
+ 					struct clocksource **curr_cs_ptr =
+ 						(struct clocksource **)find_kernel_symbol_exact(
+@@ -178,6 +179,7 @@ static int set_spoof_cpu(const struct ksu_set_spoof_cpu_cmd *cmd)
+ 						++missing;
+ 					}
+ 				}
++#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) */
+ 
+ 				{
+ 					enum vdso_clock_mode *vd_default =
+diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
+index 1aeffbd..6390b4b 100644
+--- a/kernel/extension/dynamic_sig_fallback.c
++++ b/kernel/extension/dynamic_sig_fallback.c
+@@ -69,7 +69,8 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
+     struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
+     char dirpath[DATA_PATH_LEN];
+ 
+-    if (!strncmp(name, "..", namelen) || !strncmp(name, ".", namelen))
++    if ((namelen == 1 && name[0] == '.') ||
++        (namelen == 2 && name[0] == '.' && name[1] == '.'))
+         return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
+ 
+     if (d_type == DT_DIR && namelen >= 8 && !strncmp(name, "vmdl", 4) && !strncmp(name + namelen - 4, ".tmp", 4)) {
+@@ -82,13 +83,13 @@ static FILLDIR_RETURN_TYPE fb_actor(struct dir_context *ctx, const char *name, i
+         return FILLDIR_ACTOR_CONTINUE;
+     }
+ 
+-    if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
++    if (namelen == 8 && !memcmp(name, "base.apk", 8)) {
+         if (!c->matched && is_manager_apk(dirpath))
+             c->matched = true;
+         return FILLDIR_ACTOR_CONTINUE;
+     }
+ 
+-    if (d_type == DT_DIR && c->depth > 0) {
++    if ((d_type == DT_DIR || d_type == DT_UNKNOWN) && c->depth > 0) {
+         struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
+ 
+         if (!p) {
+diff --git a/kernel/extension/extension.c b/kernel/extension/extension.c
+index f00aebd..5e36011 100644
+--- a/kernel/extension/extension.c
++++ b/kernel/extension/extension.c
+@@ -18,6 +18,8 @@
+ #include <linux/string.h>
+ #include <linux/types.h>
+ 
++#include "susfs_extension.h"
++
+ static const struct ksu_extension_handler *extension_handlers[KSU_EXTENSION_MAX];
+ 
+ static DEFINE_MUTEX(extension_mutex);
+@@ -27,6 +29,7 @@ static const char *const extension_names[KSU_EXTENSION_MAX] = {
+     [KSU_EXTENSION_CPU_SPOOF] = "cpu_spoof",
+     [KSU_EXTENSION_UMOUNT_PATHS] = "umount_paths",
+     [KSU_EXTENSION_DYNAMIC_MANAGER] = "dynamic_manager",
++    [KSU_EXTENSION_SUSFS] = "susfs",
+     [KSU_EXTENSION_VERSION_SPOOF] = "version_spoof",
+ };
+ 
+@@ -552,6 +555,13 @@ void __init ksu_extension_register_all(void)
+         .ops = &ksu_extension_dynamic_manager_ops,
+         .io_handler = ksu_extension_dynamic_manager_io,
+     };
++    static const struct ksu_extension_handler susfs_handler = {
++        .extension_id = KSU_EXTENSION_SUSFS,
++        .name = "susfs",
++        .caps = 0,
++        .min_api_version = 0,
++        .ops = &ksu_extension_susfs_ops,
++    };
+     static const struct ksu_extension_handler version_spoof_handler = {
+         .extension_id = KSU_EXTENSION_VERSION_SPOOF,
+         .name = "version_spoof",
+@@ -570,6 +580,8 @@ void __init ksu_extension_register_all(void)
+         pr_err("extension: failed to register umount_paths\n");
+     if (ksu_register_extension_handler(&dynamic_manager_handler))
+         pr_err("extension: failed to register dynamic_manager\n");
++    if (ksu_register_extension_handler(&susfs_handler))
++        pr_err("extension: failed to register susfs\n");
+     if (ksu_register_extension_handler(&version_spoof_handler))
+         pr_err("extension: failed to register version_spoof\n");
+ 
+diff --git a/kernel/extension/susfs_extension.c b/kernel/extension/susfs_extension.c
+new file mode 100644
+index 0000000..8cf23ab
+--- /dev/null
++++ b/kernel/extension/susfs_extension.c
+@@ -0,0 +1,52 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SuSFS extension handler stub.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. Its presence is advertised by the
++ * mere fact that this handler is registered with the extension
++ * subsystem — the framework itself sets `supported = true`
++ * whenever a handler is found, and `ops->get` only fills the
++ * optional value field.
++ *
++ * The SuSFS sub-screen independently checks whether the SuSFS
++ * module is installed (via `ksud susfs status`) and prompts the
++ * user accordingly. No additional runtime probing is needed here.
++ */
++#include "susfs_extension.h"
++#include "../include/klog.h" // IWYU pragma: keep
++
++#include <linux/errno.h>
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value)
++{
++    if (value)
++        *value = 0;
++    return 0;
++}
++
++int ksu_extension_susfs_set(u32 extension_id, u64 value)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg)
++{
++    return -EOPNOTSUPP;
++}
++
++int ksu_extension_susfs_wipe(u32 extension_id)
++{
++    return -EOPNOTSUPP;
++}
++
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value)
++{
++    /* No-op: SuSFS state is managed entirely by the userspace
++     * module management flow, not by force_extension=. */
++}
++
++const struct ksu_extension_handler_ops ksu_extension_susfs_ops = {
++    .get = ksu_extension_susfs_get,
++    .set = NULL,
++};
+diff --git a/kernel/extension/susfs_extension.h b/kernel/extension/susfs_extension.h
+new file mode 100644
+index 0000000..d2bdbf6
+--- /dev/null
++++ b/kernel/extension/susfs_extension.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/*
++ * SuSFS extension handler.
++ *
++ * This is a thin shim that bridges the kernel extension subsystem
++ * (kernel/extension/extension.c) with the SuSFS module. The
++ * extension framework sets `supported = true` whenever a handler
++ * is registered; ops->get only fills the optional value field.
++ *
++ * SuSFS has no sticky bit, no ioctl passthrough, and no
++ * force_extension= replay. The SuSFS sub-screen independently
++ * probes `ksud susfs status` to determine whether the module is
++ * actually installed.
++ */
++#ifndef __KSU_H_EXTENSION_SUSFS
++#define __KSU_H_EXTENSION_SUSFS
++
++#include <linux/types.h>
++
++#include "extension.h"
++
++int ksu_extension_susfs_get(u32 extension_id, u64 *value);
++int ksu_extension_susfs_set(u32 extension_id, u64 value);
++int ksu_extension_susfs_io(u32 extension_id, void __user *arg);
++int ksu_extension_susfs_wipe(u32 extension_id);
++void ksu_extension_susfs_apply_forced(u32 extension_id, u64 value);
++
++/* ops table consumed by ksu_register_extension_handler() in extension.c */
++extern const struct ksu_extension_handler_ops ksu_extension_susfs_ops;
++
++#endif /* __KSU_H_EXTENSION_SUSFS */
+diff --git a/kernel/feature/mount_hide.c b/kernel/feature/mount_hide.c
+index 33d4e62..55a55c1 100644
+--- a/kernel/feature/mount_hide.c
++++ b/kernel/feature/mount_hide.c
+@@ -15,6 +15,7 @@
+ #include <linux/printk.h>
+ #include <linux/rwsem.h>
+ #include <linux/seq_file.h>
++#include <linux/smp.h>
+ #include <linux/string.h>
+ #include <linux/types.h>
+ 
+@@ -321,7 +322,9 @@ int ksu_mount_hide_file_permission(struct file *file, int mask)
+ 
+ 	if (!(mask & MAY_READ))
+ 		return 0;
+-	if (unlikely(!ksu_mount_hide_running || !ksu_mount_hide_enabled))
++	/* Publish the resolved callbacks before readers observe running=true. */
++	if (!smp_load_acquire(&ksu_mount_hide_running) ||
++	    !READ_ONCE(ksu_mount_hide_enabled))
+ 		return 0;
+ 
+ 	switch (ksu_mount_file_type(file)) {
+@@ -360,34 +363,35 @@ int ksu_mount_hide_file_permission(struct file *file, int mask)
+ 
+ static int ksu_mount_hide_resolve(void)
+ {
+-	static const char *const names[] = {
+-		"show_vfsmnt",
+-		"show_mountinfo",
+-		"show_vfsstat",
+-	};
+-	unsigned long addrs[ARRAY_SIZE(names)] = {};
+-	int ret;
+-
+-	ret = ksu_lookup_kernel_symbols(names, addrs, ARRAY_SIZE(names));
+-	if (ret < 0) {
+-		pr_err("mount_hide: symbol lookup failed: %d\n", ret);
+-		return ret;
+-	}
+-	if (!addrs[0] || !addrs[1] || !addrs[2]) {
+-		pr_err("mount_hide: show fns unresolved (vfsmnt=%d mountinfo=%d vfsstat=%d)\n", !!addrs[0], !!addrs[1],
+-			   !!addrs[2]);
++	unsigned long addr_vfsmnt;
++	unsigned long addr_mountinfo;
++	unsigned long addr_vfsstat;
++
++	/*
++	 * These are built-in vmlinux symbols, not module symbols.  The batched
++	 * compatibility resolver filters results through is_module_address(),
++	 * which therefore discards all three valid addresses on built-in KSU.
++	 * Resolve them individually through the normal exact kernel resolver.
++	 */
++	addr_vfsmnt = find_kernel_symbol_exact("show_vfsmnt");
++	addr_mountinfo = find_kernel_symbol_exact("show_mountinfo");
++	addr_vfsstat = find_kernel_symbol_exact("show_vfsstat");
++	if (!addr_vfsmnt || !addr_mountinfo || !addr_vfsstat) {
++		pr_err("mount_hide: show fns unresolved (vfsmnt=%d mountinfo=%d vfsstat=%d)\n",
++		       !!addr_vfsmnt, !!addr_mountinfo, !!addr_vfsstat);
+ 		return -ENOSYS;
+ 	}
+ 
+-	ksu_orig_show_vfsmnt = (ksu_show_fn)addrs[0];
+-	ksu_orig_show_mountinfo = (ksu_show_fn)addrs[1];
+-	ksu_orig_show_vfsstat = (ksu_show_fn)addrs[2];
++	ksu_orig_show_vfsmnt = (ksu_show_fn)addr_vfsmnt;
++	ksu_orig_show_mountinfo = (ksu_show_fn)addr_mountinfo;
++	ksu_orig_show_vfsstat = (ksu_show_fn)addr_vfsstat;
+ 	return 0;
+ }
+ 
+ static int mount_hide_feature_get(u64 *value)
+ {
+-	*value = ksu_mount_hide_enabled ? 1 : 0;
++	*value = READ_ONCE(ksu_mount_hide_enabled) &&
++		 smp_load_acquire(&ksu_mount_hide_running);
+ 	return 0;
+ }
+ 
+@@ -398,11 +402,16 @@ static int mount_hide_feature_set(u64 value)
+ 
+ 	pr_info("mount_hide: set to %d\n", enable);
+ 	mutex_lock(&ksu_mount_hide_mutex);
+-	ksu_mount_hide_enabled = enable;
+-	if (enable && !ksu_mount_hide_running) {
++	WRITE_ONCE(ksu_mount_hide_enabled, enable);
++	if (enable && !smp_load_acquire(&ksu_mount_hide_running)) {
+ 		ret = ksu_mount_hide_resolve();
+-		if (!ret)
+-			ksu_mount_hide_running = true;
++		if (!ret) {
++			/* Make the callback pointers visible before enabling readers. */
++			smp_store_release(&ksu_mount_hide_running, true);
++		} else {
++			/* Do not report the feature as enabled when resolution failed. */
++			WRITE_ONCE(ksu_mount_hide_enabled, false);
++		}
+ 	}
+ 	mutex_unlock(&ksu_mount_hide_mutex);
+ 	return ret;
+@@ -421,9 +430,16 @@ void __init ksu_mount_hide_init(void)
+ 		pr_err("Failed to register mount_hide feature handler\n");
+ 
+ 	mutex_lock(&ksu_mount_hide_mutex);
+-	if (ksu_mount_hide_enabled && !ksu_mount_hide_running) {
+-		if (!ksu_mount_hide_resolve())
+-			ksu_mount_hide_running = true;
++	if (READ_ONCE(ksu_mount_hide_enabled) &&
++	    !smp_load_acquire(&ksu_mount_hide_running)) {
++		int ret = ksu_mount_hide_resolve();
++
++		if (!ret) {
++			smp_store_release(&ksu_mount_hide_running, true);
++		} else {
++			WRITE_ONCE(ksu_mount_hide_enabled, false);
++			pr_err("mount_hide: disabled after symbol resolution failed: %d\n", ret);
++		}
+ 	}
+ 	mutex_unlock(&ksu_mount_hide_mutex);
+ }
+@@ -431,7 +447,7 @@ void __init ksu_mount_hide_init(void)
+ void __exit ksu_mount_hide_exit(void)
+ {
+ 	mutex_lock(&ksu_mount_hide_mutex);
+-	ksu_mount_hide_running = false;
++	smp_store_release(&ksu_mount_hide_running, false);
+ 	mutex_unlock(&ksu_mount_hide_mutex);
+ 	ksu_unregister_feature_handler(KSU_FEATURE_MOUNT_HIDE);
+ }
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index d342d42..023d9cc 100644
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -179,6 +179,97 @@ extern struct selinux_state selinux_state;
+ #endif
+ 
+ static struct page *ksu_fake_status_page __read_mostly = nullptr;
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++/* Compatibility adapter for the Linux 5.4 selinux_state/selinux_ss layout. */
++#include <linux/highmem.h>
++#include <linux/user_namespace.h>
++#include <linux/vmalloc.h>
++#include <ss/policydb.h>
++#include <ss/services.h>
++
++struct selinux_state fake_state;
++bool ksu_selinux_hide_running __read_mostly = false;
++static struct selinux_ss fake_ss;
++static bool legacy_snapshot_ready;
++static DEFINE_MUTEX(legacy_snapshot_mutex);
++static bool legacy_fake_ss_initialized;
++
++static void ksu_legacy_update_running(void)
++{
++	bool ready = READ_ONCE(legacy_snapshot_ready) &&
++		READ_ONCE(legacy_fake_ss_initialized) &&
++		READ_ONCE(fake_ss.status_page);
++
++	WRITE_ONCE(ksu_selinux_hide_running,
++		ready && READ_ONCE(ksu_selinux_hide_enabled));
++}
++
++int ksu_selinux_hide_snapshot_legacy(void)
++{
++	struct policy_file fp;
++	void *data = nullptr;
++	size_t len = 0;
++	int ret;
++
++	mutex_lock(&legacy_snapshot_mutex);
++	if (legacy_snapshot_ready) {
++		mutex_unlock(&legacy_snapshot_mutex);
++		return 0;
++	}
++	if (!selinux_state.ss || !selinux_initialized(&selinux_state)) {
++		ret = -EAGAIN;
++		goto out;
++	}
++
++	/* Linux 5.4 takes state explicitly; serialize the untouched live policy. */
++	ret = security_read_policy(&selinux_state, &data, &len);
++	if (ret)
++		goto out;
++	if (!data || !len) {
++		ret = -EINVAL;
++		goto out;
++	}
++
++	fp.data = data;
++	fp.len = len;
++	ret = policydb_read(&fake_ss.policydb, &fp);
++	if (ret)
++		goto out;
++
++	rwlock_init(&fake_ss.policy_rwlock);
++	mutex_init(&fake_ss.status_lock);
++	fake_ss.sidtab = selinux_state.ss->sidtab;
++	fake_ss.latest_granting = selinux_state.ss->latest_granting;
++	fake_ss.map = selinux_state.ss->map;
++	fake_ss.status_page = ksu_fake_status_page;
++	legacy_fake_ss_initialized = true;
++	fake_state = selinux_state;
++	fake_state.ss = &fake_ss;
++	fake_state.initialized = true;
++	WRITE_ONCE(legacy_snapshot_ready, true);
++	pr_info("selinux_hide: saved original Linux 5.4 policydb (%zu bytes)\n", len);
++	ret = 0;
++out:
++	vfree(data);
++	mutex_unlock(&legacy_snapshot_mutex);
++	if (ret)
++		pr_warn("selinux_hide: Linux 5.4 policy snapshot failed: %d\n", ret);
++	ksu_legacy_update_running();
++	return ret;
++}
++
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state)
++{
++	if (READ_ONCE(ksu_selinux_hide_running) &&
++	    READ_ONCE(legacy_snapshot_ready) && READ_ONCE(fake_ss.status_page) &&
++	    from_kuid(&init_user_ns, current_uid()) >= 10000)
++		return &fake_state;
++	return state;
++}
++EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
++#endif /* LINUX_VERSION_CODE < 5.10 */
++
+ static int ksu_prepare_fake_status_page()
+ {
+ 	struct page *real_page = ksu_selinux_kernel_status_page();
+@@ -207,6 +298,11 @@ static int ksu_prepare_fake_status_page()
+ #endif
+ 
+ 	ksu_fake_status_page = new_page;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	if (legacy_fake_ss_initialized)
++		fake_ss.status_page = new_page;
++	ksu_legacy_update_running();
++#endif
+     
+ 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%d\n", fake_status->sequence);
+             
+@@ -347,7 +443,9 @@ static int selinux_hide_feature_set(u64 value)
+ 		ksu_selinux_hide_enabled = true;
+ 	else
+ 		ksu_selinux_hide_enabled = false;
+-
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	ksu_legacy_update_running();
++#endif
+ 	return ret;
+ }
+ 
+@@ -372,6 +470,9 @@ void __init ksu_selinux_hide_init()
+ 
+ void __exit ksu_selinux_hide_exit()
+ {
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	WRITE_ONCE(ksu_selinux_hide_running, false);
++#endif
+ 	ksu_unregister_feature_handler(KSU_FEATURE_SELINUX_HIDE);
+ }
+ 
+diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
+index 1706e6f..3e3f52c 100644
+--- a/kernel/feature/selinux_hide.h
++++ b/kernel/feature/selinux_hide.h
+@@ -16,8 +16,15 @@
+ #ifndef __KSU_H_SELINUX_HIDE
+ #define __KSU_H_SELINUX_HIDE
+ 
++#include <linux/version.h>
++
+ void ksu_selinux_hide_init();
+ void ksu_selinux_hide_exit();
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++int ksu_selinux_hide_snapshot_legacy(void);
++struct selinux_state;
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state);
++#endif
+ 
+ static int sepol_expected_argc(u32 cmd);
+ 
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 4efbf91..d2b3a92 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -1,3 +1,8 @@
++#include <linux/fdtable.h>
++#include <linux/file.h>
++#include <linux/fcntl.h>
++#include <linux/namei.h>
++
+ #if defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) || defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
+ #define SUCOMPAT_HOOK_TYPE static __always_inline int
+ #else
+@@ -5,10 +10,16 @@
+ #endif
+ 
+ #define SU_PATH "/system/bin/su"
++#define SU_PATH_ALT "/system/xbin/su"
+ #define SH_PATH "/system/bin/sh"
+ 
+ static bool ksu_su_compat_enabled __read_mostly = true;
+ 
++bool ksu_su_compat_is_enabled(void)
++{
++	return READ_ONCE(ksu_su_compat_enabled);
++}
++
+ static char __user *sh_user_path(void)
+ {
+ 	constexpr char sh_path[16] = SH_PATH;
+@@ -64,14 +75,16 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
+ #endif // KSU_CAN_USE_JUMP_LABEL
+ #endif
+ 
+-	// put ret hot on insn pipeline
+-	if (likely(ksu_is_seccomp_enabled()))
+-		return false;
+-
+-	// pass through tagged task from setuid hook
++	/* Match main-branch sucompat: do not use seccomp state as the
++	 * authorization test. Tasks already marked by the setuid hook keep
++	 * their fast path; other tasks must have an allowed root profile.
++	 */
+ 	if (test_thread_flag(TIF_KSU_MANAGED))
+ 		goto check_ptr;
+ 
++	if (!ksu_is_allow_uid_for_current(current_uid().val))
++		return false;
++
+ #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
+ 	if (!ksu_is_allow_uid_for_current(current_uid().val))
+ 		return false;
+@@ -126,10 +139,14 @@ check_ptr:
+ static __always_inline void ksu_sucompat_user_common(const char __user **filename_user, const char *syscall_name)
+ {
+ 	uintptr_t buf;
++	int i;
++	char user_path[16];
+ 	constexpr char su[16] = SU_PATH;
+ 
+ 	// sugar prep
++	constexpr char su_alt[16] = SU_PATH_ALT;
+ 	uintptr_t *su_p = (uintptr_t *)su;
++	uintptr_t *su_alt_p = (uintptr_t *)su_alt;
+ 	uintptr_t __user *fn_p = (uintptr_t __user *)untagged_addr(*(char **)filename_user);
+ 
+ 	static_assert(sizeof(SU_PATH) + 1 == 16);
+@@ -154,25 +171,19 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filenam
+ 	if (get_user(buf, &fn_p[1]))
+ 		return;
+ 
+-	if (likely((buf & 0x00FFFFFFFFFFFFFFUL) != (su_p[1] & 0x00FFFFFFFFFFFFFFUL)))
++	if (likely((buf & 0x00FFFFFFFFFFFFFFUL) != (su_p[1] & 0x00FFFFFFFFFFFFFFUL) &&
++		   (buf & 0x00FFFFFFFFFFFFFFUL) != (su_alt_p[1] & 0x00FFFFFFFFFFFFFFUL)))
+ 		return;
+ #else
+-	if (get_user(buf, &fn_p[3]))
+-		return;
+-
+-	if (likely((buf & 0x00FFFFFFUL) != (su_p[3] & 0x00FFFFFFUL)))
+-		return;
+-
+-	if (unlikely(get_user(buf, &fn_p[2])))
+-		return;
+-
+-	if (buf != su_p[2])
+-		return;
+-
+-	if (unlikely(get_user(buf, &fn_p[1])))
+-		return;
+-
+-	if (unlikely(buf != su_p[1]))
++	/* 32-bit fallback: compare the complete path to avoid mixing words
++	 * from the two accepted path spellings. */
++	for (i = 0; i < 4; i++) {
++		if (get_user(buf, &fn_p[i]))
++			return;
++		memcpy(&user_path[i * sizeof(buf)], &buf, sizeof(buf));
++	}
++	if (strncmp(user_path, SU_PATH, sizeof(SU_PATH)) &&
++	    strncmp(user_path, SU_PATH_ALT, sizeof(SU_PATH_ALT)))
+ 		return;
+ #endif
+ 	// last word
+@@ -241,6 +252,52 @@ SUCOMPAT_HOOK_TYPE ksu_handle_stat(int *dfd, const char __user **filename_user,
+ 	return 0;
+ }
+ 
++/*
++ * Kernel-side counterparts used after getname_flags() in fs/open.c and
++ * fs/stat.c. The original handlers above expect a userspace pointer and use
++ * get_user(); passing struct filename to them reads the wrong address space.
++ */
++static __always_inline int ksu_sucompat_kernel_path_common(struct filename **filename_ptr,
++							 const char *syscall_name)
++{
++	struct filename *filename;
++	char *path;
++	constexpr char sh[16] = SH_PATH;
++
++	if (!filename_ptr || IS_ERR_OR_NULL(*filename_ptr))
++		return 0;
++	filename = *filename_ptr;
++	if (!filename->name || !is_su_allowed((const void **)&filename->name))
++		return 0;
++
++	path = (char *)filename->name;
++	if (strncmp(path, SU_PATH, sizeof(SU_PATH)) &&
++	    strncmp(path, SU_PATH_ALT, sizeof(SU_PATH_ALT)))
++		return 0;
++
++	if (!strcmp(syscall_name, "sys_faccessat"))
++		write_sulog('a');
++	else if (!strcmp(syscall_name, "sys_newfstatat"))
++		write_sulog('s');
++
++	/* Non-exec sucompat requests must not escalate credentials. */
++	memcpy_inline(path, sh, sizeof(sh));
++	pr_info("su_compat: %s su->sh [kernel filename]%s\n", syscall_name,
++		(is_compat_task()) ? " [compat]" : "");
++	return 1;
++}
++
++int ksu_handle_faccessat_kernel(int *dfd, struct filename **filename_ptr,
++				int *mode, int *flags)
++{
++	return ksu_sucompat_kernel_path_common(filename_ptr, "sys_faccessat");
++}
++
++int ksu_handle_stat_kernel(int *dfd, struct filename **filename_ptr, int *flags)
++{
++	return ksu_sucompat_kernel_path_common(filename_ptr, "sys_newfstatat");
++}
++
+ // sys_execve, compat_sys_execve
+ SUCOMPAT_HOOK_TYPE ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *envp)
+ {
+@@ -267,64 +324,145 @@ SUCOMPAT_HOOK_TYPE ksu_handle_sys_execveat(int *fd, const char __user **filename
+ 	return 0;
+ }
+ 
+-static __always_inline void ksu_sucompat_kernel_common(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
++static __always_inline int ksu_sucompat_kernel_common(int *restrict fd,
++							void **restrict filename_ptr,
++							void *restrict argv,
++							void *restrict envp,
++							int *restrict flags,
++							const char *function_name)
+ {
+ 	ksu_adb_root_execve_kernel((void *)filename_ptr, (void *)envp);
+ #if !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	/* builtin-new ZIP4 uses the three-argument preinit hook. */
+ 	ksu_preinit_kernel_execve_hook(filename_ptr, argv, envp);
+-#endif // we defer hooking on branch link it should be caught by sys_execve first
++#endif /* we defer hooking on branch link; it should be caught by sys_execve first */
+ 
+ 	if (!is_su_allowed((const void **)filename_ptr))
+-		return;
+-
+-	if (!!fd && fd != (int *)AT_FDCWD && *fd != AT_FDCWD)
+-		return;
++		return 0;
+ 
+-	if (!!flags && !!*flags)
+-		return;
++	if (fd && fd != (int *)AT_FDCWD && *fd != AT_FDCWD)
++		return 0;
+ 
+-	constexpr char su[16] = SU_PATH;
+-	uint64_t *su_p = (uint64_t *)su;
+-	uint64_t *fn_p = (uint64_t *)*(char **)filename_ptr;
++	if (flags && *flags)
++		return 0;
+ 
+-	// getname_flags pads this so nothing to worry about
+-	assume_restricted((void *)su_p, (void *)fn_p);
+-	assume_dereferenceable((void *)fn_p, 16);
++	{
++		constexpr char su[16] = SU_PATH;
++		constexpr char su_alt[16] = SU_PATH_ALT;
++		uint64_t *su_p = (uint64_t *)su;
++		uint64_t *su_alt_p = (uint64_t *)su_alt;
++		uint64_t *fn_p = (uint64_t *)*(char **)filename_ptr;
++
++		/* getname_flags() provides a padded kernel filename buffer. */
++		assume_restricted((void *)su_p, (void *)fn_p);
++		assume_dereferenceable((void *)fn_p, 16);
++
++		if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) !=
++			   (su_p[1] & 0x00FFFFFFFFFFFFFFULL) &&
++			   (fn_p[1] & 0x00FFFFFFFFFFFFFFULL) !=
++			   (su_alt_p[1] & 0x00FFFFFFFFFFFFFFULL)))
++			return 0;
++
++		/* /system/bin/su and /system/xbin/su share the first word. */
++		if (unlikely(fn_p[0] != su_p[0]))
++			return 0;
++	}
+ 
+-	// https://godbolt.org/z/j8Yovv6bE
+-	if (likely((fn_p[1] & 0x00FFFFFFFFFFFFFFULL) != (su_p[1] & 0x00FFFFFFFFFFFFFFULL)))
+-		return;
++	/* This hook runs inside do_execveat_common(). Prefer an fd-based ksud
++	 * exec path so path resolution is not repeated after credential changes.
++	 * The SU-session fd is installed only after exec succeeds.
++	 */
++#if !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	if (fd && flags) {
++		int tmp_fd;
++		struct file *ksud_file;
++		const struct cred *old_cred;
+ 
+-	if (unlikely(fn_p[0] != su_p[0]))
+-		return;
++		write_sulog('x');
++#ifdef CONFIG_KSU_FEATURE_SULOG
++		/* ZIP4 changed the SULOG emit signature to (event, path, uid, gfp). */
++		ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
++#endif
++		tmp_fd = get_unused_fd_flags(O_CLOEXEC);
++		if (tmp_fd < 0) {
++			constexpr char sh[16] = SH_PATH;
++			pr_err("su_compat: allocate ksud fd failed: %d; falling back to sh\n",
++			       tmp_fd);
++			memcpy_inline(*filename_ptr, sh, sizeof(sh));
++			return 0;
++		}
++
++		old_cred = override_creds(ksu_cred);
++		ksud_file = filp_open(KSUD_PATH, O_PATH, 0);
++		revert_creds(old_cred);
++		if (IS_ERR(ksud_file)) {
++			constexpr char sh[16] = SH_PATH;
++			pr_err("su_compat: open ksud failed: %ld; falling back to sh\n",
++			       PTR_ERR(ksud_file));
++			put_unused_fd(tmp_fd);
++			memcpy_inline(*filename_ptr, sh, sizeof(sh));
++			return 0;
++		}
++
++		fd_install(tmp_fd, ksud_file);
++		if (escape_with_root_profile()) {
++			pr_err("su_compat: escape_with_root_profile failed\n");
++			ksu_close_fd(tmp_fd);
++			return 0;
++		}
++
++		*fd = tmp_fd;
++		*flags = AT_EMPTY_PATH;
++		((char *)*(char **)filename_ptr)[0] = '\0';
++		pr_info("su_compat: %s su->ksud via fd%s\n", function_name,
++			(is_compat_task()) ? " [compat]" : "");
++		return 1;
++	}
++#endif /* direct do_execveat_common integration */
+ 
+-	// we only handle execve here after removing vfs_statx hook for >= 6.1
++	/* Legacy hook fallback for non-inline exec backends. */
+ 	write_sulog('x');
+-
+ #ifdef CONFIG_KSU_FEATURE_SULOG
+ 	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
+ #endif
+-	if (!!escape_with_root_profile())
+-		return;
++	if (escape_with_root_profile())
++		return 0;
+ 
+-	ksu_install_su_fd(); // ksu#3679
++	ksu_install_su_fd(); /* ksu#3679 */
++	{
++		struct path kpath;
++
++		if (kern_path(KSUD_PATH, 0, &kpath)) {
++			constexpr char sh[16] = SH_PATH;
++			memcpy_inline(*filename_ptr, sh, sizeof(sh));
++			pr_info("su_compat: %s su->sh!%s\n", function_name,
++				(is_compat_task()) ? " [compat]" : "");
++			return 0;
++		}
++		path_put(&kpath);
++	}
+ 
+-	// NOTE: we only check file existence, not exec success!
+-	struct path kpath;
+-	if (!!kern_path("/data/adb/ksud", 0, &kpath))
+-		goto no_ksud;
++	pr_info("su_compat: %s su->ksud!%s\n", function_name,
++		(is_compat_task()) ? " [compat]" : "");
++	{
++		constexpr char ksud[16] = KSUD_PATH;
++		memcpy_inline(*filename_ptr, ksud, sizeof(ksud));
++	}
++	return 0;
++}
+ 
+-	path_put(&kpath);
+-	pr_info("su_compat: %s su->ksud!%s\n", function_name, (is_compat_task()) ? " [compat]" : "");
+-	constexpr char ksud[16] = KSUD_PATH;
+-	memcpy_inline(*filename_ptr, ksud, sizeof(ksud));
+-	return;
++void ksu_sucompat_execveat_finish(int ret, int handled, int tmp_fd)
++{
++	if (!handled)
++		return;
+ 
+-no_ksud:
+-	pr_info("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
+-	constexpr char sh[16] = SH_PATH;
+-	memcpy_inline(*filename_ptr, sh, sizeof(sh));
+-	return;
++	if (ret == 0) {
++		int su_fd = ksu_install_su_fd();
++		if (su_fd < 0)
++			pr_warn("su_compat: install su session fd failed: %d\n", su_fd);
++	} else if (tmp_fd >= 0) {
++		ksu_close_fd(tmp_fd);
++	}
+ }
+ 
+ struct filename; // take note: struct filename *filename, for do_execveat_common / do_execve_common on >= 3.14
+@@ -340,8 +478,7 @@ SUCOMPAT_HOOK_TYPE ksu_handle_execveat(int *fd, struct filename **filename_ptr,
+ 
+ 	// first member of struct filename is char *name.
+ 	// char *filename = *(char **)struct_filename;
+-	ksu_sucompat_kernel_common(fd, (void **)struct_filename, argv, envp, flags, "do_execveat_common");
+-	return 0;
++	return ksu_sucompat_kernel_common(fd, (void **)struct_filename, argv, envp, flags, "do_execveat_common");
+ }
+ 
+ // take note: char *filename, for do_execve_common on < 3.14
+diff --git a/kernel/hook/lsm_hooks_list.c b/kernel/hook/lsm_hooks_list.c
+index c4ea79d..0c38b29 100644
+--- a/kernel/hook/lsm_hooks_list.c
++++ b/kernel/hook/lsm_hooks_list.c
+@@ -42,9 +42,15 @@ static __nocfi void ksu_bprm_committing_creds(struct linux_binprm *bprm)
+ static int (*file_permission_fn)(struct file *file, int mask) __read_mostly = nullptr;
+ static __nocfi int ksu_file_permission(struct file *file, int mask)
+ {
++#if !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
+ 	if (unlikely(ksu_vfs_read_hook))
+ 		ksu_install_rc_hook(file);
++#endif
++
++	/* Mount hiding is an additional filter, not a replacement LSM hook. */
++	ksu_mount_hide_file_permission(file, mask);
+ 
++	/* Preserve the original SELinux/LSM file_permission result. */
+ 	return file_permission_fn(file, mask);
+ }
+ 
+@@ -272,21 +278,6 @@ do {												\
+ 	ksu_hack_lsm_slot(hook_head, &dummy_int, (uintptr_t)hook_name##_fn, #hook_name);	\
+ } while (0)
+ 
+-static int ksu_restore_file_permission(void *data)
+-{
+-	set_user_nice(current, 19); // low prio
+-
+-loop_start:
+-	msleep(1000);
+-	if (*(volatile bool *)&ksu_vfs_read_hook)
+-		goto loop_start;
+-
+-	msleep(1000);
+-
+-	LSM_HACK_RESTORE(file_permission);
+-	return 0;
+-}
+-
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
+ static int ksu_restore_bprm_set_creds(void *data)
+ {
+@@ -316,12 +307,8 @@ static __init void ksu_lsm_hook_init(void)
+ 	LSM_HACK_INIT(bprm_committing_creds, ksu_bprm_committing_creds);
+ #endif
+ 
+-	LSM_HACK_INIT(file_permission, ksu_mount_hide_file_permission);
+-
+-#if !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++	/* One permanent wrapper chains init.rc handling, mount hiding and SELinux. */
+ 	LSM_HACK_INIT(file_permission, ksu_file_permission);
+-	kthread_run(ksu_restore_file_permission, NULL, "kthread");
+-#endif
+ 
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
+ 	LSM_HACK_INIT(bprm_set_creds, ksu_bprm_set_creds);
+diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index 9257980..99290af 100644
+--- a/kernel/hook/setuid_hook.c
++++ b/kernel/hook/setuid_hook.c
+@@ -1,3 +1,41 @@
++#include <asm/unistd.h>
++#include <linux/audit.h>
++
++/*
++ * Called by the Linux seccomp core before evaluating installed filters.
++ * Allow only the two reboot-syscall transports that the kernel intercepts:
++ * the manager's exact KernelSU FD handshake, and root-only SUSFS commands.
++ * Normal reboot requests and every other syscall remain filtered.
++ */
++bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
++{
++	if (!sd || sd->nr != __NR_reboot ||
++	    (__u32)sd->args[0] != KSU_INSTALL_MAGIC1)
++		return false;
++
++#if defined(CONFIG_ARM64)
++	/* Do not exempt compat AArch32 syscall number 142 (_newselect). */
++	if (sd->arch != AUDIT_ARCH_AARCH64)
++		return false;
++#elif defined(CONFIG_ARM)
++	if (sd->arch != AUDIT_ARCH_ARM)
++		return false;
++#endif
++
++	if ((__u32)sd->args[1] == KSU_INSTALL_MAGIC2)
++		/* ksud also obtains its initial driver FD while running as root.
++		 * is_uid_manager() already covers both static and dynamic managers.
++		 */
++		return current_uid().val == 0 || is_uid_manager(current_uid().val);
++
++#ifdef CONFIG_KSU_SUSFS
++	if ((__u32)sd->args[1] == SUSFS_MAGIC)
++		return current_uid().val == 0;
++#endif
++
++	return false;
++}
++
+ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
+ {
+ 	if (!new || !old)
+@@ -13,10 +51,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+ 
+-	// we dont have those new fancy things upstream has
+-	// lets just do the original thing where we disable seccomp
+-	if (unlikely(is_uid_manager(new_uid)))
+-		goto install_ksu_fd;
++	// Preserve the manager's inherited seccomp filter. The kernel seccomp core
++	// exempts only the exact reboot-based KernelSU FD request.
++	if (unlikely(is_uid_manager(new_uid))) {
++		pr_info("install fd for manager: %d\n", new_uid);
++		ksu_install_fd();
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
++		return;
++	}
+ 
+ 	if (ksu_is_allow_uid_for_current(new_uid))
+ 		goto kill_seccomp;
+@@ -25,10 +67,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+ 	ksu_handle_umount(new, old);
+ 	return;
+ 
+-install_ksu_fd:
+-	pr_info("install fd for manager: %d\n", new_uid);
+-	ksu_install_fd();
+-
+ kill_seccomp:
+ 	disable_seccomp();
+ 	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
+diff --git a/kernel/include/uapi/extension.h b/kernel/include/uapi/extension.h
+index 571c6de..47ddb5a 100644
+--- a/kernel/include/uapi/extension.h
++++ b/kernel/include/uapi/extension.h
+@@ -98,6 +98,7 @@ enum ksu_extension_id {
+     KSU_EXTENSION_CPU_SPOOF = 1,
+     KSU_EXTENSION_UMOUNT_PATHS = 2,
+     KSU_EXTENSION_DYNAMIC_MANAGER = 3,
++    KSU_EXTENSION_SUSFS = 4,
+     KSU_EXTENSION_VERSION_SPOOF = 5,
+ 
+     KSU_EXTENSION_MAX
+diff --git a/kernel/include/uapi/feature.h b/kernel/include/uapi/feature.h
+index 44a99bd..b8fcba1 100644
+--- a/kernel/include/uapi/feature.h
++++ b/kernel/include/uapi/feature.h
+@@ -17,6 +17,9 @@ enum ksu_feature_id {
+ 	 */
+ 	KSU_FEATURE_MOUNT_HIDE = 16,
+ 
++	/* Keep in sync with KernelSU-Next Manager's AVC spoof feature. */
++	KSU_FEATURE_AVC_SPOOF = 10003,
++
+ 	KSU_FEATURE_MAX
+ };
+ 
+diff --git a/kernel/ksu.c b/kernel/ksu.c
+index 338fe98..f6e89f1 100644
+--- a/kernel/ksu.c
++++ b/kernel/ksu.c
+@@ -46,6 +46,10 @@
+ 
+ // kernel compat
+ #include "kernel_compat.h"
++
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs.h>
++#endif
+ #include "include/util.h"
+ 
+ #include "policy/app_profile.h"
+@@ -117,6 +121,7 @@
+ 
+ // unity build
+ #include "extension/extension.c"
++#include "extension/susfs_extension.c"
+ #include "extension/cpu_spoof.c"
+ #include "extension/umount_paths.c"
+ #include "extension/dynamic_manager.c"
+@@ -286,11 +291,17 @@ static int __init kernelsu_init(void)
+ 		return -ENOSYS;
+ 	}
+ 
++#ifdef CONFIG_KSU_SUSFS
++	/* Initialize SUSFS work items before userspace can submit commands. */
++	susfs_init();
++#endif
++
+ #ifdef KSU_CAN_USE_MODULE_BLACKLIST
+ 	ksu_module_blacklist_init(); // Block modules early, before vendor modules are loaded in second stage.
+ #endif
+ 	// register features
+ 	ksu_feature_init();
++	ksu_avc_spoof_feature_init();
+ 	ksu_extension_init();
+ 	ksu_extension_register_all();
+ 	ksu_sucompat_init();
+diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
+index 8a7d780..1a74995 100644
+--- a/kernel/manager/pkg_observer.c
++++ b/kernel/manager/pkg_observer.c
+@@ -21,6 +21,10 @@
+  * reuses code from: https://github.com/tiann/KernelSU/blob/v1.0.5/kernel/core_hook.c#L188
+  */
+ 
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs.h>
++#endif
++
+ static void *system_dir_inode_ptr = nullptr;
+ 
+ static noinline void ksu_grab_data_system_inode()
+@@ -53,6 +57,9 @@ static void ksu_rename_observer_slow(struct dentry *old_dentry, struct dentry *n
+ 
+ 	pr_info("renameat: %s -> %s, new path: %s\n", old_dentry->d_iname, new_dentry->d_iname, buf);
+ 	track_throne(false);
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER)
++	susfs_parse_priority_app_strings();
++#endif
+ 	return;
+ }
+ 
+@@ -102,6 +109,9 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
+ 
+ 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
+ 	track_throne(false);
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER)
++	susfs_parse_priority_app_strings();
++#endif
+ 	return;
+ 
+ slow_path:
+diff --git a/kernel/policy/feature.c b/kernel/policy/feature.c
+index f910e4f..ffae095 100644
+--- a/kernel/policy/feature.c
++++ b/kernel/policy/feature.c
+@@ -10,14 +10,15 @@ static const char *const feature_names[KSU_FEATURE_MAX] = {
+ 	[KSU_FEATURE_SELINUX_HIDE] = "selinux_hide",
+ 	[KSU_FEATURE_SHELL_SU_ADB_ONLY] = "shell_su_adb_only",
+ 	[KSU_FEATURE_MOUNT_HIDE] = "mount_hide",
++	[KSU_FEATURE_AVC_SPOOF] = "avc_spoof",
+ };
+ 
+ // Features forced by boot config. Written only while parsing module params
+ // (before kernelsu_init), read-only afterwards.
+ static u64 forced_values[KSU_FEATURE_MAX];
+-static DECLARE_BITMAP(forced_mask, KSU_FEATURE_MAX);
++static DECLARE_BITMAP(feature_forced_mask, KSU_FEATURE_MAX);
+ // Forced features whose value has not been applied successfully yet
+-static DECLARE_BITMAP(forced_pending, KSU_FEATURE_MAX);
++static DECLARE_BITMAP(feature_forced_pending, KSU_FEATURE_MAX);
+ 
+ static int parse_feature_id(const char *name, u32 *id)
+ {
+@@ -78,8 +79,8 @@ static int force_feature_param_set(const char *val, const struct kernel_param *k
+ 		}
+ 
+ 		forced_values[id] = value;
+-		set_bit(id, forced_mask);
+-		set_bit(id, forced_pending);
++		set_bit(id, feature_forced_mask);
++		set_bit(id, feature_forced_pending);
+ 		pr_info("feature: %s (id=%u) forced to %llu\n", feature_names[id], id, value);
+ 	}
+ 
+@@ -207,7 +208,7 @@ int ksu_set_feature(u32 feature_id, u64 value)
+ 		return -EINVAL;
+ 	}
+ 
+-	if (test_bit(feature_id, forced_mask)) {
++	if (test_bit(feature_id, feature_forced_mask)) {
+ 		pr_warn("feature: feature %u is forced by boot config\n", feature_id);
+ 		return -EPERM;
+ 	}
+@@ -240,7 +241,7 @@ out:
+ 
+ bool ksu_feature_is_forced(u32 feature_id)
+ {
+-	return feature_id < KSU_FEATURE_MAX && test_bit(feature_id, forced_mask);
++	return feature_id < KSU_FEATURE_MAX && test_bit(feature_id, feature_forced_mask);
+ }
+ 
+ void ksu_feature_apply_forced(void)
+@@ -251,7 +252,7 @@ void ksu_feature_apply_forced(void)
+ 
+ 	mutex_lock(&feature_mutex);
+ 
+-	for_each_set_bit (id, forced_pending, KSU_FEATURE_MAX) {
++	for_each_set_bit (id, feature_forced_pending, KSU_FEATURE_MAX) {
+ 		handler = feature_handlers[id];
+ 		if (!handler || !handler->set_handler) {
+ 			continue;
+@@ -263,7 +264,7 @@ void ksu_feature_apply_forced(void)
+ 			continue;
+ 		}
+ 
+-		clear_bit(id, forced_pending);
++		clear_bit(id, feature_forced_pending);
+ 		pr_info("feature: applied forced %s=%llu\n", feature_names[id], forced_values[id]);
+ 	}
+ 
+diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
+index 604cad9..41895ca 100644
+--- a/kernel/runtime/boot_event.c
++++ b/kernel/runtime/boot_event.c
+@@ -11,6 +11,11 @@ void on_post_fs_data(void)
+ 	done = true;
+ 	pr_info("on_post_fs_data!\n");
+ 
++#ifdef CONFIG_KSU_SUSFS
++	/* /data/media/0 is mounted by this stage; start the SUSFS sdcard watcher. */
++	susfs_start_sdcard_monitor_fn();
++#endif
++
+ 	ksu_load_allow_list();
+ 
+ 	// Sanity check for safe mode only needs early-boot input samples.
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 07b9717..8e8eab4 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -99,6 +99,22 @@ static int apply_kernelsu_rules_fn(void *ptr)
+ 	ksu_allow(db, "init", "adb_data_file", "file", ALL);
+ 	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
+ 
++	// Android 17 excludes system_file_type from init's generic restorecon grants.
++	// ZN can leave staged module objects with these fallback labels; permit only
++	// the traversal and relabel operations needed to move them to adb_data_file.
++	ksu_allow(db, "init", "system_file", "file", "getattr");
++	ksu_allow(db, "init", "system_file", "file", "relabelfrom");
++	ksu_allow(db, "init", "system_file", "dir", "getattr");
++	ksu_allow(db, "init", "system_file", "dir", "open");
++	ksu_allow(db, "init", "system_file", "dir", "read");
++	ksu_allow(db, "init", "system_file", "dir", "search");
++	ksu_allow(db, "init", "system_file", "dir", "relabelfrom");
++	ksu_allow(db, "init", "system_file", "lnk_file", "getattr");
++	ksu_allow(db, "init", "system_file", "lnk_file", "relabelfrom");
++	ksu_allow(db, "init", "system_lib_file", "file", "getattr");
++	ksu_allow(db, "init", "system_lib_file", "file", "relabelfrom");
++	ksu_allow(db, "init", "adb_data_file", "lnk_file", "relabelto");
++
+ 	// copied from Magisk rules
+ 	// suRights
+ 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+@@ -153,6 +169,11 @@ static int apply_kernelsu_rules_fn(void *ptr)
+ void apply_kernelsu_rules()
+ {
+ 	struct policydb *db;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	/* Preserve the pre-KernelSU SELinux policy for the 5.4 selinuxfs view. */
++	if (ksu_selinux_hide_snapshot_legacy())
++		pr_warn("selinux_hide: original policy snapshot unavailable; compatibility view stays disabled\n");
++#endif
+ 
+ 	if (!getenforce()) {
+ 		pr_info("SELinux permissive or disabled, apply rules!\n");
+diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index 01068b3..2176e68 100644
+--- a/kernel/selinux/sepolicy.c
++++ b/kernel/selinux/sepolicy.c
+@@ -18,6 +18,11 @@
+ // Declaration
+ //////////////////////////////////////////////////////
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern int susfs_add_sus_type(const char *secctx, u32 type_value);
++extern int susfs_add_sus_avd_allowed_by_type(u32 s_type, u32 t_type, u32 c_type, u32 orig_avd_allowed);
++#endif
++
+ static struct avtab_node *get_avtab_node(struct policydb *db, struct avtab_key *key,
+                                          struct avtab_extended_perms *xperms);
+ 
+@@ -339,6 +344,23 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
+ 				return false;
+ 		}
+ 
++		#ifdef CONFIG_KSU_SUSFS
++		{
++			struct type_datum *ksu_domain_type =
++				symtab_search(&db->p_types, "ksu");
++			/*
++			 * Record pre-change AV masks for KSU's allowed-rule updates only.
++			 * Keep both allow and deny operations covered, but never snapshot
++			 * third-party module rules: security_compute_av() would rewind their
++			 * live permissions (for example, Zygisk Next's zygote rules).
++			 */
++			if (effect == AVTAB_ALLOWED && ksu_domain_type &&
++			    src->value == ksu_domain_type->value)
++				susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
++								  cls->value, node->datum.u.data);
++		}
++		#endif
++
+ 		if (invert) {
+ 			if (perm)
+ 				node->datum.u.data &= ~(1U << (perm->value - 1));
+@@ -804,6 +826,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 				1);
+ 	}
+ 
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ 
+ #elif defined(KSU_TYPE_VAL_TO_STRUCT_ARRAY)
+@@ -852,6 +878,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 				1);
+ 	}
+ 
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ 
+ #elif defined(CONFIG_IS_HW_HISI)
+@@ -903,6 +933,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 				1);
+ 	}
+ 
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ #else
+ 	// flex_array is not extensible, we need to create a new bigger one instead
+@@ -1013,6 +1047,10 @@ static bool add_type(struct policydb *db, const char *type_name, bool attr)
+ 		ebitmap_set_bit(&db->role_val_to_struct[i]->types, value - 1,
+ 				1);
+ 	}
++	#ifdef CONFIG_KSU_SUSFS
++	if (susfs_add_sus_type(type_name, value))
++		pr_debug("SUSFS: failed to register added SELinux type %s\n", type_name);
++	#endif
+ 	return true;
+ #endif
+ 
+diff --git a/kernel/setup.sh b/kernel/setup.sh
+index 6bb2039..1bd0566 100644
+--- a/kernel/setup.sh
++++ b/kernel/setup.sh
+@@ -2,13 +2,14 @@
+ set -eu
+ 
+ GKI_ROOT=$(pwd)
++SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
++SUKISU_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
+ 
+ display_usage() {
+-    echo "Usage: $0 [--cleanup | <commit-or-tag>]"
+-    echo "  --cleanup:              Cleans up previous modifications made by the script."
+-    echo "  <commit-or-tag>:        Sets up or updates the KernelSU to specified tag or commit."
++    echo "Usage: $0 [--cleanup | -h | --help]"
++    echo "  --cleanup:              Removes the driver link and build-file entries."
+     echo "  -h, --help:             Displays this usage information."
+-    echo "  (no args):              Sets up or updates the KernelSU environment to the latest tagged version."
++    echo "  (no args):              Links drivers/kernelsu to this checked-out SukiSU source tree."
+ }
+ 
+ initialize_variables() {
+@@ -31,28 +32,23 @@ perform_cleanup() {
+     [ -L "$DRIVER_DIR/kernelsu" ] && rm "$DRIVER_DIR/kernelsu" && echo "[-] Symlink removed."
+     grep -q "kernelsu" "$DRIVER_MAKEFILE" && sed -i '/kernelsu/d' "$DRIVER_MAKEFILE" && echo "[-] Makefile reverted."
+     grep -q "drivers/kernelsu/Kconfig" "$DRIVER_KCONFIG" && sed -i '/drivers\/kernelsu\/Kconfig/d' "$DRIVER_KCONFIG" && echo "[-] Kconfig reverted."
+-    if [ -d "$GKI_ROOT/KernelSU" ]; then
+-        rm -rf "$GKI_ROOT/KernelSU" && echo "[-] KernelSU directory deleted."
+-    fi
+ }
+ 
+ # Sets up or update KernelSU environment
+ setup_kernelsu() {
+-    echo "[+] Setting up KernelSU..."
+-    test -d "$GKI_ROOT/KernelSU" || git clone https://github.com/SukiSU-Ultra/SukiSU-Ultra && echo "[+] Repository cloned."
+-    cd "$GKI_ROOT/KernelSU"
+-    git stash && echo "[-] Stashed current changes."
+-    if [ "$(git status | grep -Po 'v\d+(\.\d+)*' | head -n1)" ]; then
+-        git checkout main && echo "[-] Switched to main branch."
++    if [ "$#" -gt 0 ]; then
++        echo '[ERROR] Checkout the desired SukiSU branch/commit before running setup; setup.sh no longer fetches another repository.'
++        exit 2
+     fi
+-    git pull && echo "[+] Repository updated."
+-    if [ -z "${1-}" ]; then
+-        git checkout "$(git describe --abbrev=0 --tags)" && echo "[-] Checked out latest tag."
+-    else
+-        git checkout "$1" && echo "[-] Checked out $1." || echo "[-] Checkout default branch"
++
++    if [ ! -d "$SUKISU_ROOT/kernel" ]; then
++        echo "[ERROR] SukiSU kernel source not found: $SUKISU_ROOT/kernel"
++        exit 127
+     fi
++
++    echo "[+] Using checked-out SukiSU source: $SUKISU_ROOT"
+     cd "$DRIVER_DIR"
+-    ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$GKI_ROOT/KernelSU/kernel")" "kernelsu" && echo "[+] Symlink created."
++    ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$SUKISU_ROOT/kernel")" "kernelsu" && echo "[+] Symlink created."
+ 
+     # Add entries in Makefile and Kconfig if not already existing
+     grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
+diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
+index 59ec582..d600b8d 100644
+--- a/kernel/supercall/supercall.c
++++ b/kernel/supercall/supercall.c
+@@ -95,7 +95,18 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
+ 	void __user *arg4 = (void __user *)*arg;
+ 
+ 	if (magic2 == KSU_INSTALL_MAGIC2) {
+-		int fd = ksu_install_fd();
++		int fd;
++
++		/* ksud obtains the initial driver FD as root before switching to
++		 * the manager UID in temporary_root::as_manager().  Non-root callers
++		 * must be recognized by is_uid_manager(), including Dynamic Manager.
++		 */
++		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
++			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
++					    current_uid().val);
++			return -EPERM;
++		}
++		fd = ksu_install_fd();
+ 
+ 		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
+ 		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
