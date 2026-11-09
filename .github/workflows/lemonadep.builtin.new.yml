@@ -165,3 +165,4 @@ jobs:
         with:
           name: SukiSU-SUSFS-Kernel
           path: SukiSU-SUSFS-Kernel-OP9P.zip
+          archive: false
