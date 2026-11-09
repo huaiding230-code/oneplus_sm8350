@@ -157,7 +157,7 @@ jobs:
             echo "未找到内核镜像"; exit 1
           fi
 
-          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9.zip" . -x ".git/*"
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" . -x ".git/*"
 
       # 9. 上传刷机包
       - name: "9. Upload Kernel Zip Artifact"
