@@ -128,9 +128,7 @@ jobs:
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
 
-          # Image-only：不构建 =m 模块。需要更新 vendor_dlkm 模块时使用完整版工作流。
-          make "${MAKE_ARGS[@]}" -j1 prepare
-          make "${MAKE_ARGS[@]}" -j1 scripts
+          # Image-only：不构建 =m 模块；模块更新请使用完整版工作流。
           make "${MAKE_ARGS[@]}" -j"$(nproc)" Image
 
       # 8. 打包 AnyKernel3（仅更新 boot Image，不更新 vendor_dlkm 模块）
