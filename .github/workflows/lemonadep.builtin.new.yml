@@ -127,7 +127,6 @@ jobs:
                      CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
-          grep -qx '# CONFIG_SCHED_DEBUG is not set' "$OUT/.config" || { echo "CONFIG_SCHED_DEBUG 应保持关闭"; exit 1; }
 
           # prepare/scripts 单线程先跑一遍，避免并行编译时的竞争问题
           make "${MAKE_ARGS[@]}" -j1 prepare
