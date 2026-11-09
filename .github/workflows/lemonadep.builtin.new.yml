@@ -155,9 +155,10 @@ jobs:
           depmod -b "$MODULES_STAGE" -F "$OUT/System.map" "$KERNELRELEASE"
           modprobe --show-depends -d "$MODULES_STAGE" -S "$KERNELRELEASE" msm_drm \
             > "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-          grep -q '^insmod .*msm_drm\.ko$' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
+          # modprobe 输出可能在模块路径后附带参数；只检查 insmod 的模块路径字段。 
+          awk '$1 == "insmod" && $2 ~ /(^|\/)msm_drm\.ko$/ { found=1 } END { exit !found }' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
             cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-            echo "depmod 未生成 msm_drm 的 insmod 依赖计划"
+            echo "modprobe 依赖计划未包含 msm_drm.ko"
             exit 1
           }
 
