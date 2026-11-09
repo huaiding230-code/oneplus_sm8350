@@ -142,7 +142,7 @@ jobs:
           }
 
           # 单独编译显示模块；其余 =m 模块不参与本轻量构建。
-          make "${MAKE_ARGS[@]}" -j"$(nproc)" techpack/display/msm/msm_drm.ko；不调用 modules_install，避免安装所有 =m 模块。
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" techpack/display/msm/msm_drm.ko
           sudo apt-get update -qq
           sudo apt-get install -y -qq kmod
 
@@ -177,11 +177,8 @@ jobs:
             exit 1
           }
 
-          KO_COUNT="$(find "$MODULES_SRC" -type f -name '*.ko' | wc -l)"
           echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
           echo "MODULES_STAGE=$MODULES_STAGE" >> "$GITHUB_ENV"
-          echo "KO_COUNT=$KO_COUNT" >> "$GITHUB_ENV"
-          echo "轻量构建仅暂存 $KO_COUNT 个模块；msm_drm preinit 依赖计划："
           cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
 
           # 当前设备在 early-init 使用 vendor_modprobe，preinit 必须确实编译进 Image。
