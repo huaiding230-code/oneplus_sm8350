@@ -1,4 +1,4 @@
-name: SukiSU Ultra builtin-new + SUSFS (MSM DRM only)
+name: SukiSU Ultra builtin-new + SUSFS (Image Only)
 
 on:
   workflow_dispatch:
@@ -128,129 +128,24 @@ jobs:
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
 
-          # prepare/scripts 单线程先跑一遍，避免并行编译时的竞争问题
+          # Image-only：不构建 =m 模块。需要更新 vendor_dlkm 模块时使用完整版工作流。
           make "${MAKE_ARGS[@]}" -j1 prepare
           make "${MAKE_ARGS[@]}" -j1 scripts
-
-          # 只编译 Image 与显示主驱动 msm_drm.ko，不执行全量 modules 目标。
           make "${MAKE_ARGS[@]}" -j"$(nproc)" Image
 
-          # CONFIG_MODVERSIONS=y：Image/vmlinux 阶段必须生成内建符号 CRC 表。
-          test -s "$OUT/Module.symvers" || {
-            echo "缺少 Module.symvers；拒绝构建可能缺失符号版本的 msm_drm.ko"
-            exit 1
-          }
-
-          # 单独编译显示模块；其余 =m 模块不参与本轻量构建。
-          make "${MAKE_ARGS[@]}" -j"$(nproc)" techpack/display/msm/msm_drm.ko
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq kmod
-
-          MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
-          KERNELRELEASE="$(make "${MAKE_ARGS[@]}" -s kernelrelease)"
-          MODULES_SRC="$MODULES_STAGE/lib/modules/$KERNELRELEASE"
-          MSM_DRM_KO="$OUT/techpack/display/msm/msm_drm.ko"
-
-          test -s "$MSM_DRM_KO" || {
-            echo "未生成目标模块: $MSM_DRM_KO"
-            exit 1
-          }
-
-          # 轻量包只允许 msm_drm 自身独立；若依赖其他 .ko，必须改用完整构建版。
-          MSM_DRM_DEPS="$(modinfo -F depends "$MSM_DRM_KO")"
-          if [ -n "$MSM_DRM_DEPS" ]; then
-            echo "msm_drm 存在外部模块依赖: $MSM_DRM_DEPS"
-            echo "轻量工作流不会漏编这些依赖；请改用 lemonadep.builtin.full.yml"
-            exit 1
-          fi
-
-          install -D -m 0644 "$MSM_DRM_KO" \
-            "$MODULES_SRC/kernel/techpack/display/msm/msm_drm.ko"
-
-          # 为 msm_drm 生成依赖索引，供 preinit 按依赖顺序加载。
-          depmod -b "$MODULES_STAGE" -F "$OUT/System.map" "$KERNELRELEASE"
-          modprobe --show-depends -d "$MODULES_STAGE" -S "$KERNELRELEASE" msm_drm \
-            > "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-          awk '$1 == "insmod" && $2 ~ /msm_drm[.]ko$/ { found=1 } END { exit !found }' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
-            cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-            echo "modprobe 依赖计划未包含 msm_drm.ko"
-            exit 1
-          }
-
-          echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
-          echo "MODULES_STAGE=$MODULES_STAGE" >> "$GITHUB_ENV"
-          cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-
-          # 当前设备在 early-init 使用 vendor_modprobe，preinit 必须确实编译进 Image。
-          strings "$OUT/arch/arm64/boot/Image" | grep -q 'preinit: enabled!' || {
-            echo "Image 中未找到 SukiSU preinit 标记；拒绝生成不具备早期加载能力的 ZIP"
-            exit 1
-          }
-
-      # 8. 打包 AnyKernel3
+      # 8. 打包 AnyKernel3（仅更新 boot Image，不更新 vendor_dlkm 模块）
       - name: "8. Pack with AnyKernel3"
         run: |
           git clone https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
           git -C AnyKernel3 checkout --detach 5046aab827c2b9837abcd2a56cf81752341315c7
+          cp "${GITHUB_WORKSPACE}/out/arch/arm64/boot/Image" AnyKernel3/Image
           cd AnyKernel3
-          BOOT="${GITHUB_WORKSPACE}/out/arch/arm64/boot"
-          MODULES_SRC="${MODULES_STAGE}/lib/modules/${KERNELRELEASE}"
-          PREINIT_DEST="${GITHUB_WORKSPACE}/AnyKernel3/modules/preinit/ak3_display_fix"
-
-          if [ -f "$BOOT/Image" ]; then
-            cp "$BOOT/Image" .
-          else
-            echo "未找到内核 Image"
-            exit 1
-          fi
-
-          # 只把 msm_drm 及其真实依赖放入 preinit；不盲目覆盖整套 vendor_dlkm 模块。
-          mkdir -p "$PREINIT_DEST"
-          : > "$PREINIT_DEST/preinit.conf"
-          while read -r action module_path; do
-            [ "$action" = "insmod" ] || continue
-
-            case "$module_path" in
-              "$MODULES_STAGE"/*) module="$module_path" ;;
-              /lib/modules/*) module="$MODULES_STAGE$module_path" ;;
-              *)
-                echo "无法识别 modprobe 模块路径: $module_path"
-                exit 1
-                ;;
-            esac
-
-            test -f "$module" || { echo "依赖模块不存在: $module"; exit 1; }
-            case "$module" in
-              "$MODULES_SRC"/*) relative="${module#"$MODULES_SRC"/}" ;;
-              *) echo "依赖模块不属于当前 KERNELRELEASE: $module"; exit 1 ;;
-            esac
-            install -D -m 0644 "$module" "$PREINIT_DEST/$relative"
-            case "$relative" in
-              *msm_drm.ko) printf 'insmod %s\n' "$relative" >> "$PREINIT_DEST/preinit.conf" ;;
-              *) printf 'insmod? %s\n' "$relative" >> "$PREINIT_DEST/preinit.conf" ;;
-            esac
-          done < "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-
-          grep -q 'msm_drm\.ko$' "$PREINIT_DEST/preinit.conf" || {
-            cat "$PREINIT_DEST/preinit.conf"
-            echo "preinit.conf 未包含 msm_drm.ko"
-            exit 1
-          }
-
-          # 预初始化文件由 update-binary 在刷入阶段直接写进 /metadata，
-          # 不创建 post-fs-data helper，也不依赖普通 KSU 模块加载时机。
-          grep -Fqx 'do.modules=0' anykernel.sh
-          grep -Fqx 'do.systemless=1' anykernel.sh
-
-          echo "preinit 将加载以下模块："
-          cat "$PREINIT_DEST/preinit.conf"
           zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
-          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/preinit/ak3_display_fix/preinit.conf'
 
       # 9. 上传刷机包
       - name: "9. Upload Kernel Zip Artifact"
         uses: actions/upload-artifact@v7
         with:
-          name: SukiSU-SUSFS-Kernel-DRM-Only
+          name: SukiSU-SUSFS-Image-Only
           path: SukiSU-SUSFS-Kernel-OP9P.zip
           archive: false
