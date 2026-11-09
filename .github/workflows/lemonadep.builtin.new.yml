@@ -124,7 +124,7 @@ jobs:
                      CONFIG_NTFS_FS CONFIG_SECURITY_YAMA \
                      CONFIG_SECURITY CONFIG_SECURITY_SELINUX CONFIG_SECURITYFS \
                      CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
-                     CONFIG_MODULES CONFIG_JUMP_LABEL; do
+                     CONFIG_MODULES CONFIG_MODVERSIONS CONFIG_JUMP_LABEL; do
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
 
@@ -134,9 +134,15 @@ jobs:
 
           # 只编译 Image 与显示主驱动 msm_drm.ko，不执行全量 modules 目标。
           make "${MAKE_ARGS[@]}" -j"$(nproc)" Image
-          make "${MAKE_ARGS[@]}" -j"$(nproc)" techpack/display/msm/msm_drm.ko
 
-          # 只暂存 msm_drm；不调用 modules_install，避免安装所有 =m 模块。
+          # CONFIG_MODVERSIONS=y：Image/vmlinux 阶段必须生成内建符号 CRC 表。
+          test -s "$OUT/Module.symvers" || {
+            echo "缺少 Module.symvers；拒绝构建可能缺失符号版本的 msm_drm.ko"
+            exit 1
+          }
+
+          # 单独编译显示模块；其余 =m 模块不参与本轻量构建。
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" techpack/display/msm/msm_drm.ko；不调用 modules_install，避免安装所有 =m 模块。
           sudo apt-get update -qq
           sudo apt-get install -y -qq kmod
 
@@ -149,6 +155,15 @@ jobs:
             echo "未生成目标模块: $MSM_DRM_KO"
             exit 1
           }
+
+          # 轻量包只允许 msm_drm 自身独立；若依赖其他 .ko，必须改用完整构建版。
+          MSM_DRM_DEPS="$(modinfo -F depends "$MSM_DRM_KO")"
+          if [ -n "$MSM_DRM_DEPS" ]; then
+            echo "msm_drm 存在外部模块依赖: $MSM_DRM_DEPS"
+            echo "轻量工作流不会漏编这些依赖；请改用 lemonadep.builtin.full.yml"
+            exit 1
+          fi
+
           install -D -m 0644 "$MSM_DRM_KO" \
             "$MODULES_SRC/kernel/techpack/display/msm/msm_drm.ko"
 
