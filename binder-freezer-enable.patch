@@ -1,0 +1,20 @@
+Subject: [PATCH] binder: enable cached-app freezer ioctl support
+
+The LineageOS 23.2 sm8350 binder driver contains the Binder process-freezer
+implementation, but compiles out both the implementation helpers and ioctl
+handlers with #if 0. Android 16's framework probes BINDER_GET_FROZEN_INFO
+when checking freezer support and uses BINDER_FREEZE to coordinate pending
+Binder transactions before a process is frozen.
+
+Enable the existing implementation rather than duplicating or replacing it.
+
+--- a/drivers/android/binder.c
++++ b/drivers/android/binder.c
+@@ -5540,1 +5540,0 @@
+-#if 0
+@@ -5688,1 +5687,0 @@
+-#endif
+@@ -5808,1 +5806,0 @@
+-#if 0
+@@ -5887,1 +5884,0 @@
+-#endif
