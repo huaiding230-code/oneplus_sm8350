@@ -98,8 +98,6 @@ jobs:
           CONFIG_KALLSYMS=y
           # KPM 不启用
           # CONFIG_KPM is not set
-          # 精简调试：关掉用不上的调度器调试统计
-          # CONFIG_SCHED_DEBUG is not set
           EOF
 
           MAKE_ARGS=(
