@@ -159,14 +159,13 @@ jobs:
           MODULES_DEST="${GITHUB_WORKSPACE}/AnyKernel3/modules/vendor/lib/modules"
 
           if [ -f "$BOOT/Image" ]; then
-             cp "$BOOT/Image" .
+            cp "$BOOT/Image" .
           else
-             echo "未找到内核 Image"
-             exit 1
+            echo "未找到内核 Image"
+            exit 1
           fi
 
-          # 按 Kbuild modules_install 的相对目录结构打包所有 .ko。
-          # Android 统一通过 /vendor/lib/modules 访问 vendor_dlkm 模块。
+          # 保留 Kbuild modules_install 的目录结构，供 vendor 模块路径覆盖使用。
           mkdir -p "$MODULES_DEST"
           KO_COUNT=0
           while IFS= read -r -d '' module; do
@@ -177,35 +176,16 @@ jobs:
 
           test "$KO_COUNT" -gt 0 || { echo "AnyKernel 模块目录为空"; exit 1; }
           test -s "$MODULES_DEST/kernel/techpack/display/msm/msm_drm.ko" || {
-            echo "缺少修复后的 msm_drm.ko"; exit 1;
+            echo "缺少修复后的 msm_drm.ko"
+            exit 1
           }
 
-          # 启用 AnyKernel3 的 KernelSU systemless helper；
-          # 不直接写只读 vendor_dlkm 分区。
+          # 使用 AnyKernel3 的 KernelSU systemless helper，不直接改写只读 vendor_dlkm。
           sed -i 's/^do.modules=0$/do.modules=1/' anykernel.sh
-          grep -q '^do.modules=1
-
-      # 9. 上传刷机包
-      - name: "9. Upload Kernel Zip Artifact"
-        uses: actions/upload-artifact@v7
-        with:
-          name: SukiSU-SUSFS-Kernel
-          path: SukiSU-SUSFS-Kernel-OP9P.zip
-          archive: false
- anykernel.sh
-          grep -q '^do.systemless=1
-
-      # 9. 上传刷机包
-      - name: "9. Upload Kernel Zip Artifact"
-        uses: actions/upload-artifact@v7
-        with:
-          name: SukiSU-SUSFS-Kernel
-          path: SukiSU-SUSFS-Kernel-OP9P.zip
-          archive: false
- anykernel.sh
+          grep -Fqx 'do.modules=1' anykernel.sh
+          grep -Fqx 'do.systemless=1' anykernel.sh
 
           echo "已打包 $KO_COUNT 个 .ko 模块"
-          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" >/dev/null 2>&1 || true
           zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
           unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/vendor/lib/modules/kernel/techpack/display/msm/msm_drm.ko'
 
