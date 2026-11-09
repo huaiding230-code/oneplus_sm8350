@@ -210,7 +210,10 @@ jobs:
               *) echo "依赖模块不属于当前 KERNELRELEASE: $module"; exit 1 ;;
             esac
             install -D -m 0644 "$module" "$PREINIT_DEST/$relative"
-            printf 'insmod %s\n' "$relative" >> "$PREINIT_DEST/preinit.conf"
+            case "$relative" in
+              *msm_drm.ko) printf 'insmod %s\n' "$relative" >> "$PREINIT_DEST/preinit.conf" ;;
+              *) printf 'insmod? %s\n' "$relative" >> "$PREINIT_DEST/preinit.conf" ;;
+            esac
           done < "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
 
           grep -q 'msm_drm\.ko$' "$PREINIT_DEST/preinit.conf" || {
@@ -219,38 +222,15 @@ jobs:
             exit 1
           }
 
-          # AnyKernel3 helper 首次启动时把 preinit 文件持久化到 metadata。
-          # 下一次启动由 SukiSU preinit 在 init.rc/early-init 前按依赖顺序 insmod。
-          cat > "${GITHUB_WORKSPACE}/AnyKernel3/modules/post-fs-data.sh" <<'EOF'
-          #!/system/bin/sh
-          MODDIR=${0%/*}
-          SRC="$MODDIR/preinit/ak3_display_fix"
-          KSU_DIR="/metadata/vold/ksu"
-          PREINIT_DIR="$KSU_DIR/preinit"
-          DEST="$PREINIT_DIR/ak3_display_fix"
-
-          [ -d /metadata ] || exit 0
-          [ -s "$SRC/preinit.conf" ] || exit 0
-          mkdir -p "$DEST" || exit 0
-          cp -af "$SRC/." "$DEST/" || exit 0
-          chown 0:0 "$KSU_DIR" "$PREINIT_DIR" "$DEST" 2>/dev/null
-          chmod 0755 "$KSU_DIR" "$PREINIT_DIR" "$DEST" 2>/dev/null
-          find "$DEST" -type d -exec chmod 0755 {} \; 2>/dev/null
-          find "$DEST" -type f -exec chmod 0644 {} \; 2>/dev/null
-          exit 0
-          EOF
-          chmod 0755 "${GITHUB_WORKSPACE}/AnyKernel3/modules/post-fs-data.sh"
-
-          # com.sukisu.ultra 已由 AnyKernel3 识别；本 helper 只部署 preinit 文件。
-          sed -i 's/^do.modules=0$/do.modules=1/' anykernel.sh
-          grep -Fqx 'do.modules=1' anykernel.sh
+          # 预初始化文件由 update-binary 在刷入阶段直接写进 /metadata，
+          # 不创建 post-fs-data helper，也不依赖普通 KSU 模块加载时机。
+          grep -Fqx 'do.modules=0' anykernel.sh
           grep -Fqx 'do.systemless=1' anykernel.sh
 
           echo "preinit 将加载以下模块："
           cat "$PREINIT_DEST/preinit.conf"
           zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
           unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/preinit/ak3_display_fix/preinit.conf'
-          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/post-fs-data.sh'
 
       # 9. 上传刷机包
       - name: "9. Upload Kernel Zip Artifact"
