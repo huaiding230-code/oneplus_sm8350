@@ -92,14 +92,11 @@ jobs:
           CONFIG_KSU_SUSFS_ENABLE_LOG=y
           CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
-          # CPU Spoof 需要在运行时解析内核符号
           CONFIG_DEBUG_KERNEL=y
           CONFIG_KALLSYMS=y
           # KPM 不启用
           # CONFIG_KPM is not set
-          # 安全增强：Yama
           CONFIG_SECURITY_YAMA=y
-          # 文件系统：NTFS 只读支持
           CONFIG_NTFS_FS=y
           EOF
 
@@ -142,22 +139,15 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
           cd AnyKernel3
-          rm -rf .git README.md *placeholder
-          sed -i -E 's/^[[:space:]]*do\.devicecheck=.*/do.devicecheck=0/' anykernel.sh
-          sed -i -E 's/^[[:space:]]*(BLOCK|block)=.*/BLOCK=\/dev\/block\/bootdevice\/by-name\/boot;/' anykernel.sh
-          sed -i -E 's/^[[:space:]]*(IS_SLOT_DEVICE|is_slot_device)=.*/IS_SLOT_DEVICE=1;/' anykernel.sh
-
           BOOT="${GITHUB_WORKSPACE}/out/arch/arm64/boot"
-          cp "$BOOT/dtb" . 2>/dev/null || true
-          if [ -f "$BOOT/Image.gz-dtb" ]; then
-            cp "$BOOT/Image.gz-dtb" .
-          elif [ -f "$BOOT/Image" ]; then
-            cp "$BOOT/Image" .
-          else
-            echo "未找到内核镜像"; exit 1
-          fi
 
-          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" . -x ".git/*"
+          if [ -f "$BOOT/Image" ]; then
+             cp "$BOOT/Image" .
+          else
+             echo "未找到内核 Image"
+             exit 1
+          fi
+          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
 
       # 9. 上传刷机包
       - name: "9. Upload Kernel Zip Artifact"
