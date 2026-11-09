@@ -132,12 +132,31 @@ jobs:
           make "${MAKE_ARGS[@]}" -j1 scripts
           make "${MAKE_ARGS[@]}" -j"$(nproc)"
 
+          # 将本次构建的模块安装到独立暂存目录；只在打包时复制 .ko，
+          # 不覆盖设备原有的 modules.load / modules.dep 等厂商元数据。
+          MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
+          KERNELRELEASE="$(make "${MAKE_ARGS[@]}" -s kernelrelease)"
+          make "${MAKE_ARGS[@]}" \
+            INSTALL_MOD_PATH="$MODULES_STAGE" \
+            INSTALL_MOD_STRIP=1 \
+            DEPMOD=/bin/true \
+            modules_install
+
+          MODULES_SRC="$MODULES_STAGE/lib/modules/$KERNELRELEASE"
+          test -d "$MODULES_SRC" || { echo "模块安装目录不存在: $MODULES_SRC"; exit 1; }
+          KO_COUNT="$(find "$MODULES_SRC" -type f -name '*.ko' | wc -l)"
+          test "$KO_COUNT" -gt 0 || { echo "没有安装出任何 .ko 模块"; exit 1; }
+          echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
+          echo "已安装 $KO_COUNT 个内核模块，版本: $KERNELRELEASE"
+
       # 8. 打包 AnyKernel3
       - name: "8. Pack with AnyKernel3"
         run: |
           git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
           cd AnyKernel3
           BOOT="${GITHUB_WORKSPACE}/out/arch/arm64/boot"
+          MODULES_SRC="${GITHUB_WORKSPACE}/modules_stage/lib/modules/${KERNELRELEASE}"
+          MODULES_DEST="${GITHUB_WORKSPACE}/AnyKernel3/modules/vendor/lib/modules"
 
           if [ -f "$BOOT/Image" ]; then
              cp "$BOOT/Image" .
@@ -145,7 +164,50 @@ jobs:
              echo "未找到内核 Image"
              exit 1
           fi
+
+          # 按 Kbuild modules_install 的相对目录结构打包所有 .ko。
+          # Android 统一通过 /vendor/lib/modules 访问 vendor_dlkm 模块。
+          mkdir -p "$MODULES_DEST"
+          KO_COUNT=0
+          while IFS= read -r -d '' module; do
+            relative="${module#"$MODULES_SRC"/}"
+            install -D -m 0644 "$module" "$MODULES_DEST/$relative"
+            KO_COUNT=$((KO_COUNT + 1))
+          done < <(find "$MODULES_SRC" -type f -name '*.ko' -print0)
+
+          test "$KO_COUNT" -gt 0 || { echo "AnyKernel 模块目录为空"; exit 1; }
+          test -s "$MODULES_DEST/kernel/techpack/display/msm/msm_drm.ko" || {
+            echo "缺少修复后的 msm_drm.ko"; exit 1;
+          }
+
+          # 启用 AnyKernel3 的 KernelSU systemless helper；
+          # 不直接写只读 vendor_dlkm 分区。
+          sed -i 's/^do.modules=0$/do.modules=1/' anykernel.sh
+          grep -q '^do.modules=1
+
+      # 9. 上传刷机包
+      - name: "9. Upload Kernel Zip Artifact"
+        uses: actions/upload-artifact@v7
+        with:
+          name: SukiSU-SUSFS-Kernel
+          path: SukiSU-SUSFS-Kernel-OP9P.zip
+          archive: false
+ anykernel.sh
+          grep -q '^do.systemless=1
+
+      # 9. 上传刷机包
+      - name: "9. Upload Kernel Zip Artifact"
+        uses: actions/upload-artifact@v7
+        with:
+          name: SukiSU-SUSFS-Kernel
+          path: SukiSU-SUSFS-Kernel-OP9P.zip
+          archive: false
+ anykernel.sh
+
+          echo "已打包 $KO_COUNT 个 .ko 模块"
+          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" >/dev/null 2>&1 || true
           zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
+          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/vendor/lib/modules/kernel/techpack/display/msm/msm_drm.ko'
 
       # 9. 上传刷机包
       - name: "9. Upload Kernel Zip Artifact"
