@@ -123,7 +123,8 @@ jobs:
                      CONFIG_NET CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
                      CONFIG_NTFS_FS CONFIG_SECURITY_YAMA \
                      CONFIG_SECURITY CONFIG_SECURITY_SELINUX CONFIG_SECURITYFS \
-                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL; do
+                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
+                     CONFIG_MODULES CONFIG_JUMP_LABEL; do
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
 
@@ -132,22 +133,45 @@ jobs:
           make "${MAKE_ARGS[@]}" -j1 scripts
           make "${MAKE_ARGS[@]}" -j"$(nproc)"
 
-          # 将本次构建的模块安装到独立暂存目录；只在打包时复制 .ko，
-          # 不覆盖设备原有的 modules.load / modules.dep 等厂商元数据。
+          # SukiSU preinit 依赖模块解析工具；modules.dep 必须由本次内核模块生成。
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq kmod
+
           MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
           KERNELRELEASE="$(make "${MAKE_ARGS[@]}" -s kernelrelease)"
           make "${MAKE_ARGS[@]}" \
             INSTALL_MOD_PATH="$MODULES_STAGE" \
             INSTALL_MOD_STRIP=1 \
-            DEPMOD=/bin/true \
             modules_install
 
           MODULES_SRC="$MODULES_STAGE/lib/modules/$KERNELRELEASE"
           test -d "$MODULES_SRC" || { echo "模块安装目录不存在: $MODULES_SRC"; exit 1; }
+          test -s "$MODULES_SRC/kernel/techpack/display/msm/msm_drm.ko" || {
+            echo "缺少修复后的 msm_drm.ko"
+            exit 1
+          }
+
+          # 为 preinit 生成 msm_drm 的完整模块依赖闭包，保证按依赖顺序提前加载。
+          depmod -b "$MODULES_STAGE" -F "$OUT/System.map" "$KERNELRELEASE"
+          modprobe --show-depends -d "$MODULES_STAGE" -S "$KERNELRELEASE" msm_drm \
+            > "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
+          grep -q '^insmod .*msm_drm\.ko$' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
+            cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
+            echo "depmod 未生成 msm_drm 的 insmod 依赖计划"
+            exit 1
+          }
+
           KO_COUNT="$(find "$MODULES_SRC" -type f -name '*.ko' | wc -l)"
-          test "$KO_COUNT" -gt 0 || { echo "没有安装出任何 .ko 模块"; exit 1; }
           echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
-          echo "已安装 $KO_COUNT 个内核模块，版本: $KERNELRELEASE"
+          echo "MODULES_STAGE=$MODULES_STAGE" >> "$GITHUB_ENV"
+          echo "已安装 $KO_COUNT 个内核模块；msm_drm preinit 依赖计划："
+          cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
+
+          # 当前设备在 early-init 使用 vendor_modprobe，preinit 必须确实编译进 Image。
+          strings "$OUT/arch/arm64/boot/Image" | grep -q 'preinit: enabled!' || {
+            echo "Image 中未找到 SukiSU preinit 标记；拒绝生成不具备早期加载能力的 ZIP"
+            exit 1
+          }
 
       # 8. 打包 AnyKernel3
       - name: "8. Pack with AnyKernel3"
@@ -155,8 +179,8 @@ jobs:
           git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
           cd AnyKernel3
           BOOT="${GITHUB_WORKSPACE}/out/arch/arm64/boot"
-          MODULES_SRC="${GITHUB_WORKSPACE}/modules_stage/lib/modules/${KERNELRELEASE}"
-          MODULES_DEST="${GITHUB_WORKSPACE}/AnyKernel3/modules/vendor/lib/modules"
+          MODULES_SRC="${MODULES_STAGE}/lib/modules/${KERNELRELEASE}"
+          PREINIT_DEST="${GITHUB_WORKSPACE}/AnyKernel3/modules/preinit/ak3_display_fix"
 
           if [ -f "$BOOT/Image" ]; then
             cp "$BOOT/Image" .
@@ -165,29 +189,68 @@ jobs:
             exit 1
           fi
 
-          # 保留 Kbuild modules_install 的目录结构，供 vendor 模块路径覆盖使用。
-          mkdir -p "$MODULES_DEST"
-          KO_COUNT=0
-          while IFS= read -r -d '' module; do
-            relative="${module#"$MODULES_SRC"/}"
-            install -D -m 0644 "$module" "$MODULES_DEST/$relative"
-            KO_COUNT=$((KO_COUNT + 1))
-          done < <(find "$MODULES_SRC" -type f -name '*.ko' -print0)
+          # 只把 msm_drm 及其真实依赖放入 preinit；不盲目覆盖整套 vendor_dlkm 模块。
+          mkdir -p "$PREINIT_DEST"
+          : > "$PREINIT_DEST/preinit.conf"
+          while read -r action module_path; do
+            [ "$action" = "insmod" ] || continue
 
-          test "$KO_COUNT" -gt 0 || { echo "AnyKernel 模块目录为空"; exit 1; }
-          test -s "$MODULES_DEST/kernel/techpack/display/msm/msm_drm.ko" || {
-            echo "缺少修复后的 msm_drm.ko"
+            case "$module_path" in
+              "$MODULES_STAGE"/*) module="$module_path" ;;
+              /lib/modules/*) module="$MODULES_STAGE$module_path" ;;
+              *)
+                echo "无法识别 modprobe 模块路径: $module_path"
+                exit 1
+                ;;
+            esac
+
+            test -f "$module" || { echo "依赖模块不存在: $module"; exit 1; }
+            case "$module" in
+              "$MODULES_SRC"/*) relative="${module#"$MODULES_SRC"/}" ;;
+              *) echo "依赖模块不属于当前 KERNELRELEASE: $module"; exit 1 ;;
+            esac
+            install -D -m 0644 "$module" "$PREINIT_DEST/$relative"
+            printf 'insmod %s\n' "$relative" >> "$PREINIT_DEST/preinit.conf"
+          done < "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
+
+          grep -q 'msm_drm\.ko$' "$PREINIT_DEST/preinit.conf" || {
+            cat "$PREINIT_DEST/preinit.conf"
+            echo "preinit.conf 未包含 msm_drm.ko"
             exit 1
           }
 
-          # 使用 AnyKernel3 的 KernelSU systemless helper，不直接改写只读 vendor_dlkm。
+          # AnyKernel3 helper 首次启动时把 preinit 文件持久化到 metadata。
+          # 下一次启动由 SukiSU preinit 在 init.rc/early-init 前按依赖顺序 insmod。
+          cat > "${GITHUB_WORKSPACE}/AnyKernel3/modules/post-fs-data.sh" <<'EOF'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          SRC="$MODDIR/preinit/ak3_display_fix"
+          KSU_DIR="/metadata/vold/ksu"
+          PREINIT_DIR="$KSU_DIR/preinit"
+          DEST="$PREINIT_DIR/ak3_display_fix"
+
+          [ -d /metadata ] || exit 0
+          [ -s "$SRC/preinit.conf" ] || exit 0
+          mkdir -p "$DEST" || exit 0
+          cp -af "$SRC/." "$DEST/" || exit 0
+          chown 0:0 "$KSU_DIR" "$PREINIT_DIR" "$DEST" 2>/dev/null
+          chmod 0755 "$KSU_DIR" "$PREINIT_DIR" "$DEST" 2>/dev/null
+          find "$DEST" -type d -exec chmod 0755 {} \; 2>/dev/null
+          find "$DEST" -type f -exec chmod 0644 {} \; 2>/dev/null
+          exit 0
+          EOF
+          chmod 0755 "${GITHUB_WORKSPACE}/AnyKernel3/modules/post-fs-data.sh"
+
+          # com.sukisu.ultra 已由 AnyKernel3 识别；本 helper 只部署 preinit 文件。
           sed -i 's/^do.modules=0$/do.modules=1/' anykernel.sh
           grep -Fqx 'do.modules=1' anykernel.sh
           grep -Fqx 'do.systemless=1' anykernel.sh
 
-          echo "已打包 $KO_COUNT 个 .ko 模块"
+          echo "preinit 将加载以下模块："
+          cat "$PREINIT_DEST/preinit.conf"
           zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
-          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/vendor/lib/modules/kernel/techpack/display/msm/msm_drm.ko'
+          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/preinit/ak3_display_fix/preinit.conf'
+          unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/post-fs-data.sh'
 
       # 9. 上传刷机包
       - name: "9. Upload Kernel Zip Artifact"
