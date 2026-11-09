@@ -52,7 +52,6 @@ jobs:
         run: |
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
           git init "$KSU"
-          # 旧固定提交（回退用）: c105589f7a64de73d46a910248b25150226e2d69
           git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git 0804a40956b4345fa5ce392170a907e174d402f0
           git -C "$KSU" checkout --detach FETCH_HEAD
 
@@ -165,5 +164,4 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: SukiSU-SUSFS-Kernel
-          path: SukiSU-SUSFS-Kernel-OP9.zip
-          if-no-files-found: error
+          path: SukiSU-SUSFS-Kernel-OP9P.zip
