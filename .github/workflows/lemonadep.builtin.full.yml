@@ -238,47 +238,17 @@ jobs:
           zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
           unzip -l "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" | grep -F 'modules/preinit/ak3_display_fix/preinit.conf'
 
-          # 导出完整 modules_install 结果；它是 ROM/vendor_dlkm 集成包，不是单独可刷写的分区镜像。
-          MODULE_BUNDLE="${GITHUB_WORKSPACE}/full-module-bundle"
-          mkdir -p "$MODULE_BUNDLE/lib/modules" "$MODULE_BUNDLE/device-manifest"
-          cp -a "$MODULES_SRC" "$MODULE_BUNDLE/lib/modules/"
-          curl -fsSL "https://raw.githubusercontent.com/LineageOS/android_device_oneplus_sm8350-common/lineage-24.0/modules.load" \
-            -o "$MODULE_BUNDLE/device-manifest/modules.load"
-          curl -fsSL "https://raw.githubusercontent.com/LineageOS/android_device_oneplus_sm8350-common/lineage-24.0/modules.load.recovery" \
-            -o "$MODULE_BUNDLE/device-manifest/modules.load.recovery"
-          curl -fsSL "https://raw.githubusercontent.com/LineageOS/android_device_oneplus_sm8350-common/lineage-24.0/modules.include.recovery" \
-            -o "$MODULE_BUNDLE/device-manifest/modules.include.recovery"
-          curl -fsSL "https://raw.githubusercontent.com/LineageOS/android_device_oneplus_sm8350-common/lineage-24.0/modules.blocklist" \
-            -o "$MODULE_BUNDLE/device-manifest/modules.blocklist"
-          cat > "$MODULE_BUNDLE/README.txt" <<EOF
-          OnePlus 9 Pro / SM8350 full kernel module build
-          Kernel release: $KERNELRELEASE
-          Built and installed modules: $KO_COUNT
-
-          Contents:
-            lib/modules/$KERNELRELEASE/  Complete modules_install output and depmod indexes
-            device-manifest/             LineageOS 24.0 module load/blocklist manifests
-
-          This archive is for integrating the matching module tree into a LineageOS
-          vendor_dlkm image/build. It is NOT a flashable vendor_dlkm.img and is not
-          installed onto the phone by the AnyKernel boot-image ZIP.
-          Keep the existing msm_drm preinit ZIP for the early display-driver fix.
-          EOF
-          tar -C "$MODULE_BUNDLE" -czf "${GITHUB_WORKSPACE}/OnePlus9Pro-Lineage24-Full-Modules.tar.gz" .
+          # 完整模块归档：包含全部 .ko 及 modules_install/depmod 生成的索引。
+          tar -C "$MODULES_STAGE/lib/modules" -czf \
+            "${GITHUB_WORKSPACE}/OnePlus9Pro-Lineage24-Full-Modules.tar.gz" "$KERNELRELEASE"
 
 
-      # 9. 上传 AnyKernel 刷机包（Image + msm_drm preinit）
-      - name: "9. Upload Kernel Zip Artifact"
+      # 9. 上传内核刷机包和完整模块归档
+      - name: "9. Upload Build Artifacts"
         uses: actions/upload-artifact@v7
         with:
           name: SukiSU-SUSFS-Full-Kernel
-          path: SukiSU-SUSFS-Kernel-OP9P.zip
-          archive: false
-
-      # 10. 上传完整 modules_install 模块树，供 vendor_dlkm ROM 集成
-      - name: "10. Upload Full Kernel Modules"
-        uses: actions/upload-artifact@v7
-        with:
-          name: OnePlus9Pro-Lineage24-Full-Modules
-          path: OnePlus9Pro-Lineage24-Full-Modules.tar.gz
+          path: |
+            SukiSU-SUSFS-Kernel-OP9P.zip
+            OnePlus9Pro-Lineage24-Full-Modules.tar.gz
           archive: false
