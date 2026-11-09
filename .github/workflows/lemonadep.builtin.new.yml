@@ -156,7 +156,7 @@ jobs:
           depmod -b "$MODULES_STAGE" -F "$OUT/System.map" "$KERNELRELEASE"
           modprobe --show-depends -d "$MODULES_STAGE" -S "$KERNELRELEASE" msm_drm \
             > "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-          awk '$1 == "insmod" && $2 ~ /(^|\\/)msm_drm\\.ko$/ { found=1 } END { exit !found }' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
+          awk '$1 == "insmod" && $2 ~ /msm_drm[.]ko$/ { found=1 } END { exit !found }' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
             cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
             echo "modprobe 依赖计划未包含 msm_drm.ko"
             exit 1
