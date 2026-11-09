@@ -161,7 +161,7 @@ jobs:
 
       # 9. 上传刷机包
       - name: "9. Upload Kernel Zip Artifact"
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: SukiSU-SUSFS-Kernel
           path: SukiSU-SUSFS-Kernel-OP9P.zip
