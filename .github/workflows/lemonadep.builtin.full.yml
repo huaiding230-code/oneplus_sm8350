@@ -128,17 +128,10 @@ jobs:
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
 
-          # 按 LineageOS 官方 kernel.mk：先构建 Image，再统一构建并安装所有 =m 模块。
-          make "${MAKE_ARGS[@]}" -j1 prepare
-          make "${MAKE_ARGS[@]}" -j1 scripts
+          # LineageOS 官方 kernel.mk：Image → modules → modules_install。
           make "${MAKE_ARGS[@]}" -j"$(nproc)" Image
 
           if grep -q '=m' "$OUT/.config"; then
-            command -v depmod >/dev/null || {
-              echo "缺少官方 modules_install 所需的 depmod"
-              exit 1
-            }
-
             make "${MAKE_ARGS[@]}" -j"$(nproc)" modules
 
             MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
