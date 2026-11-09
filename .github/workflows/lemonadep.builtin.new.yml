@@ -176,7 +176,8 @@ jobs:
       # 8. 打包 AnyKernel3
       - name: "8. Pack with AnyKernel3"
         run: |
-          git clone --depth=1 https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
+          git clone https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
+          git -C AnyKernel3 checkout --detach 5046aab827c2b9837abcd2a56cf81752341315c7
           cd AnyKernel3
           BOOT="${GITHUB_WORKSPACE}/out/arch/arm64/boot"
           MODULES_SRC="${MODULES_STAGE}/lib/modules/${KERNELRELEASE}"
