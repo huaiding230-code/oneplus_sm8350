@@ -124,7 +124,7 @@ jobs:
                      CONFIG_NTFS_FS CONFIG_SECURITY_YAMA \
                      CONFIG_SECURITY CONFIG_SECURITY_SELINUX CONFIG_SECURITYFS \
                      CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
-                     CONFIG_MODULES CONFIG_JUMP_LABEL; do
+                     CONFIG_MODULES CONFIG_MODVERSIONS CONFIG_JUMP_LABEL; do
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
 
@@ -171,7 +171,7 @@ jobs:
           echo "完整构建并安装 $KO_COUNT 个内核模块。"
           cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
 
-          # 当前设备在 early-init 使用 vendor_modprobe，preinit 必须确实编译进 Image。          # 当前设备在 early-init 使用 vendor_modprobe，preinit 必须确实编译进 Image。
+          # 当前设备在 early-init 使用 vendor_modprobe，preinit 必须确实编译进 Image。
           strings "$OUT/arch/arm64/boot/Image" | grep -q 'preinit: enabled!' || {
             echo "Image 中未找到 SukiSU preinit 标记；拒绝生成不具备早期加载能力的 ZIP"
             exit 1
