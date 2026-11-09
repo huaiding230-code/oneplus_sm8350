@@ -34,7 +34,7 @@ jobs:
 
       # 4. 拉取官方 Proton-Clang 工具链
       - name: Setup Google Clang r614150
-        run: mkdir -p toolchain/clang-r614150 && curl -fsSL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/16fae8ef5b856b1d3e02a55274e4327c5842bb34/clang-r614150.tar.gz" | tar -xz -C toolchain/clang-r614150 && echo "$GITHUB_WORKSPACE/toolchain/clang-r614150/bin" >> "$GITHUB_PATH"
+        run: mkdir -p toolchain/clang-r596125 && curl -fsSL "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r596125.tar.gz" | tar -xz -C toolchain/clang-r596125 && echo "$GITHUB_WORKSPACE/toolchain/clang-r596125/bin" >> "$GITHUB_PATH"
       
       # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
       #    必须先于 SukiSU 接入，因为会改 drivers/Makefile。
