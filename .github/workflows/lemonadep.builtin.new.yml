@@ -1,4 +1,4 @@
-name: Integrated SukiSU Ultra builtin-new + SUSFS
+name: SukiSU Ultra builtin-new + SUSFS (MSM DRM only)
 
 on:
   workflow_dispatch:
@@ -131,32 +131,32 @@ jobs:
           # prepare/scripts 单线程先跑一遍，避免并行编译时的竞争问题
           make "${MAKE_ARGS[@]}" -j1 prepare
           make "${MAKE_ARGS[@]}" -j1 scripts
-          make "${MAKE_ARGS[@]}" -j"$(nproc)"
 
-          # SukiSU preinit 依赖模块解析工具；modules.dep 必须由本次内核模块生成。
+          # 只编译 Image 与显示主驱动 msm_drm.ko，不执行全量 modules 目标。
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" Image
+          make "${MAKE_ARGS[@]}" -j"$(nproc)" techpack/display/msm/msm_drm.ko
+
+          # 只暂存 msm_drm；不调用 modules_install，避免安装所有 =m 模块。
           sudo apt-get update -qq
           sudo apt-get install -y -qq kmod
 
           MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
           KERNELRELEASE="$(make "${MAKE_ARGS[@]}" -s kernelrelease)"
-          make "${MAKE_ARGS[@]}" \
-            INSTALL_MOD_PATH="$MODULES_STAGE" \
-            INSTALL_MOD_STRIP=1 \
-            modules_install
-
           MODULES_SRC="$MODULES_STAGE/lib/modules/$KERNELRELEASE"
-          test -d "$MODULES_SRC" || { echo "模块安装目录不存在: $MODULES_SRC"; exit 1; }
-          test -s "$MODULES_SRC/kernel/techpack/display/msm/msm_drm.ko" || {
-            echo "缺少修复后的 msm_drm.ko"
+          MSM_DRM_KO="$OUT/techpack/display/msm/msm_drm.ko"
+
+          test -s "$MSM_DRM_KO" || {
+            echo "未生成目标模块: $MSM_DRM_KO"
             exit 1
           }
+          install -D -m 0644 "$MSM_DRM_KO" \
+            "$MODULES_SRC/kernel/techpack/display/msm/msm_drm.ko"
 
-          # 为 preinit 生成 msm_drm 的完整模块依赖闭包，保证按依赖顺序提前加载。
+          # 为 msm_drm 生成依赖索引，供 preinit 按依赖顺序加载。
           depmod -b "$MODULES_STAGE" -F "$OUT/System.map" "$KERNELRELEASE"
           modprobe --show-depends -d "$MODULES_STAGE" -S "$KERNELRELEASE" msm_drm \
             > "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
-          # modprobe 输出可能在模块路径后附带参数；只检查 insmod 的模块路径字段。 
-          awk '$1 == "insmod" && $2 ~ /(^|\/)msm_drm\.ko$/ { found=1 } END { exit !found }' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
+          awk '$1 == "insmod" && $2 ~ /(^|\\/)msm_drm\\.ko$/ { found=1 } END { exit !found }' "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan" || {
             cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
             echo "modprobe 依赖计划未包含 msm_drm.ko"
             exit 1
@@ -165,7 +165,8 @@ jobs:
           KO_COUNT="$(find "$MODULES_SRC" -type f -name '*.ko' | wc -l)"
           echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
           echo "MODULES_STAGE=$MODULES_STAGE" >> "$GITHUB_ENV"
-          echo "已安装 $KO_COUNT 个内核模块；msm_drm preinit 依赖计划："
+          echo "KO_COUNT=$KO_COUNT" >> "$GITHUB_ENV"
+          echo "轻量构建仅暂存 $KO_COUNT 个模块；msm_drm preinit 依赖计划："
           cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
 
           # 当前设备在 early-init 使用 vendor_modprobe，preinit 必须确实编译进 Image。
@@ -238,6 +239,6 @@ jobs:
       - name: "9. Upload Kernel Zip Artifact"
         uses: actions/upload-artifact@v7
         with:
-          name: SukiSU-SUSFS-Kernel
+          name: SukiSU-SUSFS-Kernel-DRM-Only
           path: SukiSU-SUSFS-Kernel-OP9P.zip
           archive: false
