@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
     defaults:
       run:
-        shell: bash   # 等价于 bash -eo pipefail，任何命令失败都会立刻停止
+        shell: bash
     steps:
       # 1. 腾出编译空间
       - name: "1. Maximize Build Space"
@@ -33,12 +33,12 @@ jobs:
           fetch-depth: 1
 
       # 4. 拉取官方 Clang 工具链
-      - name: Setup Google Clang
+      - name: "4. Setup Google Clang"
         run: |
           mkdir -p toolchain/clang
           curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz" | tar -xz -C toolchain/clang
           echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
-          
+
       # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
       #    必须先于 SukiSU 接入，因为会改 drivers/Makefile。
       - name: "5. Apply kernel patches"
@@ -62,7 +62,7 @@ jobs:
           sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
           patch -d "$KSU" -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
-            
+
       # 7. 配置 + 检查 + 编译
       - name: "7. Configure and build kernel"
         run: |
@@ -167,7 +167,6 @@ jobs:
           test "$KO_COUNT" -gt 0 || { echo "modules_install 没有安装任何 .ko"; exit 1; }
           echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
           echo "MODULES_STAGE=$MODULES_STAGE" >> "$GITHUB_ENV"
-          echo "KO_COUNT=$KO_COUNT" >> "$GITHUB_ENV"
           echo "完整构建并安装 $KO_COUNT 个内核模块。"
           cat "${GITHUB_WORKSPACE}/msm_drm.modprobe-plan"
 
