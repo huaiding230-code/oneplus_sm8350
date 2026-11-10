@@ -163,7 +163,7 @@ jobs:
             ln -s "$QCA_COMMON" "$QCA_MULTI_DIR/qca-wifi-host-cmn"
             test -f "$QCA_MULTI_DIR/qca-wifi-host-cmn/utils/sys/queue.h" || { echo "QCA common tree is missing utils/sys/queue.h"; exit 1; }
 
-            make "${MAKE_ARGS[@]}" -C "$GITHUB_WORKSPACE/kernel_source" M="$QCA_MULTI_DIR" KERNEL_SRC="$GITHUB_WORKSPACE/kernel_source" MODNAME=qca6390 DEVNAME=qca6390 WLAN_ROOT="$QCA_MULTI_DIR" WLAN_PROFILE=qca6390 CONFIG_QCA_CLD_WLAN_PROFILE=qca6390 WLAN_COMMON_ROOT=../qca-wifi-host-cmn WLAN_COMMON_INC="$QCA_COMMON" WLAN_FW_API="$QCA_FW_API" TARGET_BUILD_VARIANT=user -j"$(nproc)" modules
+            make "${MAKE_ARGS[@]}" -C "$GITHUB_WORKSPACE/kernel_source" M="$QCA_MULTI_DIR" KERNEL_SRC="$GITHUB_WORKSPACE/kernel_source" MODNAME=qca6390 DEVNAME=qca6390 WLAN_ROOT="$QCA_MULTI_DIR" WLAN_PROFILE=qca6390 CONFIG_QCA_CLD_WLAN_PROFILE=qca6390 WLAN_COMMON_ROOT=./qca-wifi-host-cmn WLAN_COMMON_INC="$QCA_COMMON" WLAN_FW_API="$QCA_FW_API" TARGET_BUILD_VARIANT=user -j"$(nproc)" modules
 
             MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
             KERNELRELEASE="$(make "${MAKE_ARGS[@]}" -s kernelrelease)"
