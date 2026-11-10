@@ -313,7 +313,10 @@ jobs:
           run_depmod(all_base)
           all_depmap = read_depmap(all_base)
 
-          vendor_needed = dependency_closure(vendor_load, all_depmap)
+          # These QCA6390 modules are explicitly loaded by init.target.rc/vendor_modprobe,
+          # although they are intentionally absent from modules.load.
+          explicit_vendor_load = ["qca_cld3_wlan.ko", "qca_cld3_qca6390.ko"]
+          vendor_needed = dependency_closure(vendor_load + explicit_vendor_load, all_depmap)
           recovery_needed = dependency_closure(recovery_load, all_depmap)
           recovery_allowed = set(recovery_include)
           extra_recovery_deps = sorted(recovery_needed - recovery_allowed)
@@ -369,8 +372,10 @@ jobs:
           if ramdisk_modules.parent.parent.parent.exists():
               shutil.rmtree(workspace / "vendor_ramdisk")
           build_partition_modules(ramdisk_modules, recovery_allowed, "")
-          (ramdisk_modules / "modules.load").write_text("\n".join(recovery_include) + "\n")
-          (ramdisk_modules / "modules.load.recovery").write_text("\n".join(recovery_load) + "\n")
+          # modules.include.recovery controls files packaged; modules.load.recovery controls
+          # which of those files the Recovery init flow actually loads.
+          # The runtime modules.load must therefore contain recovery_load, not recovery_include.
+          (ramdisk_modules / "modules.load").write_text("\n".join(recovery_load) + "\n")
 
           print(f"Kernel release: {kernelrelease}")
           print(f"全部编译模块: {len(module_map)}")
@@ -401,7 +406,8 @@ jobs:
 
           fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
           test -s "$GITHUB_WORKSPACE/vendor_dlkm.img"
-          test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery"
+          test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load"
+          grep -qx "qca_cld3_wlan.ko" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep" && true
 
           echo "vendor_dlkm.img 大小:"
           du -h "$GITHUB_WORKSPACE/vendor_dlkm.img"
@@ -461,12 +467,14 @@ jobs:
           grep -qx "vendor_dlkm.img" "$GITHUB_WORKSPACE/zip_contents.txt"
           grep -qx "anykernel.sh" "$GITHUB_WORKSPACE/zip_contents.txt"
           grep -qx "vendor_ramdisk/ramdisk/lib/modules/modules.load" "$GITHUB_WORKSPACE/zip_contents.txt"
-          grep -qx "vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery" "$GITHUB_WORKSPACE/zip_contents.txt"
           for module in adsp_loader_dlkm.ko apr_dlkm.ko msm_drm.ko q6_notifier_dlkm.ko q6_pdr_dlkm.ko snd_event_dlkm.ko; do
             grep -qx "vendor_ramdisk/ramdisk/lib/modules/$module" "$GITHUB_WORKSPACE/zip_contents.txt" || {
               echo "刷机包缺少 Recovery 模块: $module"
               exit 1
             }
+          done
+          for module in qca_cld3_wlan.ko qca_cld3_qca6390.ko; do
+            grep -q "$module" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep" || { echo "vendor_dlkm 缺少 QCA 模块依赖记录: $module"; exit 1; }
           done
           grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" AnyKernel3/anykernel.sh
           grep -q "flash_generic vendor_dlkm" AnyKernel3/tools/ak3-core.sh
