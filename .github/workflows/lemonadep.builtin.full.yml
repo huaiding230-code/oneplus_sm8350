@@ -121,7 +121,7 @@ jobs:
 
           make "${MAKE_ARGS[@]}" vendor/lahaina-qgki_defconfig
           make "${MAKE_ARGS[@]}" olddefconfig
-          for cfg in CONFIG_KSU=y CONFIG_KSU_FEATURE_ADBROOT=y CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MAP=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_INLINE_HOOK=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_MODULES=y CONFIG_QCA_CLD_WLAN=m; do grep -qx "$cfg" "$OUT/.config" || { echo "缺少关键配置: $cfg"; exit 1; }; done
+          for cfg in CONFIG_RPS=y CONFIG_BOOT_CONFIG=y CONFIG_SECCOMP_FILTER=y CONFIG_KSU=y CONFIG_KSU_FEATURE_ADBROOT=y CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MAP=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_INLINE_HOOK=y CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_KSU_SUSFS_SPOOF_UNAME=y CONFIG_KSU_SUSFS_ENABLE_LOG=y CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y CONFIG_DEBUG_KERNEL=y CONFIG_KALLSYMS=y CONFIG_SECURITY_YAMA=y CONFIG_NTFS_FS=y CONFIG_MODULES=y CONFIG_QCA_CLD_WLAN=m; do grep -qx "$cfg" "$OUT/.config" || { echo "缺少关键配置: $cfg"; exit 1; }; done
           if grep -qx 'CONFIG_KPM=y' "$OUT/.config"; then echo "KPM 必须保持禁用"; exit 1; fi
 
           # LineageOS 官方 kernel.mk：Image → modules → modules_install。
@@ -183,7 +183,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y erofs-utils kmod
           python3 "${GITHUB_WORKSPACE}/scripts/build_vendor_dlkm.py"
-          printf '%s\\n' '/(vendor_dlkm|vendor/vendor_dlkm|system/vendor/vendor_dlkm)(/.*)? u:object_r:vendor_file:s0' > "$GITHUB_WORKSPACE/vendor_dlkm_file_contexts"
+          printf '%s\n' '/(vendor_dlkm|vendor/vendor_dlkm|system/vendor/vendor_dlkm)(/.*)? u:object_r:vendor_file:s0' > "$GITHUB_WORKSPACE/vendor_dlkm_file_contexts"
           find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type d -exec chmod 0755 {} + && find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type f -exec chmod 0644 {} +
           mkfs.erofs -z lz4 -b 4096 -T 0 --mount-point=/vendor_dlkm --file-contexts="$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" --force-uid=0 --force-gid=0 "$GITHUB_WORKSPACE/vendor_dlkm.img" "$GITHUB_WORKSPACE/vendor_dlkm_root"
           fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
