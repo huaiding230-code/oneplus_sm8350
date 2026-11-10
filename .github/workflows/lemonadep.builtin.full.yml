@@ -352,7 +352,7 @@ jobs:
                       absolute_paths[0] + ":" +
                       ((" " + " ".join(absolute_paths[1:])) if len(absolute_paths) > 1 else "")
                   )
-              return "\\n".join(rewritten_lines) + "\\n"
+              return "\n".join(rewritten_lines) + "\n"
 
           def build_partition_modules(target_dir, modules, mount_prefix):
               target_dir.mkdir(parents=True, exist_ok=True)
