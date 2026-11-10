@@ -147,25 +147,6 @@ jobs:
           if grep -q '=m' "$OUT/.config"; then
             make "${MAKE_ARGS[@]}" -j"$(nproc)" modules
 
-            # Build the separate QCA6390 multi-KO from this kernel tree and Module.symvers.
-            QCA_DIR="$GITHUB_WORKSPACE/kernel_source/drivers/staging/qcacld-3.0"
-            QCA_MULTI_DIR="$QCA_DIR/.qca6390"
-            QCA_COMMON="$GITHUB_WORKSPACE/kernel_source/drivers/staging/qca-wifi-host-cmn"
-            QCA_FW_API="$GITHUB_WORKSPACE/kernel_source/drivers/staging/fw-api"
-            test -d "$QCA_COMMON" || { echo "缺少 qca-wifi-host-cmn"; exit 1; }
-            test -d "$QCA_FW_API" || { echo "缺少 fw-api"; exit 1; }
-
-            rm -rf "$QCA_MULTI_DIR"
-            mkdir -p "$QCA_MULTI_DIR"
-            while IFS= read -r -d "" item; do
-              ln -s "$item" "$QCA_MULTI_DIR/$(basename "$item")"
-            done < <(find "$QCA_DIR" -mindepth 1 -maxdepth 1 ! -name ".qca6390" -print0)
-            ln -s "$QCA_COMMON" "$QCA_MULTI_DIR/qca-wifi-host-cmn"
-            test -f "$QCA_MULTI_DIR/qca-wifi-host-cmn/utils/sys/queue.h" || { echo "QCA common tree is missing utils/sys/queue.h"; exit 1; }
-            test -f "$QCA_COMMON/umac/cmn_services/interface_mgr/inc/wlan_if_mgr_ucfg_api.h" || { echo "QCA common tree is missing wlan_if_mgr_ucfg_api.h"; exit 1; }
-
-            make "${MAKE_ARGS[@]}" -C "$GITHUB_WORKSPACE/kernel_source" M="$QCA_MULTI_DIR" KERNEL_SRC="$GITHUB_WORKSPACE/kernel_source" MODNAME=qca6390 DEVNAME=qca6390 WLAN_ROOT="$QCA_MULTI_DIR" WLAN_PROFILE=qca6390 CONFIG_QCA_CLD_WLAN_PROFILE=qca6390 WLAN_COMMON_ROOT=./qca-wifi-host-cmn WLAN_COMMON_INC="$QCA_COMMON" WLAN_FW_API="$QCA_FW_API" WLAN_CFG_OVERRIDE="CONFIG_INTERFACE_MGR=y CONFIG_CNSS_QCA6490=n" TARGET_BUILD_VARIANT=user -j"$(nproc)" modules
-
             MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
             KERNELRELEASE="$(make "${MAKE_ARGS[@]}" -s kernelrelease)"
             make "${MAKE_ARGS[@]}" \
@@ -203,15 +184,7 @@ jobs:
             WLAN_DIR="$(dirname "${WLAN_KOS[0]}")"
             mv "${WLAN_KOS[0]}" "$WLAN_DIR/qca_cld3_wlan.ko"
 
-            mapfile -t QCA6390_KOS < <(find "$OUT" "$QCA_MULTI_DIR" -type f -name qca6390.ko)
-            if [[ ${#QCA6390_KOS[@]} -ne 1 ]]; then
-              echo "预期找到 1 个 qca6390.ko，实际找到 ${#QCA6390_KOS[@]}"
-              printf "%s\n" "${QCA6390_KOS[@]}"
-              exit 1
-            fi
-            cp "${QCA6390_KOS[0]}" "$WLAN_DIR/qca_cld3_qca6390.ko"
             test -s "$WLAN_DIR/qca_cld3_wlan.ko"
-            test -s "$WLAN_DIR/qca_cld3_qca6390.ko"
             echo "MODULES_SRC=$MODULES_SRC" >> "$GITHUB_ENV"
 
             echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
@@ -333,9 +306,8 @@ jobs:
           run_depmod(all_base)
           all_depmap = read_depmap(all_base)
 
-          # These QCA6390 modules are explicitly loaded by init.target.rc/vendor_modprobe,
-          # although they are intentionally absent from modules.load.
-          explicit_vendor_load = ["qca_cld3_wlan.ko", "qca_cld3_qca6390.ko"]
+          # init.target.rc explicitly loads qca_cld3_wlan.ko; it is not listed in modules.load.
+          explicit_vendor_load = ["qca_cld3_wlan.ko"]
           loaded_closure = dependency_closure(vendor_load + explicit_vendor_load, all_depmap)
           missing_dependencies = sorted(loaded_closure - set(module_map))
           if missing_dependencies:
@@ -510,7 +482,7 @@ jobs:
               exit 1
             }
           done
-          for module in qca_cld3_wlan.ko qca_cld3_qca6390.ko; do
+          for module in qca_cld3_wlan.ko; do
             grep -q "$module" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep" || { echo "vendor_dlkm 缺少 QCA 模块依赖记录: $module"; exit 1; }
           done
           grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" AnyKernel3/anykernel.sh
