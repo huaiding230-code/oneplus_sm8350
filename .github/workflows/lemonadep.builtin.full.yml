@@ -412,6 +412,12 @@ jobs:
 
           fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
           test -s "$GITHUB_WORKSPACE/vendor_dlkm.img"
+          VENDOR_DLKM_BYTES="$(stat -c %s "$GITHUB_WORKSPACE/vendor_dlkm.img")"
+          VENDOR_DLKM_PARTITION_BYTES=201326592
+          if (( VENDOR_DLKM_BYTES > VENDOR_DLKM_PARTITION_BYTES )); then
+            echo "vendor_dlkm.img 超过设备分区大小: ${VENDOR_DLKM_BYTES} > ${VENDOR_DLKM_PARTITION_BYTES}"
+            exit 1
+          fi
           test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load"
           grep -q "qca_cld3_wlan.ko:" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep"
 
