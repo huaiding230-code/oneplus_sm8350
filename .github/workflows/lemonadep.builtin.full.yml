@@ -413,7 +413,7 @@ jobs:
           fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
           test -s "$GITHUB_WORKSPACE/vendor_dlkm.img"
           test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load"
-          grep -qx "qca_cld3_wlan.ko" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep" && true
+          grep -q "qca_cld3_wlan.ko:" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep"
 
           echo "vendor_dlkm.img 大小:"
           du -h "$GITHUB_WORKSPACE/vendor_dlkm.img"
