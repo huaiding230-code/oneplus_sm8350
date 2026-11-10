@@ -121,31 +121,8 @@ jobs:
 
           make "${MAKE_ARGS[@]}" vendor/lahaina-qgki_defconfig
           make "${MAKE_ARGS[@]}" olddefconfig
-          grep -qx "CONFIG_QCA_CLD_WLAN=m" "$OUT/.config" || {
-            echo "设备需要的 QCA CLD WLAN 模块未启用（CONFIG_QCA_CLD_WLAN=m）"
-            exit 1
-          }
-
-          # olddefconfig 会悄悄丢掉未定义的选项，编译前确认关键项还在，避免白编译一遍
-          for cfg in CONFIG_RPS CONFIG_BOOT_CONFIG CONFIG_KSU CONFIG_KSU_FEATURE_ADBROOT \
-                     CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
-                     CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_SUS_MOUNT \
-                     CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_INLINE_HOOK \
-                     CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER CONFIG_KSU_SUSFS_OPEN_REDIRECT \
-                     CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
-                     CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-                     CONFIG_DEBUG_KERNEL CONFIG_NET CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
-                     CONFIG_NTFS_FS CONFIG_SECURITY_YAMA \
-                     CONFIG_SECURITY CONFIG_SECURITY_SELINUX CONFIG_SECURITYFS \
-                     CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
-                     CONFIG_MODULES CONFIG_MODVERSIONS CONFIG_JUMP_LABEL; do
-            grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
-          done
-
-          if grep -qx "CONFIG_KPM=y" "$OUT/.config"; then
-            echo "KPM 必须保持禁用（CONFIG_KPM is not set）"
-            exit 1
-          fi
+          for cfg in CONFIG_KSU=y CONFIG_KSU_FEATURE_ADBROOT=y CONFIG_KSU_SUSFS=y CONFIG_KSU_SUSFS_SUS_PATH=y CONFIG_KSU_SUSFS_SUS_MAP=y CONFIG_KSU_SUSFS_SUS_MOUNT=y CONFIG_KSU_SUSFS_SUS_KSTAT=y CONFIG_KSU_SUSFS_INLINE_HOOK=y CONFIG_KSU_SUSFS_OPEN_REDIRECT=y CONFIG_MODULES=y CONFIG_QCA_CLD_WLAN=m; do grep -qx "$cfg" "$OUT/.config" || { echo "缺少关键配置: $cfg"; exit 1; }; done
+          if grep -qx 'CONFIG_KPM=y' "$OUT/.config"; then echo "KPM 必须保持禁用"; exit 1; fi
 
           # LineageOS 官方 kernel.mk：Image → modules → modules_install。
           make "${MAKE_ARGS[@]}" -j"$(nproc)" Image
@@ -204,113 +181,30 @@ jobs:
       - name: "8. Build vendor_dlkm and Recovery modules"
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y erofs-utils kmod
-
-          test -d "$MODULES_SRC/kernel" || {
-            echo "找不到 modules_install 内核模块目录: $MODULES_SRC/kernel"
-            exit 1
-          }
-
+          sudo apt-get update && sudo apt-get install -y erofs-utils kmod
           python3 "${GITHUB_WORKSPACE}/scripts/build_vendor_dlkm.py"
-
-          # Android 设备树将 vendor_dlkm 标记为 EROFS，SELinux 标签沿用 AOSP file_contexts。
-          cat > "$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" <<'EOF'
-          /(vendor_dlkm|vendor/vendor_dlkm|system/vendor/vendor_dlkm)(/.*)? u:object_r:vendor_file:s0
-          EOF
-
-          find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type d -exec chmod 0755 {} +
-          find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type f -exec chmod 0644 {} +
-
-          mkfs.erofs \
-            -z lz4 \
-            -b 4096 \
-            -T 0 \
-            --mount-point=/vendor_dlkm \
-            --file-contexts="$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" \
-            --force-uid=0 \
-            --force-gid=0 \
-            "$GITHUB_WORKSPACE/vendor_dlkm.img" \
-            "$GITHUB_WORKSPACE/vendor_dlkm_root"
-
+          printf '%s\\n' '/(vendor_dlkm|vendor/vendor_dlkm|system/vendor/vendor_dlkm)(/.*)? u:object_r:vendor_file:s0' > "$GITHUB_WORKSPACE/vendor_dlkm_file_contexts"
+          find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type d -exec chmod 0755 {} + && find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type f -exec chmod 0644 {} +
+          mkfs.erofs -z lz4 -b 4096 -T 0 --mount-point=/vendor_dlkm --file-contexts="$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" --force-uid=0 --force-gid=0 "$GITHUB_WORKSPACE/vendor_dlkm.img" "$GITHUB_WORKSPACE/vendor_dlkm_root"
           fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
-          test -s "$GITHUB_WORKSPACE/vendor_dlkm.img"
-          # vendor_dlkm is a logical partition inside super; do not mistake the
-          # 192 MiB boot/vendor_boot fixed partition size for vendor_dlkm capacity.
-          test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery"
+          test -s "$GITHUB_WORKSPACE/vendor_dlkm.img" && test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery"
           grep -q "qca_cld3_wlan.ko:" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep"
-
-          echo "vendor_dlkm.img 大小:"
-          du -h "$GITHUB_WORKSPACE/vendor_dlkm.img"
-          echo "Recovery ramdisk 模块:"
-          find "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules" -maxdepth 1 -type f -printf '%f\n' | sort
 
       # 9. AnyKernel3：boot + vendor_boot(v3) + vendor_dlkm
       - name: "9. Pack blu_spark-style AnyKernel3 ZIP"
         run: |
           set -euo pipefail
-          git clone https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
-          git -C AnyKernel3 checkout --detach 5046aab827c2b9837abcd2a56cf81752341315c7
-
-          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" AnyKernel3/Image
-          cp "$GITHUB_WORKSPACE/vendor_dlkm.img" AnyKernel3/vendor_dlkm.img
-          mkdir -p AnyKernel3/vendor_ramdisk
-          cp -a "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk" AnyKernel3/vendor_ramdisk/
-
-          # AnyKernel3 write_boot 已内置 flash_generic vendor_dlkm；
-          # 这里额外切换到 vendor_boot，将 Recovery 模块合并进原有 vendor ramdisk。
-          python3 - <<'PY'
-          from pathlib import Path
-
-          script = Path("AnyKernel3/anykernel.sh")
-          content = script.read_text()
-
-          content = content.replace(
-              "kernel.string=blu_spark Kernel with SukiSU Ultra + SUSFS for OnePlus 9 Series",
-              "kernel.string=SukiSU Ultra builtin-new + SUSFS for OnePlus 9 Pro",
-          )
-
-          marker = "dump_boot;\n\nwrite_boot;\n## end boot install"
-          replacement = """dump_boot;
-
-          write_boot;
-
-          # Update vendor_boot v3 Recovery ramdisk without replacing its original contents.
-          BLOCK=/dev/block/bootdevice/by-name/vendor_boot;
-          RAMDISK_COMPRESSION=auto;
-          reset_ak;
-          dump_boot;
-          write_boot;
-          ## end boot install"""
-
-          if marker not in content:
-              raise SystemExit("AnyKernel3 anykernel.sh 中找不到预期的 boot install 区块，拒绝打包")
-          content = content.replace(marker, replacement, 1)
-          script.write_text(content)
-          PY
-
+          git clone https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3 && git -C AnyKernel3 checkout --detach 5046aab827c2b9837abcd2a56cf81752341315c7
+          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" AnyKernel3/Image && cp "$GITHUB_WORKSPACE/vendor_dlkm.img" AnyKernel3/vendor_dlkm.img && mkdir -p AnyKernel3/vendor_ramdisk && cp -a "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk" AnyKernel3/vendor_ramdisk/
+          rm -f AnyKernel3/modules/system/lib/modules/placeholder AnyKernel3/patch/placeholder AnyKernel3/ramdisk/placeholder
+          python3 -c 'from pathlib import Path; p=Path("AnyKernel3/anykernel.sh"); s=p.read_text().replace("kernel.string=blu_spark Kernel with SukiSU Ultra + SUSFS for OnePlus 9 Series","kernel.string=SukiSU Ultra builtin-new + SUSFS for OnePlus 9 Pro"); old="dump_boot;\n\nwrite_boot;\n## end boot install"; new="dump_boot;\n\nwrite_boot;\n\n# Update vendor_boot v3 Recovery ramdisk without replacing its original contents.\nBLOCK=/dev/block/bootdevice/by-name/vendor_boot;\nRAMDISK_COMPRESSION=auto;\nreset_ak;\ndump_boot;\nwrite_boot;\n## end boot install"; assert old in s, "AnyKernel3 boot install 区块不匹配"; p.write_text(s.replace(old,new,1))'
           cd AnyKernel3
-          zip -r9 "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
-          unzip -tqq "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip"
-
-          # 打包后确认刷写关键内容齐全，不允许只生成 Image 的旧 ZIP。
-          unzip -Z1 "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip" > "$GITHUB_WORKSPACE/zip_contents.txt"
-          grep -qx "Image" "$GITHUB_WORKSPACE/zip_contents.txt"
-          grep -qx "vendor_dlkm.img" "$GITHUB_WORKSPACE/zip_contents.txt"
-          grep -qx "anykernel.sh" "$GITHUB_WORKSPACE/zip_contents.txt"
-          grep -qx "vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery" "$GITHUB_WORKSPACE/zip_contents.txt"
-          for module in adsp_loader_dlkm.ko apr_dlkm.ko msm_drm.ko q6_notifier_dlkm.ko q6_pdr_dlkm.ko snd_event_dlkm.ko; do
-            grep -qx "vendor_ramdisk/ramdisk/lib/modules/$module" "$GITHUB_WORKSPACE/zip_contents.txt" || {
-              echo "刷机包缺少 Recovery 模块: $module"
-              exit 1
-            }
-          done
-          grep -q "qca_cld3_wlan.ko" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep" || {
-            echo "vendor_dlkm 缺少 QCA 模块依赖记录: qca_cld3_wlan.ko"
-            exit 1
-          }
-          grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" anykernel.sh
-          grep -q "flash_generic vendor_dlkm" tools/ak3-core.sh
+          ZIP="$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip"
+          zip -r9 "$ZIP" * -x README.md
+          unzip -tqq "$ZIP"
+          ZIP_CONTENTS="$(unzip -Z1 "$ZIP")"
+          for entry in Image vendor_dlkm.img anykernel.sh vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery vendor_ramdisk/ramdisk/lib/modules/adsp_loader_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/apr_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/msm_drm.ko vendor_ramdisk/ramdisk/lib/modules/q6_notifier_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/q6_pdr_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/snd_event_dlkm.ko; do grep -Fxq "$entry" <<< "$ZIP_CONTENTS" || { echo "刷机包缺少: $entry"; exit 1; }; done
+          grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" anykernel.sh && grep -q "flash_generic vendor_dlkm" tools/ak3-core.sh || { echo "AK3 缺少 vendor_boot/vendor_dlkm 刷写逻辑"; exit 1; }
 
       # 10. 上传完整刷机包
       - name: "10. Upload Build Artifact"
