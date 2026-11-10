@@ -316,7 +316,13 @@ jobs:
           # These QCA6390 modules are explicitly loaded by init.target.rc/vendor_modprobe,
           # although they are intentionally absent from modules.load.
           explicit_vendor_load = ["qca_cld3_wlan.ko", "qca_cld3_qca6390.ko"]
-          vendor_needed = dependency_closure(vendor_load + explicit_vendor_load, all_depmap)
+          loaded_closure = dependency_closure(vendor_load + explicit_vendor_load, all_depmap)
+          missing_dependencies = sorted(loaded_closure - set(module_map))
+          if missing_dependencies:
+              raise RuntimeError("vendor 模块依赖缺失: " + ", ".join(missing_dependencies))
+          # vendor_modprobe scans /vendor/lib/modules and applies modules.blocklist.
+          # Install every module built by this kernel, not only modules.load roots.
+          vendor_needed = set(module_map)
           recovery_needed = dependency_closure(recovery_load, all_depmap)
           recovery_allowed = set(recovery_include)
           extra_recovery_deps = sorted(recovery_needed - recovery_allowed)
@@ -358,7 +364,7 @@ jobs:
                   )
                   (target_dir / metadata).write_text(text)
 
-          # vendor_dlkm：安装 modules.load 指定模块及其依赖，按 Android vendor_dlkm 扁平布局。
+          # vendor_dlkm：安装本次编译的全部模块；modules.load 控制加载顺序，modules.blocklist 控制禁止加载项。
           vendor_root = workspace / "vendor_dlkm_root"
           if vendor_root.exists():
               shutil.rmtree(vendor_root)
@@ -460,6 +466,8 @@ jobs:
 
           cd AnyKernel3
           zip -r9 "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
+          zip -T "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip"
+          unzip -tqq "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip"
 
           # 打包后确认刷写关键内容齐全，不允许只生成 Image 的旧 ZIP。
           unzip -Z1 "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip" > "$GITHUB_WORKSPACE/zip_contents.txt"
