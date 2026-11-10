@@ -182,7 +182,104 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update && sudo apt-get install -y erofs-utils kmod
-          python3 "${GITHUB_WORKSPACE}/scripts/build_vendor_dlkm.py"
+          python3 - <<'PY'
+          from pathlib import Path
+          import os, shutil, subprocess
+
+          ws = Path(os.environ["GITHUB_WORKSPACE"])
+          src = Path(os.environ["MODULES_SRC"])
+          device = ws / "device_common_source"
+          names = ("modules.load", "modules.include.recovery", "modules.load.recovery")
+          manifests = {n: [x.strip().split()[0] for x in (device/n).read_text().splitlines() if x.strip() and not x.lstrip().startswith("#")] for n in names}
+          vendor_load, recovery_include, recovery_load = (manifests[n] for n in names)
+          if not all(manifests.values()): raise RuntimeError("设备模块清单缺失或为空")
+
+          modules = {}
+          for p in sorted(src.rglob("*.ko")):
+              if p.name in modules: raise RuntimeError(f"重复模块名: {p.name} ({modules[p.name]} / {p})")
+              modules[p.name] = p
+          if not modules: raise RuntimeError(f"modules_install 下没有 .ko: {src}")
+          missing = sorted(set(vendor_load + recovery_include + recovery_load + ["qca_cld3_wlan.ko"]) - modules.keys())
+          if missing: raise RuntimeError("设备清单要求的模块缺失: " + ", ".join(missing))
+
+          work = ws / "module_image_work"
+          shutil.rmtree(work, ignore_errors=True)
+          work.mkdir(parents=True)
+
+          def run_depmod(base):
+              subprocess.run(["depmod", "-b", str(base), "0.0"], check=True)
+              depfile = base / "lib/modules/0.0/modules.dep"
+              if not depfile.is_file(): raise RuntimeError(f"depmod 未生成 {depfile}")
+              result = {}
+              for line in depfile.read_text().splitlines():
+                  left, sep, right = line.partition(":")
+                  if not sep: raise RuntimeError(f"modules.dep 格式错误: {line}")
+                  result[Path(left).name] = [Path(x).name for x in right.split()]
+              return result
+
+          def closure(roots, depmap):
+              found, pending = set(), list(roots)
+              while pending:
+                  name = pending.pop()
+                  if name in found: continue
+                  if name not in depmap: raise RuntimeError(f"depmod 缺少模块或依赖: {name}")
+                  found.add(name)
+                  pending.extend(depmap[name])
+              return found
+
+          all_base = work / "all_modules"
+          all_dir = all_base / "lib/modules/0.0/vendor/lib/modules"
+          all_dir.mkdir(parents=True)
+          for name, p in modules.items(): shutil.copy2(p, all_dir/name)
+          all_depmap = run_depmod(all_base)
+          closure(vendor_load + ["qca_cld3_wlan.ko"], all_depmap)
+          recovery_allowed = set(recovery_include)
+          extra = sorted(closure(recovery_load, all_depmap) - recovery_allowed)
+          if extra: raise RuntimeError("Recovery 清单缺少依赖: " + ", ".join(extra))
+
+          def rewrite_dep(text, prefix):
+              rows = []
+              for line in text.splitlines():
+                  left, sep, right = line.partition(":")
+                  if not sep or not left: raise RuntimeError(f"modules.dep 格式错误: {line}")
+                  paths = ["/" + x.lstrip("/") for x in [left, *right.split()]]
+                  if any(not x.startswith(prefix) for x in paths): raise RuntimeError(f"modules.dep 路径异常: {line}")
+                  rows.append(paths[0] + ":" + ((" " + " ".join(paths[1:])) if len(paths) > 1 else ""))
+              return "\n".join(rows) + "\n"
+
+          def build_modules(target, selected, vendor):
+              target.mkdir(parents=True, exist_ok=True)
+              for name in sorted(selected): shutil.copy2(modules[name], target/name)
+              base = work / ("depmod_vendor" if vendor else "depmod_recovery")
+              shutil.rmtree(base, ignore_errors=True)
+              rel = "vendor/lib/modules" if vendor else "lib/modules"
+              depdir = base / "lib/modules/0.0" / rel
+              depdir.mkdir(parents=True)
+              for name in sorted(selected): shutil.copy2(modules[name], depdir/name)
+              run_depmod(base)
+              metadata = base / "lib/modules/0.0"
+              prefix = "/vendor/lib/modules/" if vendor else "/lib/modules/"
+              for name in ("modules.dep", "modules.alias", "modules.softdep"):
+                  p = metadata/name
+                  if not p.is_file(): raise RuntimeError(f"depmod 缺少 {name}")
+                  value = p.read_text()
+                  (target/name).write_text(rewrite_dep(value, prefix) if name == "modules.dep" else value)
+
+          vendor_root = ws / "vendor_dlkm_root"
+          shutil.rmtree(vendor_root, ignore_errors=True)
+          vendor_modules = vendor_root / "lib/modules"
+          build_modules(vendor_modules, set(modules), True)
+          if {p.name for p in vendor_modules.glob("*.ko")} != set(modules): raise RuntimeError("vendor_dlkm 模块集合不完整")
+          (vendor_modules/"modules.load").write_text("\n".join(vendor_load) + "\n")
+          shutil.copy2(device/"modules.blocklist", vendor_modules/"modules.blocklist")
+
+          ramdisk_root = ws / "vendor_ramdisk"
+          shutil.rmtree(ramdisk_root, ignore_errors=True)
+          recovery_modules = ramdisk_root / "ramdisk/lib/modules"
+          build_modules(recovery_modules, recovery_allowed, False)
+          (recovery_modules/"modules.load.recovery").write_text("\n".join(recovery_load) + "\n")
+          print(f"vendor_dlkm: {len(modules)} modules; Recovery ramdisk: {len(recovery_allowed)} modules")
+          PY
           printf '%s\n' '/(vendor_dlkm|vendor/vendor_dlkm|system/vendor/vendor_dlkm)(/.*)? u:object_r:vendor_file:s0' > "$GITHUB_WORKSPACE/vendor_dlkm_file_contexts"
           find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type d -exec chmod 0755 {} + && find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type f -exec chmod 0644 {} +
           mkfs.erofs -z lz4 -b 4096 -T 0 --mount-point=/vendor_dlkm --file-contexts="$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" --force-uid=0 --force-gid=0 "$GITHUB_WORKSPACE/vendor_dlkm.img" "$GITHUB_WORKSPACE/vendor_dlkm_root"
