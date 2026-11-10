@@ -484,8 +484,8 @@ jobs:
           for module in qca_cld3_wlan.ko; do
             grep -q "$module" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep" || { echo "vendor_dlkm 缺少 QCA 模块依赖记录: $module"; exit 1; }
           done
-          grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" AnyKernel3/anykernel.sh
-          grep -q "flash_generic vendor_dlkm" AnyKernel3/tools/ak3-core.sh
+          grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" anykernel.sh
+          grep -q "flash_generic vendor_dlkm" tools/ak3-core.sh
 
       # 10. 上传完整刷机包
       - name: "10. Upload Build Artifact"
