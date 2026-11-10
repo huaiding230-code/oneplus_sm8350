@@ -32,6 +32,15 @@ jobs:
           path: kernel_source
           fetch-depth: 1
 
+      # 3a. 读取 LineageOS 设备模块清单（vendor_dlkm / vendor_boot）
+      - name: "3a. Checkout Device Module Manifests"
+        uses: actions/checkout@v5
+        with:
+          repository: LineageOS/android_device_oneplus_sm8350-common
+          ref: lineage-24.0
+          path: device_common_source
+          fetch-depth: 1
+
       # 4. 拉取官方 Clang 工具链
       - name: "4. Setup Google Clang"
         run: |
@@ -147,9 +156,7 @@ jobs:
               exit 1
             }
 
-            tar -C "$MODULES_STAGE/lib/modules" -czf \
-              "${GITHUB_WORKSPACE}/OnePlus9Pro-Lineage24-Full-Modules.tar.gz" \
-              "$KERNELRELEASE"
+            echo "MODULES_SRC=$MODULES_SRC" >> "$GITHUB_ENV"
 
             echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
             echo "MODULES_STAGE=$MODULES_STAGE" >> "$GITHUB_ENV"
@@ -158,21 +165,280 @@ jobs:
             exit 1
           fi
 
-      # 8. 打包 AnyKernel3（只更新 boot Image；模块树单独供 vendor_dlkm ROM 构建使用）
-      - name: "8. Pack with AnyKernel3"
+      # 8. 构建 vendor_dlkm.img，并准备 vendor_boot Recovery modules
+      - name: "8. Build vendor_dlkm and Recovery modules"
         run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y erofs-utils kmod
+
+          test -d "$MODULES_SRC/kernel" || {
+            echo "找不到 modules_install 内核模块目录: $MODULES_SRC/kernel"
+            exit 1
+          }
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import os
+          import re
+          import shutil
+          import subprocess
+          import sys
+
+          workspace = Path(os.environ["GITHUB_WORKSPACE"])
+          modules_src = Path(os.environ["MODULES_SRC"])
+          device = workspace / "device_common_source"
+          kernelrelease = os.environ["KERNELRELEASE"]
+
+          def read_list(filename):
+              path = device / filename
+              if not path.is_file():
+                  raise RuntimeError(f"缺少设备模块清单: {path}")
+              return [
+                  line.strip().split()[0]
+                  for line in path.read_text().splitlines()
+                  if line.strip() and not line.lstrip().startswith("#")
+              ]
+
+          vendor_load = read_list("modules.load")
+          recovery_include = read_list("modules.include.recovery")
+          recovery_load = read_list("modules.load.recovery")
+
+          if not vendor_load or not recovery_include or not recovery_load:
+              raise RuntimeError("modules.load / modules.include.recovery / modules.load.recovery 不能是空文件")
+
+          module_map = {}
+          for src in sorted(modules_src.rglob("*.ko")):
+              if not src.is_file():
+                  continue
+              if src.name in module_map:
+                  raise RuntimeError(
+                      f"发现同名内核模块，无法按 LineageOS vendor_dlkm 布局扁平安装: "
+                      f"{src.name}\n{module_map[src.name]}\n{src}"
+                  )
+              module_map[src.name] = src
+
+          if not module_map:
+              raise RuntimeError(f"modules_install 下没有找到任何 .ko: {modules_src}")
+
+          missing = sorted(set(vendor_load + recovery_include + recovery_load) - set(module_map))
+          if missing:
+              raise RuntimeError("设备树要求的模块没有编译出来:\n  " + "\n  ".join(missing))
+
+          work = workspace / "module_image_work"
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir(parents=True)
+
+          def run_depmod(base):
+              result = subprocess.run(
+                  ["depmod", "-b", str(base), "0.0"],
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+              )
+              if result.stdout:
+                  print(result.stdout)
+              if result.returncode != 0:
+                  raise RuntimeError(f"depmod 失败: {base}")
+
+          def read_depmap(base):
+              depfile = base / "lib/modules/0.0/modules.dep"
+              if not depfile.is_file():
+                  raise RuntimeError(f"depmod 没有生成 modules.dep: {depfile}")
+              depmap = {}
+              for line in depfile.read_text().splitlines():
+                  if ":" not in line:
+                      continue
+                  left, right = line.split(":", 1)
+                  name = Path(left).name
+                  depmap[name] = [Path(item).name for item in right.split()]
+              return depmap
+
+          def dependency_closure(roots, depmap):
+              result = set()
+              pending = list(roots)
+              while pending:
+                  name = pending.pop()
+                  if name in result:
+                      continue
+                  if name not in depmap:
+                      raise RuntimeError(f"depmod 结果里缺少模块依赖记录: {name}")
+                  result.add(name)
+                  pending.extend(depmap[name])
+              return result
+
+          # 先对本次 modules_install 的完整模块集运行 depmod，以解析设备清单的依赖闭包。
+          all_base = work / "all_modules"
+          all_moddir = all_base / "lib/modules/0.0/vendor/lib/modules"
+          all_moddir.mkdir(parents=True)
+          for name, src in module_map.items():
+              shutil.copy2(src, all_moddir / name)
+          run_depmod(all_base)
+          all_depmap = read_depmap(all_base)
+
+          vendor_needed = dependency_closure(vendor_load, all_depmap)
+          recovery_needed = dependency_closure(recovery_load, all_depmap)
+          recovery_allowed = set(recovery_include)
+          extra_recovery_deps = sorted(recovery_needed - recovery_allowed)
+          if extra_recovery_deps:
+              raise RuntimeError(
+                  "modules.include.recovery 没有覆盖 modules.load.recovery 的依赖: "
+                  + ", ".join(extra_recovery_deps)
+              )
+
+          def build_partition_modules(target_dir, modules, mount_prefix):
+              target_dir.mkdir(parents=True, exist_ok=True)
+              for name in sorted(modules):
+                  shutil.copy2(module_map[name], target_dir / name)
+
+              # 复刻 LineageOS android_build 的 depmod 布局：
+              # vendor_dlkm 元数据引用 /vendor/lib/modules，Recovery ramdisk 引用 /lib/modules。
+              depbase = work / ("depmod_" + ("vendor" if mount_prefix else "recovery"))
+              if depbase.exists():
+                  shutil.rmtree(depbase)
+              if mount_prefix:
+                  depmod_moddir = depbase / "lib/modules/0.0/vendor/lib/modules"
+              else:
+                  depmod_moddir = depbase / "lib/modules/0.0/lib/modules"
+              depmod_moddir.mkdir(parents=True)
+              for name in sorted(modules):
+                  shutil.copy2(module_map[name], depmod_moddir / name)
+
+              run_depmod(depbase)
+              metadata_dir = depbase / "lib/modules/0.0"
+              for metadata in ("modules.dep", "modules.alias", "modules.softdep"):
+                  src = metadata_dir / metadata
+                  if not src.is_file():
+                      raise RuntimeError(f"depmod 没有生成 {metadata}: {src}")
+                  text = src.read_text()
+                  text = re.sub(
+                      r"([^: ]*lib/modules/[^: ]*)",
+                      lambda match: "/" + match.group(1).lstrip("/"),
+                      text,
+                  )
+                  (target_dir / metadata).write_text(text)
+
+          # vendor_dlkm：安装 modules.load 指定模块及其依赖，按 Android vendor_dlkm 扁平布局。
+          vendor_root = workspace / "vendor_dlkm_root"
+          if vendor_root.exists():
+              shutil.rmtree(vendor_root)
+          vendor_modules = vendor_root / "lib/modules"
+          build_partition_modules(vendor_modules, vendor_needed, "vendor")
+          (vendor_modules / "modules.load").write_text("\n".join(vendor_load) + "\n")
+          shutil.copy2(device / "modules.blocklist", vendor_modules / "modules.blocklist")
+
+          # vendor_boot v3：6 个 include 模块都放进 ramdisk；Recovery 实际加载清单仍只用 2 项。
+          ramdisk_modules = workspace / "vendor_ramdisk/ramdisk/lib/modules"
+          if ramdisk_modules.parent.parent.parent.exists():
+              shutil.rmtree(workspace / "vendor_ramdisk")
+          build_partition_modules(ramdisk_modules, recovery_allowed, "")
+          (ramdisk_modules / "modules.load").write_text("\n".join(recovery_include) + "\n")
+          (ramdisk_modules / "modules.load.recovery").write_text("\n".join(recovery_load) + "\n")
+
+          print(f"Kernel release: {kernelrelease}")
+          print(f"全部编译模块: {len(module_map)}")
+          print(f"vendor_dlkm 安装模块（含依赖）: {len(vendor_needed)}")
+          print(f"Recovery ramdisk 包含模块: {len(recovery_allowed)}")
+          print(f"Recovery 实际加载模块: {len(recovery_load)}")
+          PY
+
+          # Android 设备树将 vendor_dlkm 标记为 EROFS，SELinux 标签沿用 AOSP file_contexts。
+          cat > "$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" <<'EOF'
+          /(vendor_dlkm|vendor/vendor_dlkm|system/vendor/vendor_dlkm)(/.*)? u:object_r:vendor_file:s0
+          EOF
+
+          chown -R 0:0 "$GITHUB_WORKSPACE/vendor_dlkm_root"
+          find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type d -exec chmod 0755 {} +
+          find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type f -exec chmod 0644 {} +
+
+          mkfs.erofs \
+            -z lz4 \
+            -b 4096 \
+            -T 0 \
+            --mount-point=/vendor_dlkm \
+            --file-contexts="$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" \
+            --force-uid=0 \
+            --force-gid=0 \
+            "$GITHUB_WORKSPACE/vendor_dlkm.img" \
+            "$GITHUB_WORKSPACE/vendor_dlkm_root"
+
+          fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
+          test -s "$GITHUB_WORKSPACE/vendor_dlkm.img"
+          test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery"
+
+          echo "vendor_dlkm.img 大小:"
+          du -h "$GITHUB_WORKSPACE/vendor_dlkm.img"
+          echo "Recovery ramdisk 模块:"
+          find "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules" -maxdepth 1 -type f -printf '%f\n' | sort
+
+      # 9. AnyKernel3：boot + vendor_boot(v3) + vendor_dlkm
+      - name: "9. Pack blu_spark-style AnyKernel3 ZIP"
+        run: |
+          set -euo pipefail
           git clone https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3
           git -C AnyKernel3 checkout --detach 5046aab827c2b9837abcd2a56cf81752341315c7
-          cp "${GITHUB_WORKSPACE}/out/arch/arm64/boot/Image" AnyKernel3/Image
-          cd AnyKernel3
-          zip -r9 "${GITHUB_WORKSPACE}/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
 
-      # 9. 上传内核刷机包和完整模块归档
-      - name: "9. Upload Build Artifacts"
+          cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" AnyKernel3/Image
+          cp "$GITHUB_WORKSPACE/vendor_dlkm.img" AnyKernel3/vendor_dlkm.img
+          mkdir -p AnyKernel3/vendor_ramdisk
+          cp -a "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk" AnyKernel3/vendor_ramdisk/
+
+          # AnyKernel3 write_boot 已内置 flash_generic vendor_dlkm；
+          # 这里额外切换到 vendor_boot，将 Recovery 模块合并进原有 vendor ramdisk。
+          python3 - <<'PY'
+          from pathlib import Path
+
+          script = Path("AnyKernel3/anykernel.sh")
+          content = script.read_text()
+
+          content = content.replace(
+              "kernel.string=blu_spark Kernel with SukiSU Ultra + SUSFS for OnePlus 9 Series",
+              "kernel.string=SukiSU Ultra builtin-new + SUSFS for OnePlus 9 Pro",
+          )
+
+          marker = "dump_boot;\n\nwrite_boot;\n## end boot install"
+          replacement = """dump_boot;
+
+          write_boot;
+
+          # Update vendor_boot v3 Recovery ramdisk without replacing its original contents.
+          BLOCK=/dev/block/bootdevice/by-name/vendor_boot;
+          RAMDISK_COMPRESSION=auto;
+          reset_ak;
+          dump_boot;
+          write_boot;
+          ## end boot install"""
+
+          if marker not in content:
+              raise SystemExit("AnyKernel3 anykernel.sh 中找不到预期的 boot install 区块，拒绝打包")
+          content = content.replace(marker, replacement, 1)
+          script.write_text(content)
+          PY
+
+          cd AnyKernel3
+          zip -r9 "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip" * -x README.md '*placeholder'
+
+          # 打包后确认刷写关键内容齐全，不允许只生成 Image 的旧 ZIP。
+          unzip -Z1 "$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip" > "$GITHUB_WORKSPACE/zip_contents.txt"
+          grep -qx "Image" "$GITHUB_WORKSPACE/zip_contents.txt"
+          grep -qx "vendor_dlkm.img" "$GITHUB_WORKSPACE/zip_contents.txt"
+          grep -qx "anykernel.sh" "$GITHUB_WORKSPACE/zip_contents.txt"
+          grep -qx "vendor_ramdisk/ramdisk/lib/modules/modules.load" "$GITHUB_WORKSPACE/zip_contents.txt"
+          grep -qx "vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery" "$GITHUB_WORKSPACE/zip_contents.txt"
+          for module in adsp_loader_dlkm.ko apr_dlkm.ko msm_drm.ko q6_notifier_dlkm.ko q6_pdr_dlkm.ko snd_event_dlkm.ko; do
+            grep -qx "vendor_ramdisk/ramdisk/lib/modules/$module" "$GITHUB_WORKSPACE/zip_contents.txt" || {
+              echo "刷机包缺少 Recovery 模块: $module"
+              exit 1
+            }
+          done
+          grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" AnyKernel3/anykernel.sh
+          grep -q "flash_generic vendor_dlkm" AnyKernel3/tools/ak3-core.sh
+
+      # 10. 上传完整刷机包
+      - name: "10. Upload Build Artifact"
         uses: actions/upload-artifact@v7
         with:
           name: SukiSU-SUSFS-Full-Build
-          path: |
-            SukiSU-SUSFS-Kernel-OP9P.zip
-            OnePlus9Pro-Lineage24-Full-Modules.tar.gz
+          path: SukiSU-SUSFS-Kernel-OP9P.zip
           archive: false
