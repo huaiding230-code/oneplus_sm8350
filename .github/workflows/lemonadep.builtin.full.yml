@@ -127,19 +127,25 @@ jobs:
           }
 
           # olddefconfig 会悄悄丢掉未定义的选项，编译前确认关键项还在，避免白编译一遍
-          for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
+          for cfg in CONFIG_RPS CONFIG_BOOT_CONFIG CONFIG_KSU CONFIG_KSU_FEATURE_ADBROOT \
+                     CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
                      CONFIG_KSU_SUSFS_SUS_MAP CONFIG_KSU_SUSFS_SUS_MOUNT \
                      CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_INLINE_HOOK \
                      CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER CONFIG_KSU_SUSFS_OPEN_REDIRECT \
                      CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG \
                      CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS \
-                     CONFIG_NET CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
+                     CONFIG_DEBUG_KERNEL CONFIG_NET CONFIG_SECCOMP CONFIG_SECCOMP_FILTER \
                      CONFIG_NTFS_FS CONFIG_SECURITY_YAMA \
                      CONFIG_SECURITY CONFIG_SECURITY_SELINUX CONFIG_SECURITYFS \
                      CONFIG_KALLSYMS CONFIG_KALLSYMS_ALL \
                      CONFIG_MODULES CONFIG_MODVERSIONS CONFIG_JUMP_LABEL; do
             grep -qx "${cfg}=y" "$OUT/.config" || { echo "缺少配置: ${cfg}=y"; exit 1; }
           done
+
+          if grep -qx "CONFIG_KPM=y" "$OUT/.config"; then
+            echo "KPM 必须保持禁用（CONFIG_KPM is not set）"
+            exit 1
+          fi
 
           # LineageOS 官方 kernel.mk：Image → modules → modules_install。
           make "${MAKE_ARGS[@]}" -j"$(nproc)" Image
@@ -209,7 +215,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           import os
-          import re
           import shutil
           import subprocess
           import sys
@@ -324,6 +329,31 @@ jobs:
                   + ", ".join(extra_recovery_deps)
               )
 
+          def rewrite_modules_dep(text, expected_prefix):
+              # Convert one modules.dep path token at a time.
+              # Do not use [^: ] here: it also matches newlines and corrupts adjacent records.
+              rewritten_lines = []
+              for line_number, line in enumerate(text.splitlines(), 1):
+                  if not line:
+                      continue
+                  module_path, separator, dependencies = line.partition(":")
+                  if not separator or not module_path:
+                      raise RuntimeError(
+                          f"modules.dep 格式错误，第 {line_number} 行: {line!r}"
+                      )
+                  paths = [module_path, *dependencies.split()]
+                  absolute_paths = ["/" + item.lstrip("/") for item in paths]
+                  if any(not item.startswith(expected_prefix) for item in absolute_paths):
+                      raise RuntimeError(
+                          f"modules.dep 路径不符合预期 {expected_prefix}，"
+                          f"第 {line_number} 行: {line!r}"
+                      )
+                  rewritten_lines.append(
+                      absolute_paths[0] + ":" +
+                      ((" " + " ".join(absolute_paths[1:])) if len(absolute_paths) > 1 else "")
+                  )
+              return "\\n".join(rewritten_lines) + "\\n"
+
           def build_partition_modules(target_dir, modules, mount_prefix):
               target_dir.mkdir(parents=True, exist_ok=True)
               for name in sorted(modules):
@@ -349,11 +379,9 @@ jobs:
                   if not src.is_file():
                       raise RuntimeError(f"depmod 没有生成 {metadata}: {src}")
                   text = src.read_text()
-                  text = re.sub(
-                      r"([^: ]*lib/modules/[^: ]*)",
-                      lambda match: "/" + match.group(1).lstrip("/"),
-                      text,
-                  )
+                  if metadata == "modules.dep":
+                      expected_prefix = "/vendor/lib/modules/" if mount_prefix else "/lib/modules/"
+                      text = rewrite_modules_dep(text, expected_prefix)
                   (target_dir / metadata).write_text(text)
 
           # vendor_dlkm：安装本次编译的全部模块；modules.load 控制加载顺序，modules.blocklist 控制禁止加载项。
