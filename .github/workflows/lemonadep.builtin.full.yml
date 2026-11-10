@@ -121,6 +121,10 @@ jobs:
 
           make "${MAKE_ARGS[@]}" vendor/lahaina-qgki_defconfig
           make "${MAKE_ARGS[@]}" olddefconfig
+          grep -qx "CONFIG_QCA_CLD_WLAN=m" "$OUT/.config" || {
+            echo "设备需要的 QCA CLD WLAN 模块未启用（CONFIG_QCA_CLD_WLAN=m）"
+            exit 1
+          }
 
           # olddefconfig 会悄悄丢掉未定义的选项，编译前确认关键项还在，避免白编译一遍
           for cfg in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH \
@@ -168,6 +172,20 @@ jobs:
               modules_install
 
             MODULES_SRC="$MODULES_STAGE/lib/modules/$KERNELRELEASE"
+
+            mapfile -t BUILT_MODULES < <(find "$OUT" -type f -name "*.ko" -printf "%f\n" | sort)
+            mapfile -t INSTALLED_MODULES < <(find "$MODULES_SRC" -type f -name "*.ko" -printf "%f\n" | sort)
+            if (( ${#BUILT_MODULES[@]} == 0 )); then
+              echo "OUT 中没有找到 make modules 生成的 .ko 文件"
+              exit 1
+            fi
+            if ! diff -u <(printf "%s\n" "${BUILT_MODULES[@]}") <(printf "%s\n" "${INSTALLED_MODULES[@]}"); then
+              echo "编译输出与 modules_install 文件集合不一致，拒绝继续打包"
+              exit 1
+            fi
+            echo "make modules 产物数量: ${#BUILT_MODULES[@]}"
+            echo "modules_install 安装数量: ${#INSTALLED_MODULES[@]}"
+
             test -s "$MODULES_SRC/kernel/techpack/display/msm/msm_drm.ko" || {
               echo "完整模块安装结果缺少 msm_drm.ko"
               exit 1
@@ -370,6 +388,13 @@ jobs:
               shutil.rmtree(vendor_root)
           vendor_modules = vendor_root / "lib/modules"
           build_partition_modules(vendor_modules, vendor_needed, "vendor")
+          packaged_vendor_modules = {p.name for p in vendor_modules.glob("*.ko")}
+          if packaged_vendor_modules != set(module_map):
+              missing_packaged = sorted(set(module_map) - packaged_vendor_modules)
+              unexpected_packaged = sorted(packaged_vendor_modules - set(module_map))
+              raise RuntimeError(
+                  f"vendor_dlkm 文件集合与 modules_install 不一致; 缺少={missing_packaged}; 多出={unexpected_packaged}"
+              )
           (vendor_modules / "modules.load").write_text("\n".join(vendor_load) + "\n")
           shutil.copy2(device / "modules.blocklist", vendor_modules / "modules.blocklist")
 
@@ -378,10 +403,10 @@ jobs:
           if ramdisk_modules.parent.parent.parent.exists():
               shutil.rmtree(workspace / "vendor_ramdisk")
           build_partition_modules(ramdisk_modules, recovery_allowed, "")
-          # modules.include.recovery controls files packaged; modules.load.recovery controls
-          # which of those files the Recovery init flow actually loads.
-          # The runtime modules.load must therefore contain recovery_load, not recovery_include.
-          (ramdisk_modules / "modules.load").write_text("\n".join(recovery_load) + "\n")
+          # Match AOSP BoardConfigCommon.mk:
+          # BOOT_KERNEL_MODULES packages modules.include.recovery; the Recovery
+          # load-list is emitted as modules.load.recovery (not modules.load).
+          (ramdisk_modules / "modules.load.recovery").write_text("\n".join(recovery_load) + "\n")
 
           print(f"Kernel release: {kernelrelease}")
           print(f"全部编译模块: {len(module_map)}")
@@ -412,13 +437,9 @@ jobs:
 
           fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
           test -s "$GITHUB_WORKSPACE/vendor_dlkm.img"
-          VENDOR_DLKM_BYTES="$(stat -c %s "$GITHUB_WORKSPACE/vendor_dlkm.img")"
-          VENDOR_DLKM_PARTITION_BYTES=201326592
-          if (( VENDOR_DLKM_BYTES > VENDOR_DLKM_PARTITION_BYTES )); then
-            echo "vendor_dlkm.img 超过设备分区大小: ${VENDOR_DLKM_BYTES} > ${VENDOR_DLKM_PARTITION_BYTES}"
-            exit 1
-          fi
-          test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load"
+          # vendor_dlkm is a logical partition inside super; do not mistake the
+          # 192 MiB boot/vendor_boot fixed partition size for vendor_dlkm capacity.
+          test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery"
           grep -q "qca_cld3_wlan.ko:" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep"
 
           echo "vendor_dlkm.img 大小:"
@@ -480,7 +501,7 @@ jobs:
           grep -qx "Image" "$GITHUB_WORKSPACE/zip_contents.txt"
           grep -qx "vendor_dlkm.img" "$GITHUB_WORKSPACE/zip_contents.txt"
           grep -qx "anykernel.sh" "$GITHUB_WORKSPACE/zip_contents.txt"
-          grep -qx "vendor_ramdisk/ramdisk/lib/modules/modules.load" "$GITHUB_WORKSPACE/zip_contents.txt"
+          grep -qx "vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery" "$GITHUB_WORKSPACE/zip_contents.txt"
           for module in adsp_loader_dlkm.ko apr_dlkm.ko msm_drm.ko q6_notifier_dlkm.ko q6_pdr_dlkm.ko snd_event_dlkm.ko; do
             grep -qx "vendor_ramdisk/ramdisk/lib/modules/$module" "$GITHUB_WORKSPACE/zip_contents.txt" || {
               echo "刷机包缺少 Recovery 模块: $module"
