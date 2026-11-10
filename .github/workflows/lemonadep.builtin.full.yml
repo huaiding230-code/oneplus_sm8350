@@ -44,45 +44,8 @@ jobs:
       # 4. 拉取官方 Clang 工具链
       - name: "4. Setup Google Clang"
         run: |
-          set -euo pipefail
           mkdir -p toolchain/clang
-          CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz"
-          CLANG_ARCHIVE="${RUNNER_TEMP}/clang-r614150.tar.gz"
-
-          # Google Gitiles can occasionally return a short error page instead of the archive.
-          # Download to a file, check HTTP status and gzip integrity, then retry before extraction.
-          downloaded=0
-          for attempt in 1 2 3 4 5; do
-            rm -f "$CLANG_ARCHIVE"
-            if curl --fail --location --silent --show-error \
-                --connect-timeout 30 --max-time 900 \
-                --output "$CLANG_ARCHIVE" \
-                --write-out "HTTP %{http_code}; content-type %{content_type}; bytes %{size_download}\n" \
-                "$CLANG_URL"; then
-              if gzip -t "$CLANG_ARCHIVE" 2>/dev/null; then
-                downloaded=1
-                break
-              fi
-              echo "Clang archive is not a valid gzip file (attempt $attempt/5)."
-              echo "Response preview:"
-              head -c 512 "$CLANG_ARCHIVE" | tr -cd '[:print:]\n\r\t' | head -c 512 || true
-              echo
-            else
-              echo "Clang download failed (attempt $attempt/5)."
-            fi
-            if (( attempt < 5 )); then
-              sleep "$((attempt * 5))"
-            fi
-          done
-
-          if (( downloaded != 1 )); then
-            echo "::error::Unable to download a valid clang-r614150 archive after 5 attempts."
-            exit 1
-          fi
-
-          tar -xzf "$CLANG_ARCHIVE" -C toolchain/clang
-          test -x toolchain/clang/bin/clang
-          toolchain/clang/bin/clang --version | head -n 1
+          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz" | tar -xz -C toolchain/clang
           echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
 
       # 5. 内核侧补丁（SUSFS + Hook + SELinuxFS + seccomp 例外 + binder freezer）。
