@@ -174,7 +174,7 @@ jobs:
               exit 1
             }
 
-            # Apply device-tree aliases and install the second QCA6390 multi-KO.
+            # Apply the device-tree WLAN module alias before modules_install packaging.
             mapfile -t WLAN_KOS < <(find "$MODULES_SRC" -type f -path "*/qcacld-3.0/wlan.ko")
             if [[ ${#WLAN_KOS[@]} -ne 1 ]]; then
               echo "预期找到 1 个 qcacld-3.0/wlan.ko，实际找到 ${#WLAN_KOS[@]}"
