@@ -394,7 +394,6 @@ jobs:
           /(vendor_dlkm|vendor/vendor_dlkm|system/vendor/vendor_dlkm)(/.*)? u:object_r:vendor_file:s0
           EOF
 
-          chown -R 0:0 "$GITHUB_WORKSPACE/vendor_dlkm_root"
           find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type d -exec chmod 0755 {} +
           find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type f -exec chmod 0644 {} +
 
