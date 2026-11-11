@@ -196,7 +196,23 @@ jobs:
           shutil.rmtree(work, ignore_errors=True)
           work.mkdir(parents=True)
 
-          def run_depmod(base):
+          def run_depmod(base, prefix, selected):
+              metadata = base / "lib/modules/0.0"
+              for name in ("modules.builtin", "modules.builtin.modinfo"):
+                  source = src / name
+                  if not source.is_file(): raise RuntimeError(f"modules_install 缺少 {name}: {source}")
+                  shutil.copy2(source, metadata/name)
+              order_source = src / "modules.order"
+              if not order_source.is_file(): raise RuntimeError(f"modules_install 缺少 modules.order: {order_source}")
+              ordered, seen = [], set()
+              for entry in order_source.read_text().splitlines():
+                  name = Path(entry.strip()).name
+                  if name == "wlan.ko": name = "qca_cld3_wlan.ko"
+                  if name in selected and name not in seen:
+                      ordered.append(f"{prefix}/{name}")
+                      seen.add(name)
+              ordered.extend(f"{prefix}/{name}" for name in sorted(selected - seen))
+              (metadata/"modules.order").write_text("\n".join(ordered) + "\n")
               subprocess.run(["depmod", "-b", str(base), "0.0"], check=True)
               depfile = base / "lib/modules/0.0/modules.dep"
               if not depfile.is_file(): raise RuntimeError(f"depmod 未生成 {depfile}")
@@ -221,7 +237,7 @@ jobs:
           all_dir = all_base / "lib/modules/0.0/vendor/lib/modules"
           all_dir.mkdir(parents=True)
           for name, p in modules.items(): shutil.copy2(p, all_dir/name)
-          all_depmap = run_depmod(all_base)
+          all_depmap = run_depmod(all_base, "vendor/lib/modules", set(modules))
           closure(vendor_load + ["qca_cld3_wlan.ko"], all_depmap)
           recovery_allowed = set(recovery_include)
           extra = sorted(closure(recovery_load, all_depmap) - recovery_allowed)
@@ -247,7 +263,7 @@ jobs:
                   depdir = base / "lib/modules/0.0/lib/modules"
                   depdir.mkdir(parents=True)
                   for name in sorted(selected): shutil.copy2(modules[name], depdir/name)
-                  run_depmod(base)
+                  run_depmod(base, "lib/modules", selected)
                   metadata, prefix = base / "lib/modules/0.0", "/lib/modules/"
               for name in ("modules.dep", "modules.alias", "modules.softdep"):
                   p = metadata/name
