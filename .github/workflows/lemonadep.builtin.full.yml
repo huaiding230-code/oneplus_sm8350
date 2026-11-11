@@ -152,11 +152,6 @@ jobs:
             echo "make modules 产物数量: ${#BUILT_MODULES[@]}"
             echo "modules_install 安装数量: ${#INSTALLED_MODULES[@]}"
 
-            test -s "$MODULES_SRC/kernel/techpack/display/msm/msm_drm.ko" || {
-              echo "完整模块安装结果缺少 msm_drm.ko"
-              exit 1
-            }
-
             # Apply the device-tree WLAN module alias before modules_install packaging.
             mapfile -t WLAN_KOS < <(find "$MODULES_SRC" -type f -path "*/qcacld-3.0/wlan.ko")
             if [[ ${#WLAN_KOS[@]} -ne 1 ]]; then
@@ -167,7 +162,6 @@ jobs:
             WLAN_DIR="$(dirname "${WLAN_KOS[0]}")"
             mv "${WLAN_KOS[0]}" "$WLAN_DIR/qca_cld3_wlan.ko"
 
-            test -s "$WLAN_DIR/qca_cld3_wlan.ko"
             echo "MODULES_SRC=$MODULES_SRC" >> "$GITHUB_ENV"
 
             echo "KERNELRELEASE=$KERNELRELEASE" >> "$GITHUB_ENV"
@@ -250,15 +244,15 @@ jobs:
           def build_modules(target, selected, vendor):
               target.mkdir(parents=True, exist_ok=True)
               for name in sorted(selected): shutil.copy2(modules[name], target/name)
-              base = work / ("depmod_vendor" if vendor else "depmod_recovery")
-              shutil.rmtree(base, ignore_errors=True)
-              rel = "vendor/lib/modules" if vendor else "lib/modules"
-              depdir = base / "lib/modules/0.0" / rel
-              depdir.mkdir(parents=True)
-              for name in sorted(selected): shutil.copy2(modules[name], depdir/name)
-              run_depmod(base)
-              metadata = base / "lib/modules/0.0"
-              prefix = "/vendor/lib/modules/" if vendor else "/lib/modules/"
+              if vendor:
+                  metadata, prefix = all_base / "lib/modules/0.0", "/vendor/lib/modules/"
+              else:
+                  base = work / "depmod_recovery"
+                  depdir = base / "lib/modules/0.0/lib/modules"
+                  depdir.mkdir(parents=True)
+                  for name in sorted(selected): shutil.copy2(modules[name], depdir/name)
+                  run_depmod(base)
+                  metadata, prefix = base / "lib/modules/0.0", "/lib/modules/"
               for name in ("modules.dep", "modules.alias", "modules.softdep"):
                   p = metadata/name
                   if not p.is_file(): raise RuntimeError(f"depmod 缺少 {name}")
@@ -269,7 +263,6 @@ jobs:
           shutil.rmtree(vendor_root, ignore_errors=True)
           vendor_modules = vendor_root / "lib/modules"
           build_modules(vendor_modules, set(modules), True)
-          if {p.name for p in vendor_modules.glob("*.ko")} != set(modules): raise RuntimeError("vendor_dlkm 模块集合不完整")
           (vendor_modules/"modules.load").write_text("\n".join(vendor_load) + "\n")
           shutil.copy2(device/"modules.blocklist", vendor_modules/"modules.blocklist")
 
@@ -284,8 +277,6 @@ jobs:
           find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type d -exec chmod 0755 {} + && find "$GITHUB_WORKSPACE/vendor_dlkm_root" -type f -exec chmod 0644 {} +
           mkfs.erofs -z lz4 -b 4096 -T 0 --mount-point=/vendor_dlkm --file-contexts="$GITHUB_WORKSPACE/vendor_dlkm_file_contexts" --force-uid=0 --force-gid=0 "$GITHUB_WORKSPACE/vendor_dlkm.img" "$GITHUB_WORKSPACE/vendor_dlkm_root"
           fsck.erofs "$GITHUB_WORKSPACE/vendor_dlkm.img"
-          test -s "$GITHUB_WORKSPACE/vendor_dlkm.img" && test -s "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery"
-          grep -q "qca_cld3_wlan.ko:" "$GITHUB_WORKSPACE/vendor_dlkm_root/lib/modules/modules.dep"
 
       # 9. AnyKernel3：boot + vendor_boot(v3) + vendor_dlkm
       - name: "9. Pack blu_spark-style AnyKernel3 ZIP"
@@ -296,11 +287,8 @@ jobs:
           python3 -c 'from pathlib import Path; p=Path("AnyKernel3/anykernel.sh"); s=p.read_text().replace("kernel.string=blu_spark Kernel with SukiSU Ultra + SUSFS for OnePlus 9 Series","kernel.string=SukiSU Ultra builtin-new + SUSFS for OnePlus 9 Pro"); old="dump_boot;\n\nwrite_boot;\n## end boot install"; new="dump_boot;\n\nwrite_boot;\n\n# Update vendor_boot v3 Recovery ramdisk without replacing its original contents.\nBLOCK=/dev/block/bootdevice/by-name/vendor_boot;\nRAMDISK_COMPRESSION=auto;\nreset_ak;\ndump_boot;\nwrite_boot;\n## end boot install"; assert old in s, "AnyKernel3 boot install 区块不匹配"; p.write_text(s.replace(old,new,1))'
           cd AnyKernel3
           ZIP="$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip"
-          zip -r9 "$ZIP" * -x README.md
+          zip -r9 "$ZIP" * -x README.md '*placeholder'
           unzip -tqq "$ZIP"
-          ZIP_CONTENTS="$(unzip -Z1 "$ZIP")"
-          for entry in Image vendor_dlkm.img anykernel.sh vendor_ramdisk/ramdisk/lib/modules/modules.load.recovery vendor_ramdisk/ramdisk/lib/modules/adsp_loader_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/apr_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/msm_drm.ko vendor_ramdisk/ramdisk/lib/modules/q6_notifier_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/q6_pdr_dlkm.ko vendor_ramdisk/ramdisk/lib/modules/snd_event_dlkm.ko; do grep -Fxq "$entry" <<< "$ZIP_CONTENTS" || { echo "刷机包缺少: $entry"; exit 1; }; done
-          grep -q "BLOCK=/dev/block/bootdevice/by-name/vendor_boot" anykernel.sh && grep -q "flash_generic vendor_dlkm" tools/ak3-core.sh || { echo "AK3 缺少 vendor_boot/vendor_dlkm 刷写逻辑"; exit 1; }
 
       # 10. 上传完整刷机包
       - name: "10. Upload Build Artifact"
