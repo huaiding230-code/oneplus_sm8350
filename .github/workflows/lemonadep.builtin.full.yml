@@ -101,7 +101,6 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_DEBUG_KERNEL=y
           CONFIG_KALLSYMS=y
-          # KPM 不启用
           # CONFIG_KPM is not set
           CONFIG_SECURITY_YAMA=y
           CONFIG_NTFS_FS=y
@@ -132,10 +131,7 @@ jobs:
 
             MODULES_STAGE="${GITHUB_WORKSPACE}/modules_stage"
             KERNELRELEASE="$(make "${MAKE_ARGS[@]}" -s kernelrelease)"
-            make "${MAKE_ARGS[@]}" \
-              INSTALL_MOD_PATH="$MODULES_STAGE" \
-              INSTALL_MOD_STRIP=1 \
-              modules_install
+            make "${MAKE_ARGS[@]}" INSTALL_MOD_PATH="$MODULES_STAGE" INSTALL_MOD_STRIP=1 modules_install
 
             MODULES_SRC="$MODULES_STAGE/lib/modules/$KERNELRELEASE"
 
