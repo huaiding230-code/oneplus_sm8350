@@ -291,9 +291,8 @@ jobs:
       - name: "9. Pack blu_spark-style AnyKernel3 ZIP"
         run: |
           set -euo pipefail
-          git clone https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3 && git -C AnyKernel3 checkout --detach 5046aab827c2b9837abcd2a56cf81752341315c7
+          git clone https://github.com/huaiding230-code/AnyKernel3.git AnyKernel3 && git -C AnyKernel3 checkout --detach 4f67dc5aee65ef9c471505b6d4dff9d624027ee8
           cp "$GITHUB_WORKSPACE/out/arch/arm64/boot/Image" AnyKernel3/Image && cp "$GITHUB_WORKSPACE/vendor_dlkm.img" AnyKernel3/vendor_dlkm.img && mkdir -p AnyKernel3/vendor_ramdisk && cp -a "$GITHUB_WORKSPACE/vendor_ramdisk/ramdisk" AnyKernel3/vendor_ramdisk/
-          rm -f AnyKernel3/modules/system/lib/modules/placeholder AnyKernel3/patch/placeholder AnyKernel3/ramdisk/placeholder
           python3 -c 'from pathlib import Path; p=Path("AnyKernel3/anykernel.sh"); s=p.read_text().replace("kernel.string=blu_spark Kernel with SukiSU Ultra + SUSFS for OnePlus 9 Series","kernel.string=SukiSU Ultra builtin-new + SUSFS for OnePlus 9 Pro"); old="dump_boot;\n\nwrite_boot;\n## end boot install"; new="dump_boot;\n\nwrite_boot;\n\n# Update vendor_boot v3 Recovery ramdisk without replacing its original contents.\nBLOCK=/dev/block/bootdevice/by-name/vendor_boot;\nRAMDISK_COMPRESSION=auto;\nreset_ak;\ndump_boot;\nwrite_boot;\n## end boot install"; assert old in s, "AnyKernel3 boot install 区块不匹配"; p.write_text(s.replace(old,new,1))'
           cd AnyKernel3
           ZIP="$GITHUB_WORKSPACE/SukiSU-SUSFS-Kernel-OP9P.zip"
