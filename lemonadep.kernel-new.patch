@@ -7844,19 +7844,17 @@ diff --git a/net/core/dev.c b/net/core/dev.c
 diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 --- a/security/selinux/ss/status.c
 +++ b/security/selinux/ss/status.c
-@@ -12,6 +12,10 @@
+@@ -12,6 +12,9 @@
  #include <linux/mutex.h>
  #include "avc.h"
  #include "services.h"
- 
 +#ifdef CONFIG_KSU_SUSFS
 +extern bool susfs_is_current_ksu_domain(void);
 +#endif
-+
+ 
  /*
-  * mmap based event notifications for SELinux
-@@ -84,7 +84,16 @@
- 		mutex_lock(&state->ss->status_lock);
+  * The selinux_status_page shall be exposed to userspace applications
+@@ -85,6 +88,15 @@
  	if (state->ss->status_page) {
  		status = page_address(state->ss->status_page);
  
@@ -7872,8 +7870,7 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
  		status->sequence++;
  		smp_wmb();
  
-@@ -110,6 +110,16 @@
- 	mutex_lock(&state->ss->status_lock);
+@@ -111,6 +123,16 @@
  	if (state->ss->status_page) {
  		status = page_address(state->ss->status_page);
  
@@ -7889,7 +7886,7 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 +#endif
  		status->sequence++;
  		smp_wmb();
-
+ 
 diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
 --- a/drivers/block/zram/Kconfig
 +++ b/drivers/block/zram/Kconfig
@@ -7899,9 +7896,8 @@ diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
  	select CRYPTO_LZO
 +	select CRYPTO_LZ4
  	help
- 	  Creates virtual block devices called /dev/zramX (zramX devices)
+ 	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
  	  Pages written to these disks are compressed and stored in memory
-
 diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
 --- a/drivers/block/zram/zram_drv.c
 +++ b/drivers/block/zram/zram_drv.c
