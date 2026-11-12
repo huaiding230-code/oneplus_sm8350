@@ -56,6 +56,87 @@ jobs:
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
 
+      # 5a. Apply narrow SELinux status and ZRAM edits with exact source checks.
+      - name: "5a. Apply SELinux status and ZRAM edits"
+        run: |
+          cd kernel_source
+          python3 - <<'PY'
+          from pathlib import Path
+
+          status = Path("security/selinux/ss/status.c")
+          s = status.read_text()
+
+          def patch_function(source, signature, old, new):
+              start = source.find(signature)
+              if start < 0:
+                  raise SystemExit(f"Missing function: {signature}")
+              end = source.find("\\n}", start)
+              if end < 0:
+                  raise SystemExit(f"Cannot find function end: {signature}")
+              body = source[start:end]
+              count = body.count(old)
+              if count != 1:
+                  raise SystemExit(f"{signature}: expected one exact anchor, found {count}")
+              return source[:start] + body.replace(old, new, 1) + source[end:]
+
+          anchor = """\t\tstatus = page_address(state->ss->status_page);
+
+          \t\tstatus->sequence++;
+          \t\tsmp_wmb();"""
+          setenforce = """\t\tstatus = page_address(state->ss->status_page);
+
+          #ifdef CONFIG_KSU_SUSFS
+          \t\tif (susfs_is_current_ksu_domain()) {
+          \t\t\tsmp_wmb();
+          \t\t\tstatus->enforcing = enforcing;
+          \t\t\tsmp_wmb();
+          \t\t\tmutex_unlock(&state->ss->status_lock);
+          \t\t\treturn;
+          \t\t}
+          #endif
+          \t\tstatus->sequence++;
+          \t\tsmp_wmb();"""
+          policyload = """\t\tstatus = page_address(state->ss->status_page);
+
+          #ifdef CONFIG_KSU_SUSFS
+          \t\tif (susfs_is_current_ksu_domain()) {
+          \t\t\tsmp_wmb();
+          \t\t\tstatus->policyload = seqno;
+          \t\t\tstatus->deny_unknown = !security_get_allow_unknown(state);
+          \t\t\tsmp_wmb();
+          \t\t\tmutex_unlock(&state->ss->status_lock);
+          \t\t\treturn;
+          \t\t}
+          #endif
+          \t\tstatus->sequence++;
+          \t\tsmp_wmb();"""
+
+          s = patch_function(s, "void selinux_status_update_setenforce(", anchor, setenforce)
+          s = patch_function(s, "void selinux_status_update_policyload(", anchor, policyload)
+          if s.count("susfs_is_current_ksu_domain()") != 2:
+              raise SystemExit("SELinux status verification failed")
+          status.write_text(s)
+
+          kconfig = Path("drivers/block/zram/Kconfig")
+          k = kconfig.read_text()
+          if k.count("\tselect CRYPTO_LZO\\n") != 1 or "select CRYPTO_LZ4" in k:
+              raise SystemExit("Unexpected ZRAM Kconfig context")
+          kconfig.write_text(k.replace("\tselect CRYPTO_LZO\\n", "\tselect CRYPTO_LZO\\n\tselect CRYPTO_LZ4\\n", 1))
+
+          zram = Path("drivers/block/zram/zram_drv.c")
+          z = zram.read_text()
+          if z.count('static const char *default_compressor = "lzo-rle";') != 1:
+              raise SystemExit("Unexpected ZRAM default compressor context")
+          zram.write_text(z.replace('static const char *default_compressor = "lzo-rle";',
+                                    'static const char *default_compressor = "lz4";', 1))
+
+          if "select CRYPTO_LZ4" not in kconfig.read_text():
+              raise SystemExit("CRYPTO_LZ4 select verification failed")
+          if 'default_compressor = "lz4";' not in zram.read_text():
+              raise SystemExit("LZ4 default compressor verification failed")
+          print("SELinux status and ZRAM edits applied and verified.")
+          PY
+
       # 6. 接入固定版本的 SukiSU builtin-new，并应用 5.4 适配补丁
       - name: "6. Integrate SukiSU"
         run: |
