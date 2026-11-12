@@ -1,0 +1,219 @@
+diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary_root.rs
+index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..0000000000000000000000000000000000000000 100644
+--- a/userspace/ksud/src/temporary_root.rs
++++ b/userspace/ksud/src/temporary_root.rs
+@@ -10,7 +10,6 @@
+ use std::os::fd::{AsRawFd, FromRawFd};
+ use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+ use std::process::{Command, Stdio};
+-use std::time::Duration;
+ 
+ use crate::{ksu_uapi as uapi, ksucalls};
+ 
+@@ -484,7 +483,7 @@
+     lease_boot != boot || deadline.is_some_and(|end| now >= end)
+ }
+ 
++fn sweep() -> Result<Vec<Lease>> {
+-fn sweep() -> Result<()> {
+     let _guard = lock("state.lock", false)?;
+     let mut leases = load()?;
+     let boot = boot_id()?;
+@@ -525,7 +524,7 @@
+     if changed {
+         save(&leases)?;
+     }
++    Ok(leases)
+-    Ok(())
+ }
+ 
+ pub fn start() -> Result<()> {
+@@ -547,6 +546,140 @@
+     Ok(())
+ }
+ 
++fn state_change_watcher() -> Result<File> {
++    // The temporary-root state is atomically replaced in this directory.
++    // Watch directory events so lease changes wake the worker without polling.
++    let _dir = state_dir()?;
++    let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC | libc::IN_NONBLOCK) };
++    if fd < 0 {
++        return Err(std::io::Error::last_os_error().into());
++    }
++    let watcher = unsafe { File::from_raw_fd(fd) };
++    let path = CString::new(DIR)?;
++    let mask = libc::IN_CREATE | libc::IN_DELETE | libc::IN_CLOSE_WRITE | libc::IN_MOVED_TO;
++    if unsafe { libc::inotify_add_watch(watcher.as_raw_fd(), path.as_ptr(), mask) } < 0 {
++        return Err(std::io::Error::last_os_error().into());
++    }
++    Ok(watcher)
++}
++
++fn wait_for_lease_change(watcher: &File, deadline: u64) -> Result<()> {
++    // CLOCK_BOOTTIME matches lease deadlines and advances across device suspend.
++    // This is a non-wakeup timer: it never wakes the phone just to revoke a lease.
++    let timer_fd = unsafe {
++        libc::timerfd_create(
++            libc::CLOCK_BOOTTIME,
++            libc::TFD_CLOEXEC | libc::TFD_NONBLOCK,
++        )
++    };
++    if timer_fd < 0 {
++        return Err(std::io::Error::last_os_error().into());
++    }
++    let timer = unsafe { File::from_raw_fd(timer_fd) };
++    let spec = libc::itimerspec {
++        it_interval: libc::timespec {
++            tv_sec: 0,
++            tv_nsec: 0,
++        },
++        it_value: libc::timespec {
++            tv_sec: deadline as libc::time_t,
++            tv_nsec: 0,
++        },
++    };
++    if unsafe {
++        libc::timerfd_settime(
++            timer.as_raw_fd(),
++            libc::TFD_TIMER_ABSTIME,
++            &spec,
++            std::ptr::null_mut(),
++        )
++    } < 0
++    {
++        return Err(std::io::Error::last_os_error().into());
++    }
++
++    let mut fds = [
++        libc::pollfd {
++            fd: watcher.as_raw_fd(),
++            events: libc::POLLIN,
++            revents: 0,
++        },
++        libc::pollfd {
++            fd: timer.as_raw_fd(),
++            events: libc::POLLIN,
++            revents: 0,
++        },
++    ];
++
++    loop {
++        let ret = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
++        if ret < 0 {
++            let error = std::io::Error::last_os_error();
++            if error.kind() == std::io::ErrorKind::Interrupted {
++                continue;
++            }
++            return Err(error.into());
++        }
++
++        if fds[0].revents & libc::POLLIN != 0 {
++            // Drain all queued inotify records before recomputing the schedule.
++            let mut buffer = [0u8; 4096];
++            loop {
++                let count = unsafe {
++                    libc::read(
++                        watcher.as_raw_fd(),
++                        buffer.as_mut_ptr().cast(),
++                        buffer.len(),
++                    )
++                };
++                if count > 0 {
++                    continue;
++                }
++                if count == 0 {
++                    break;
++                }
++                let error = std::io::Error::last_os_error();
++                if error.kind() == std::io::ErrorKind::Interrupted {
++                    continue;
++                }
++                if error.kind() == std::io::ErrorKind::WouldBlock {
++                    break;
++                }
++                return Err(error.into());
++            }
++            return Ok(());
++        }
++
++        if fds[1].revents & libc::POLLIN != 0 {
++            let mut expirations = 0u64;
++            let count = unsafe {
++                libc::read(
++                    timer.as_raw_fd(),
++                    (&mut expirations as *mut u64).cast(),
++                    std::mem::size_of::<u64>(),
++                )
++            };
++            if count < 0 {
++                let error = std::io::Error::last_os_error();
++                if error.kind() == std::io::ErrorKind::Interrupted
++                    || error.kind() == std::io::ErrorKind::WouldBlock
++                {
++                    continue;
++                }
++                return Err(error.into());
++            }
++            return Ok(());
++        }
++
++        if (fds[0].revents | fds[1].revents)
++            & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL)
++            != 0
++        {
++            bail!("temporary-root watcher poll failed");
++        }
++    }
++}
++
+ pub fn watch() -> Result<()> {
+     if unsafe { libc::getuid() } != 0 {
+         bail!("root required");
+@@ -563,11 +696,43 @@
+         }
+         Err(e) => return Err(e),
+     };
++
++    let watcher = state_change_watcher()?;
+     loop {
++        let leases = match sweep() {
++            Ok(leases) => leases,
++            Err(e) => {
++                log::error!("temporary root sweep failed: {e:#}");
++                wait_for_lease_change(&watcher, boottime()?.saturating_add(60))?;
++                continue;
++            }
++        };
++
++        let boot = boot_id()?;
++        let now = boottime()?;
++        let retry_failed_revoke = leases
++            .iter()
++            .any(|lease| expired(&lease.boot, &boot, lease.deadline, now));
++
++        let next_deadline = if retry_failed_revoke {
++            // Do not busy-loop if a manager profile cannot yet be revoked.
++            Some(now.saturating_add(60))
++        } else {
++            leases
++                .iter()
++                .filter(|lease| lease.boot == boot)
++                .filter_map(|lease| lease.deadline)
++                .min()
++        };
++
++        // No time-limited leases remain. Boot-scoped leases are revoked on the
++        // next boot by the one-shot post-fs-data sweep, so no daemon is needed.
++        let Some(deadline) = next_deadline else {
++            return Ok(());
++        };
++
++        // Sleep until the next expiry or a state-file change. No 1 Hz wakeups.
++        wait_for_lease_change(&watcher, deadline)?;
+-        if let Err(e) = sweep() {
+-            log::error!("temporary root sweep failed: {e:#}");
+-        }
+-        std::thread::sleep(Duration::from_secs(1));
+     }
+ }
+ 
