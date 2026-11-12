@@ -7889,3 +7889,23 @@ diff --git a/net/core/dev.c b/net/core/dev.c
 -static int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
 +int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
  EXPORT_SYMBOL(embms_tm_multicast_recv);
+
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+index fe7a4b7d30cfe3076d4e8fffbfee51d290366720..0000000000000000000000000000000000000000 100644
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -2,5 +2,6 @@
+ config ZRAM
+ 	tristate "Compressed RAM block device support"
+ 	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
+ 	select CRYPTO_LZO
++	select CRYPTO_LZ4
+ 	help
+ 	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+index 656fadddb35bec4797a88feebe44b46fd8217af8..0000000000000000000000000000000000000000 100644
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -43,1 +43,1 @@
+-static const char *default_compressor = "lzo-rle";
++static const char *default_compressor = "lz4";
