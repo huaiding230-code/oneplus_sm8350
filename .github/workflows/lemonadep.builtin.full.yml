@@ -65,12 +65,16 @@ jobs:
 
           status = Path("security/selinux/ss/status.c")
           s = status.read_text()
+          include_anchor = '#include "services.h"\\n'
+          if s.count(include_anchor) != 1 or "extern bool susfs_is_current_ksu_domain(void);" in s:
+              raise SystemExit("Unexpected SELinux status include context")
+          s = s.replace(include_anchor, include_anchor + '\\n#ifdef CONFIG_KSU_SUSFS\\nextern bool susfs_is_current_ksu_domain(void);\\n#endif\\n', 1)
 
           def patch_function(source, signature, old, new):
               start = source.find(signature)
               if start < 0:
                   raise SystemExit(f"Missing function: {signature}")
-              end = source.find("\\n}", start)
+              end = source.find("\n}", start)
               if end < 0:
                   raise SystemExit(f"Cannot find function end: {signature}")
               body = source[start:end]
@@ -119,9 +123,9 @@ jobs:
 
           kconfig = Path("drivers/block/zram/Kconfig")
           k = kconfig.read_text()
-          if k.count("\tselect CRYPTO_LZO\\n") != 1 or "select CRYPTO_LZ4" in k:
+          if k.count("\tselect CRYPTO_LZO\n") != 1 or "select CRYPTO_LZ4" in k:
               raise SystemExit("Unexpected ZRAM Kconfig context")
-          kconfig.write_text(k.replace("\tselect CRYPTO_LZO\\n", "\tselect CRYPTO_LZO\\n\tselect CRYPTO_LZ4\\n", 1))
+          kconfig.write_text(k.replace("\tselect CRYPTO_LZO\n", "\tselect CRYPTO_LZO\n\tselect CRYPTO_LZ4\n", 1))
 
           zram = Path("drivers/block/zram/zram_drv.c")
           z = zram.read_text()
