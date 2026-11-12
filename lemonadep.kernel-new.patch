@@ -7844,7 +7844,7 @@ diff --git a/net/core/dev.c b/net/core/dev.c
 diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 --- a/security/selinux/ss/status.c
 +++ b/security/selinux/ss/status.c
-@@ -12,6 +12,10 @@
+@@ -12,7 +12,10 @@
  #include <linux/mutex.h>
  #include "avc.h"
  #include "services.h"
@@ -7855,7 +7855,7 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 +
  /*
   * mmap based event notifications for SELinux
-@@ -84,6 +84,16 @@
+@@ -84,7 +84,16 @@
  		mutex_lock(&state->ss->status_lock);
  	if (state->ss->status_page) {
  		status = page_address(state->ss->status_page);
@@ -7872,7 +7872,7 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
  		status->sequence++;
  		smp_wmb();
  
-@@ -110,7 +110,16 @@
+@@ -110,6 +110,16 @@
  	mutex_lock(&state->ss->status_lock);
  	if (state->ss->status_page) {
  		status = page_address(state->ss->status_page);
