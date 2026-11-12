@@ -65,10 +65,10 @@ jobs:
 
           status = Path("security/selinux/ss/status.c")
           s = status.read_text()
-          include_anchor = '#include "services.h"\\n'
+          include_anchor = '#include "services.h"\n'
           if s.count(include_anchor) != 1 or "extern bool susfs_is_current_ksu_domain(void);" in s:
               raise SystemExit("Unexpected SELinux status include context")
-          s = s.replace(include_anchor, include_anchor + '\\n#ifdef CONFIG_KSU_SUSFS\\nextern bool susfs_is_current_ksu_domain(void);\\n#endif\\n', 1)
+          s = s.replace(include_anchor, include_anchor + '\n#ifdef CONFIG_KSU_SUSFS\nextern bool susfs_is_current_ksu_domain(void);\n#endif\n', 1)
 
           def patch_function(source, signature, old, new):
               start = source.find(signature)
