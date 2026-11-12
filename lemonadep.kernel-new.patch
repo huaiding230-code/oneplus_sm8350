@@ -7594,10 +7594,10 @@ index 3c554a442467d1f09cf27103b63ae316f9ce38ea..5b282c896dbf6621e259dbce3434f362
  		status->sequence++;
  		smp_wmb();
  
-@@ -111,5 +124,15 @@ void selinux_status_update_policyload(struct selinux_state *state,
- 	if (state->ss->status_page) {
- 		status = page_address(state->ss->status_page);
- 
+@@ -114,5 +127,15 @@ void selinux_status_update_policyload(struct selinux_state *state,
++		status->sequence++;
++		smp_wmb();
++
 +#ifdef CONFIG_KSU_SUSFS
 +		if (susfs_is_current_ksu_domain()) {
 +			smp_wmb();
@@ -7608,8 +7608,8 @@ index 3c554a442467d1f09cf27103b63ae316f9ce38ea..5b282c896dbf6621e259dbce3434f362
 +			return;
 +		}
 +#endif
- 		status->sequence++;
- 		smp_wmb();
+-		status->sequence++;
+-		smp_wmb();
 
 diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/msm/cvp/msm_cvp.c
 --- a/drivers/media/platform/msm/cvp/msm_cvp.c
@@ -7891,7 +7891,6 @@ diff --git a/net/core/dev.c b/net/core/dev.c
  EXPORT_SYMBOL(embms_tm_multicast_recv);
 
 diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
-index fe7a4b7d30cfe3076d4e8fffbfee51d290366720..0000000000000000000000000000000000000000 100644
 --- a/drivers/block/zram/Kconfig
 +++ b/drivers/block/zram/Kconfig
 @@ -2,6 +2,7 @@
@@ -7903,7 +7902,6 @@ index fe7a4b7d30cfe3076d4e8fffbfee51d290366720..00000000000000000000000000000000
  	help
  	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
 diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
-index 656fadddb35bec4797a88feebe44b46fd8217af8..0000000000000000000000000000000000000000 100644
 --- a/drivers/block/zram/zram_drv.c
 +++ b/drivers/block/zram/zram_drv.c
 @@ -42,5 +42,5 @@
