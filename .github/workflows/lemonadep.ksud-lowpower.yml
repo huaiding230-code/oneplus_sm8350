@@ -55,6 +55,15 @@ jobs:
           set -euo pipefail
           cd sukisu_source
           source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
+
+          # The ksud binary embeds ksuinit; build and stage the matching arm64 helper first.
+          BUILTINS="$($CLANG_PATH --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
+          test -f "$BUILTINS"
+          export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$BUILTINS"
+          cargo +stable build --package ksuinit --target=aarch64-linux-android --release
+          install -m 0755 target/aarch64-linux-android/release/ksuinit userspace/ksud/bin/aarch64/ksuinit
+          unset RUSTFLAGS
+
           cargo +stable build --target aarch64-linux-android --release --manifest-path ./userspace/ksud/Cargo.toml
           KSUD="${GITHUB_WORKSPACE}/sukisu_source/target/aarch64-linux-android/release/ksud"
           test -s "$KSUD"
@@ -70,7 +79,7 @@ jobs:
           name=KSUD Low-Power Lease Watcher
           version=1.0
           versionCode=1
-          author=OpenAI
+          author=lemonadep kernel project
           description=Replaces the 1 Hz temporary-root lease polling worker with event-driven inotify and non-wakeup BOOTTIME timerfd scheduling.
           EOF
 
