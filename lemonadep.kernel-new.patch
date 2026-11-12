@@ -7841,4 +7841,76 @@ diff --git a/net/core/dev.c b/net/core/dev.c
 -static int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
 +int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
  EXPORT_SYMBOL(embms_tm_multicast_recv);
+diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
+--- a/security/selinux/ss/status.c
++++ b/security/selinux/ss/status.c
+@@ -12,6 +12,10 @@
+ #include <linux/mutex.h>
+ #include "avc.h"
+ #include "services.h"
+ 
++#ifdef CONFIG_KSU_SUSFS
++extern bool susfs_is_current_ksu_domain(void);
++#endif
++
+ /*
+  * mmap based event notifications for SELinux
+@@ -84,7 +84,16 @@
+ 		mutex_lock(&state->ss->status_lock);
+ 	if (state->ss->status_page) {
+ 		status = page_address(state->ss->status_page);
+ 
++#ifdef CONFIG_KSU_SUSFS
++		if (susfs_is_current_ksu_domain()) {
++			smp_wmb();
++			status->enforcing = enforcing;
++			smp_wmb();
++			mutex_unlock(&state->ss->status_lock);
++			return;
++		}
++#endif
+ 		status->sequence++;
+ 		smp_wmb();
+ 
+@@ -110,7 +110,16 @@
+ 	mutex_lock(&state->ss->status_lock);
+ 	if (state->ss->status_page) {
+ 		status = page_address(state->ss->status_page);
+ 
++#ifdef CONFIG_KSU_SUSFS
++		if (susfs_is_current_ksu_domain()) {
++			smp_wmb();
++			status->policyload = seqno;
++			status->deny_unknown = !security_get_allow_unknown(state);
++			smp_wmb();
++			mutex_unlock(&state->ss->status_lock);
++			return;
++		}
++#endif
+ 		status->sequence++;
+ 		smp_wmb();
 
+diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
+--- a/drivers/block/zram/Kconfig
++++ b/drivers/block/zram/Kconfig
+@@ -3,6 +3,7 @@
+ 	tristate "Compressed RAM block device support"
+ 	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
+ 	select CRYPTO_LZO
++	select CRYPTO_LZ4
+ 	help
+ 	  Creates virtual block devices called /dev/zramX (zramX devices)
+ 	  Pages written to these disks are compressed and stored in memory
+
+diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
+--- a/drivers/block/zram/zram_drv.c
++++ b/drivers/block/zram/zram_drv.c
+@@ -41,7 +41,7 @@
+ static DEFINE_MUTEX(zram_index_mutex);
+ 
+ static int zram_major;
+-static const char *default_compressor = "lzo-rle";
++static const char *default_compressor = "lz4";
+ 
+ /* Module params (documentation at end) */
+ static unsigned int num_devices = 1;
