@@ -1,0 +1,139 @@
+name: Build KSUD Low-Power Fix Module
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout patch repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Checkout matching SukiSU userspace source
+        uses: actions/checkout@v5
+        with:
+          repository: SukiSU-Ultra/SukiSU-Ultra
+          ref: 6f1ff04c08fc44e6b0ffc7544a832b0c986c050c
+          path: sukisu_source
+          fetch-depth: 0
+
+      - name: Apply and verify low-power patch
+        run: |
+          set -euo pipefail
+          cd sukisu_source
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.ksud-lowpower.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.ksud-lowpower.patch"
+          grep -q 'timerfd_create' userspace/ksud/src/temporary_root.rs
+          grep -q 'inotify_init1' userspace/ksud/src/temporary_root.rs
+          if grep -q 'thread::sleep(Duration::from_secs(1))' userspace/ksud/src/temporary_root.rs; then
+            echo "1 Hz temporary-root polling still present"
+            exit 1
+          fi
+
+      - name: Setup Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-linux-android --toolchain stable
+
+      - name: Setup Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29
+
+      - name: Build arm64 ksud
+        env:
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          KSU_PACKAGE_NAME: com.sukisu.ultra
+        run: |
+          set -euo pipefail
+          cd sukisu_source
+          source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
+          cargo +stable build --target aarch64-linux-android --release --manifest-path ./userspace/ksud/Cargo.toml
+          KSUD="${GITHUB_WORKSPACE}/sukisu_source/target/aarch64-linux-android/release/ksud"
+          test -s "$KSUD"
+          file "$KSUD"
+          readelf -h "$KSUD" | grep -q 'AArch64'
+
+          MOD="${GITHUB_WORKSPACE}/ksud_lowpower_module"
+          mkdir -p "$MOD"
+          install -m 0755 "$KSUD" "$MOD/ksud"
+
+          cat > "$MOD/module.prop" <<'EOF'
+          id=ksud_lowpower_lease_watch
+          name=KSUD Low-Power Lease Watcher
+          version=1.0
+          versionCode=1
+          author=OpenAI
+          description=Replaces the 1 Hz temporary-root lease polling worker with event-driven inotify and non-wakeup BOOTTIME timerfd scheduling.
+          EOF
+
+          cat > "$MOD/post-fs-data.sh" <<'EOF'
+          #!/system/bin/sh
+          MODDIR=${0%/*}
+          SRC="$MODDIR/ksud"
+          DST="/data/adb/ksud"
+          TMP="/data/adb/.ksud-lowpower.$$"
+
+          [ -s "$SRC" ] || exit 1
+          [ -x "$SRC" ] || chmod 0755 "$SRC"
+
+          # Avoid restarting the worker when the patched binary is already installed.
+          if [ -f "$DST" ] && cmp -s "$SRC" "$DST"; then
+              exit 0
+          fi
+
+          cp "$SRC" "$TMP" || exit 1
+          chown 0:0 "$TMP" 2>/dev/null || true
+          chmod 0755 "$TMP" || exit 1
+          mv -f "$TMP" "$DST" || exit 1
+          restorecon "$DST" 2>/dev/null || true
+
+          # The old post-fs-data daemon may already have launched its 1 Hz child.
+          # Stop only "ksud temporary-root watch", never the main ksud event process.
+          OLD_WATCHERS=""
+          for PROC in /proc/[0-9]*; do
+              PID=${PROC##*/}
+              [ -r "$PROC/cmdline" ] || continue
+              ARGS="$(tr '\000' ' ' < "$PROC/cmdline" 2>/dev/null)"
+              [ -n "$ARGS" ] || continue
+              set -- $ARGS
+              [ "${1##*/}" = "ksud" ] || continue
+              [ "${2:-}" = "temporary-root" ] && [ "${3:-}" = "watch" ] || continue
+              kill -TERM "$PID" 2>/dev/null || true
+              OLD_WATCHERS="$OLD_WATCHERS $PID"
+          done
+
+          for PID in $OLD_WATCHERS; do
+              COUNT=0
+              while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt 20 ]; do
+                  sleep 0.1
+                  COUNT=$((COUNT + 1))
+              done
+              if kill -0 "$PID" 2>/dev/null; then
+                  kill -KILL "$PID" 2>/dev/null || true
+              fi
+          done
+
+          # Start the replacement against the existing lease database.
+          "$DST" temporary-root watch >/dev/null 2>&1 &
+          exit 0
+          EOF
+          chmod 0755 "$MOD/post-fs-data.sh"
+
+          cd "$MOD"
+          zip -r9 "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip" .
+          unzip -tqq "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip"
+
+      - name: Upload flashable module
+        uses: actions/upload-artifact@v7
+        with:
+          name: KSUD-Low-Power-Fix
+          path: KSUD-Low-Power-Fix.zip
+          if-no-files-found: error
