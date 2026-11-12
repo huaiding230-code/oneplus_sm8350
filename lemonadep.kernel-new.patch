@@ -7594,7 +7594,7 @@ index 3c554a442467d1f09cf27103b63ae316f9ce38ea..5b282c896dbf6621e259dbce3434f362
  		status->sequence++;
  		smp_wmb();
  
-@@ -111,6 +124,16 @@ void selinux_status_update_policyload(struct selinux_state *state,
+@@ -111,5 +124,15 @@ void selinux_status_update_policyload(struct selinux_state *state,
  	if (state->ss->status_page) {
  		status = page_address(state->ss->status_page);
  
@@ -7894,7 +7894,7 @@ diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
 index fe7a4b7d30cfe3076d4e8fffbfee51d290366720..0000000000000000000000000000000000000000 100644
 --- a/drivers/block/zram/Kconfig
 +++ b/drivers/block/zram/Kconfig
-@@ -2,5 +2,6 @@
+@@ -2,6 +2,7 @@
  config ZRAM
  	tristate "Compressed RAM block device support"
  	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
