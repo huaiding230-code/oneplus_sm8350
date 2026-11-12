@@ -14,8 +14,8 @@ index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..00000000000000000000000000000000
      lease_boot != boot || deadline.is_some_and(|end| now >= end)
  }
  
-+fn sweep() -> Result<Vec<Lease>> {
 -fn sweep() -> Result<()> {
++fn sweep() -> Result<Vec<Lease>> {
      let _guard = lock("state.lock", false)?;
      let mut leases = load()?;
      let boot = boot_id()?;
@@ -23,8 +23,8 @@ index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..00000000000000000000000000000000
      if changed {
          save(&leases)?;
      }
-+    Ok(leases)
 -    Ok(())
++    Ok(leases)
  }
  
  pub fn start() -> Result<()> {
@@ -176,6 +176,10 @@ index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..00000000000000000000000000000000
 +
 +    let watcher = state_change_watcher()?;
      loop {
+-        if let Err(e) = sweep() {
+-            log::error!("temporary root sweep failed: {e:#}");
+-        }
+-        std::thread::sleep(Duration::from_secs(1));
 +        let leases = match sweep() {
 +            Ok(leases) => leases,
 +            Err(e) => {
@@ -210,10 +214,6 @@ index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..00000000000000000000000000000000
 +
 +        // Sleep until the next expiry or a state-file change. No 1 Hz wakeups.
 +        wait_for_lease_change(&watcher, deadline)?;
--        if let Err(e) = sweep() {
--            log::error!("temporary root sweep failed: {e:#}");
--        }
--        std::thread::sleep(Duration::from_secs(1));
      }
  }
  
