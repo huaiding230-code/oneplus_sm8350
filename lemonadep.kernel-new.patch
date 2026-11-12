@@ -7563,53 +7563,6 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
  
  	avc_ss_reset(state->avc, seqno);
  	selnl_notify_policyload(seqno);
-diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
-index 3c554a442467d1f09cf27103b63ae316f9ce38ea..5b282c896dbf6621e259dbce3434f36287956382 100644
---- a/security/selinux/ss/status.c
-+++ b/security/selinux/ss/status.c
-@@ -13,6 +13,10 @@
- #include "avc.h"
- #include "services.h"
- 
-+#ifdef CONFIG_KSU_SUSFS
-+extern bool susfs_is_current_ksu_domain(void);
-+#endif
-+
- /*
-  * The selinux_status_page shall be exposed to userspace applications
-  * using mmap interface on /selinux/status.
-@@ -85,6 +89,15 @@ void selinux_status_update_setenforce(struct selinux_state *state,
- 	if (state->ss->status_page) {
- 		status = page_address(state->ss->status_page);
- 
-+#ifdef CONFIG_KSU_SUSFS
-+		if (susfs_is_current_ksu_domain()) {
-+			smp_wmb();
-+			status->enforcing = enforcing;
-+			smp_wmb();
-+			mutex_unlock(&state->ss->status_lock);
-+			return;
-+		}
-+#endif
- 		status->sequence++;
- 		smp_wmb();
- 
-@@ -111,5 +124,15 @@ void selinux_status_update_policyload(struct selinux_state *state,
- 	if (state->ss->status_page) {
- 		status = page_address(state->ss->status_page);
- 
-+#ifdef CONFIG_KSU_SUSFS
-+		if (susfs_is_current_ksu_domain()) {
-+			smp_wmb();
-+			status->policyload = seqno;
-+			status->deny_unknown = !security_get_allow_unknown(state);
-+			smp_wmb();
-+			mutex_unlock(&state->ss->status_lock);
-+			return;
-+		}
-+#endif
- 		status->sequence++;
- 		smp_wmb();
 diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/msm/cvp/msm_cvp.c
 --- a/drivers/media/platform/msm/cvp/msm_cvp.c
 +++ b/drivers/media/platform/msm/cvp/msm_cvp.c
@@ -7889,24 +7842,3 @@ diff --git a/net/core/dev.c b/net/core/dev.c
 +int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
  EXPORT_SYMBOL(embms_tm_multicast_recv);
 
-diff --git a/drivers/block/zram/Kconfig b/drivers/block/zram/Kconfig
---- a/drivers/block/zram/Kconfig
-+++ b/drivers/block/zram/Kconfig
-@@ -2,6 +2,7 @@
- config ZRAM
- 	tristate "Compressed RAM block device support"
- 	depends on BLOCK && SYSFS && ZSMALLOC && CRYPTO
- 	select CRYPTO_LZO
-+	select CRYPTO_LZ4
- 	help
- 	  Creates virtual block devices called /dev/zramX (X = 0, 1, ...).
-diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
---- a/drivers/block/zram/zram_drv.c
-+++ b/drivers/block/zram/zram_drv.c
-@@ -42,5 +42,5 @@
- 
- static int zram_major;
--static const char *default_compressor = "lzo-rle";
-+static const char *default_compressor = "lz4";
- 
- /* Module params (documentation at end) */
