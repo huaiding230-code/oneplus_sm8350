@@ -1395,6 +1395,9 @@ index 07b9717..8e8eab4 100644
 +	/* Match the OnePlus PowerOffAlarm policy: property write only. */
 +	ksu_allow(db, "vendor_qti_poweroffalarm_app", "system_prop", "property_service", "set");
  
++	/* PowerHAL queries the vendor display configuration service. */
++	ksu_allow(db, "hal_power_default", "vendor_hal_vnddisplayconfig_service", "service_manager", "find");
++
 +	// Android 17 excludes system_file_type from init's generic restorecon grants.
 +	// ZN can leave staged module objects with these fallback labels; permit only
 +	// the traversal and relabel operations needed to move them to adb_data_file.
