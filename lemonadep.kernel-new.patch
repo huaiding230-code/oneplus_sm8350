@@ -7855,7 +7855,7 @@ diff --git a/security/selinux/ss/status.c b/security/selinux/ss/status.c
 +
  /*
   * mmap based event notifications for SELinux
-@@ -84,7 +84,16 @@
+@@ -84,6 +84,16 @@
  		mutex_lock(&state->ss->status_lock);
  	if (state->ss->status_page) {
  		status = page_address(state->ss->status_page);
