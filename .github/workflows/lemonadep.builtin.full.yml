@@ -54,7 +54,6 @@ jobs:
         run: |
           cd kernel_source
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
 
       # 6. 接入固定版本的 SukiSU builtin-new，并应用 5.4 适配补丁
       - name: "6. Integrate SukiSU"
