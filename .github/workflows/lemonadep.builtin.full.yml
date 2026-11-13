@@ -61,8 +61,9 @@ jobs:
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
 
           git init "$KSU"
-          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git 95f302fab209551b03484357092ddc25e9b32322
+          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin-new
           git -C "$KSU" checkout --detach FETCH_HEAD
+          echo "SukiSU builtin-new commit: $(git -C "$KSU" rev-parse HEAD)"
 
           cd "${GITHUB_WORKSPACE}/kernel_source"
           ln -s ../KernelSU/kernel drivers/kernelsu
