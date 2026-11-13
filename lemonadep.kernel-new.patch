@@ -7632,9 +7632,8 @@ index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..520002f1e73beafd4bd902b988a6a60e
 +#endif
  #include <linux/idr.h>
  #include <linux/input/mt.h>
--#include <linux/module.h>
-+#include <linux/module.h>
-+#include <linux/slab.h>
+ #include <linux/module.h>
+ #include <linux/slab.h>
 @@ -449,6 +454,10 @@void input_event(struct input_dev *dev,
  	if (is_event_supported(type, dev->evbit, EV_MAX)) {
  
