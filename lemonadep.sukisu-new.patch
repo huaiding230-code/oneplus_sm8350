@@ -1,28 +1,8 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
-# Rebased on SukiSU-Ultra builtin-new HEAD 95f302fab209551b03484357092ddc25e9b32322.
+# Verified against SukiSU-Ultra builtin-new HEAD fd9181d3ddfccb603ee91c31ca9f3984a77a7d45 (2026-11-13); workflow tracks builtin-new.
 # Device-specific and Linux 5.4 compatibility changes only.
 # SUSFS extension, AVC spoof, mount-hide and LSM integration are provided by upstream builtin-new.
 # Apply once to a clean SukiSU builtin-new checkout after applying lemonadep.kernel-new.patch.
-
-diff --git a/kernel/extension/cpu_spoof.c b/kernel/extension/cpu_spoof.c
---- a/kernel/extension/cpu_spoof.c
-+++ b/kernel/extension/cpu_spoof.c
-@@ -165,6 +165,7 @@
- 				}
- #endif
- 
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
- 				{
- 					struct clocksource **curr_cs_ptr =
- 						(struct clocksource **)find_kernel_symbol_exact(
-@@ -177,6 +178,7 @@
- 						++missing;
- 					}
- 				}
-+#endif /* LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) */
- 
- 				{
- 					enum vdso_clock_mode *vd_default =
 
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
 --- a/kernel/extension/dynamic_sig_fallback.c
