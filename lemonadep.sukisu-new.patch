@@ -614,3 +614,12 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
  			pr_err("install ksu fd reply err\n");
 
+
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -335,7 +335,7 @@ bool susfs_is_current_ksu_domain(void)
+ {
+-	return unlikely(susfs_current_sid() == susfs_ksu_sid);
++	return is_ksu_domain();
+ }
