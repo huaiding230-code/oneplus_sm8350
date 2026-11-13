@@ -7837,7 +7837,7 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
 diff --git a/net/core/dev.c b/net/core/dev.c
 --- a/net/core/dev.c
 +++ b/net/core/dev.c
-@@ -4974,2 +4974,2 @@
+@@ -4969,2 +4969,2 @@
 -static int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
 +int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
  EXPORT_SYMBOL(embms_tm_multicast_recv);
