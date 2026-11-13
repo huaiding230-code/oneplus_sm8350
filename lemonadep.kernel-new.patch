@@ -136,10 +136,11 @@ index f1e1b14c3cb15fc4fc2c01a0978165832342c5f5..fe25d257c7e4f112aed9ba8fab430963
  		spin_lock(&dentry->d_lock);
  		if (dentry->d_parent != parent)
 diff --git a/fs/exec.c b/fs/exec.c
-index 910b407d267ec799dcfc3e0f2688657a03e123bc..9bec15d82998e5f03e3acab6c5ade657922627dc 100644
+index 910b407d267ec799dcfc3e0f2688657a03e123bc..463376611f06073c7a658f0eacf75c57e57ac831 100644
 --- a/fs/exec.c
 +++ b/fs/exec.c
-@@ -73,6 +73,11 @@
+@@ -72,7 +72,12 @@
+ #include "internal.h"
  
  #include <trace/events/sched.h>
  
@@ -151,8 +152,7 @@ index 910b407d267ec799dcfc3e0f2688657a03e123bc..9bec15d82998e5f03e3acab6c5ade657
  int suid_dumpable = 0;
  
  static LIST_HEAD(formats);
-@@ -1907,6 +1912,19 @@ static int do_execveat_common(int fd, struct filename *filename,
- 			      struct user_arg_ptr argv,
+@@ -1909,7 +1914,20 @@
  			      struct user_arg_ptr envp,
  			      int flags)
  {
@@ -172,6 +172,8 @@ index 910b407d267ec799dcfc3e0f2688657a03e123bc..9bec15d82998e5f03e3acab6c5ade657
 +#endif
 +	return retval;
  }
+ 
+ int do_execve_file(struct file *file, void *__argv, void *__envp)
 diff --git a/fs/namei.c b/fs/namei.c
 index 60b0dc43e7456d711d0362c3b77bdab75d253c4c..0fe60ecdc1c584486484110c7ca3e94d20533629 100644
 --- a/fs/namei.c
@@ -2149,14 +2151,22 @@ index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c6986979
  }
  #endif
 diff --git a/fs/read_write.c b/fs/read_write.c
-index 301c4a4ba1d05d656d13183252577e230e0c962a..0000000000000000000000000000000000000000 100644
+index 301c4a4ba1d05d656d13183252577e230e0c962a..ab74097f38aa0dbbee9d01a6c9daaed433049685 100644
 --- a/fs/read_write.c
 +++ b/fs/read_write.c
-@@ -595,4 +595,11 @@
+@@ -25,6 +25,10 @@
+ #include <linux/uaccess.h>
+ #include <asm/unistd.h>
+ 
 +#ifdef CONFIG_KSU_SUSFS
 +extern void ksu_handle_sys_read(unsigned int fd);
 +#endif
 +
+ const struct file_operations generic_ro_fops = {
+ 	.llseek		= generic_file_llseek,
+ 	.read_iter	= generic_file_read_iter,
+@@ -594,6 +598,9 @@
+ 
  SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
  {
 +#ifdef CONFIG_KSU_SUSFS
@@ -2164,8 +2174,9 @@ index 301c4a4ba1d05d656d13183252577e230e0c962a..00000000000000000000000000000000
 +#endif
  	return ksys_read(fd, buf, count);
  }
+ 
 diff --git a/fs/stat.c b/fs/stat.c
-index 298eb77668a766cf9feafa586bba613a6fe19eeb..1f92a649187093a09c5e8c20c14e2270846192fb 100644
+index 298eb77668a766cf9feafa586bba613a6fe19eeb..732a63803b3dfdbd5da19695b74329d39a16c09e 100644
 --- a/fs/stat.c
 +++ b/fs/stat.c
 @@ -17,9 +17,42 @@
@@ -2240,7 +2251,7 @@ index 298eb77668a766cf9feafa586bba613a6fe19eeb..1f92a649187093a09c5e8c20c14e2270
  }
  EXPORT_SYMBOL(vfs_getattr_nosec);
  
-@@ -144,7 +193,11 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
+@@ -144,6 +193,10 @@int vfs_statx_fd(unsigned int fd, struct kstat *stat,
  	if (f.file) {
  		error = vfs_getattr(&f.file->f_path, stat,
  				    request_mask, query_flags);
@@ -2251,7 +2262,6 @@ index 298eb77668a766cf9feafa586bba613a6fe19eeb..1f92a649187093a09c5e8c20c14e2270
  		fdput(f);
  	}
  	return error;
- }
 @@ -171,6 +217,12 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
  	struct path path;
  	int error = -EINVAL;
@@ -6069,7 +6079,7 @@ index 1ec9bdc1e20830838355e7e0b9b0e1cbf0c5270b..22764e160522694392ab0b01f57b7732
  	/* Surviving SECCOMP_RET_KILL_* must be proactively impossible. */
  	case SECCOMP_MODE_DEAD:
 diff --git a/kernel/sys.c b/kernel/sys.c
-index 3ed05f046c92e2bd9e036b4a95172917dcebf3ac..429ad6f0cca6f8e9d5ccda152bcb913e045d05ce 100644
+index 3ed05f046c92e2bd9e036b4a95172917dcebf3ac..1dc62e3d02ced161bae2c12f8d5183fc35074efb 100644
 --- a/kernel/sys.c
 +++ b/kernel/sys.c
 @@ -197,6 +197,14 @@ out:
@@ -6109,8 +6119,7 @@ index 3ed05f046c92e2bd9e036b4a95172917dcebf3ac..429ad6f0cca6f8e9d5ccda152bcb913e
  			user = find_user(uid);
  			if (!user)
  				goto out_unlock;	/* No processes for this user */
-@@ -679,5 +695,8 @@ long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
- 	retval = security_task_fix_setuid(new, old, LSM_SETID_RES);
+@@ -680,6 +696,9 @@
  	if (retval < 0)
  		goto error;
  
@@ -6118,6 +6127,8 @@ index 3ed05f046c92e2bd9e036b4a95172917dcebf3ac..429ad6f0cca6f8e9d5ccda152bcb913e
 +	ksu_handle_setresuid(ruid, euid, suid);
 +#endif
  	return commit_creds(new);
+ 
+ error:
 @@ -1240,12 +1252,20 @@ static int override_release(char __user *release, size_t len)
  	return ret;
  }
@@ -7605,10 +7616,12 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
  	avc_ss_reset(state->avc, seqno);
  	selnl_notify_policyload(seqno);
 diff --git a/drivers/input/input.c b/drivers/input/input.c
-index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..0000000000000000000000000000000000000000 100644
+index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..520002f1e73beafd4bd902b988a6a60e8dd44d7f 100644
 --- a/drivers/input/input.c
 +++ b/drivers/input/input.c
-@@ -12,3 +12,8 @@
+@@ -9,7 +9,12 @@
+ #define pr_fmt(fmt) KBUILD_BASENAME ": " fmt
+ 
  #include <linux/init.h>
  #include <linux/types.h>
 +#ifdef CONFIG_KSU_SUSFS
@@ -7617,7 +7630,11 @@ index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..00000000000000000000000000000000
 +extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
 +#endif
  #include <linux/idr.h>
-@@ -451,3 +456,7 @@ void input_event(struct input_dev *dev,
+ #include <linux/input/mt.h>
+ #include <linux/module.h>
+@@ -449,6 +454,10 @@void input_event(struct input_dev *dev,
+ 	if (is_event_supported(type, dev->evbit, EV_MAX)) {
+ 
  		spin_lock_irqsave(&dev->event_lock, flags);
 +#ifdef CONFIG_KSU_SUSFS
 +		if (static_key_enabled(&ksu_is_input_hook_enabled.key))
@@ -7625,6 +7642,7 @@ index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..00000000000000000000000000000000
 +#endif
  		input_handle_event(dev, type, code, value);
  		spin_unlock_irqrestore(&dev->event_lock, flags);
+ 	}
 diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/msm/cvp/msm_cvp.c
 --- a/drivers/media/platform/msm/cvp/msm_cvp.c
 +++ b/drivers/media/platform/msm/cvp/msm_cvp.c
