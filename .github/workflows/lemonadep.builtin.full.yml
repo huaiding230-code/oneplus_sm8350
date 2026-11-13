@@ -48,29 +48,81 @@ jobs:
           curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz" | tar -xz -C toolchain/clang
           echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
 
-      # 5. Apply the complete kernel patch (including SELinux status and ZRAM changes).
-      #    Keep patch context strict; no workflow-side source rewriting.
+      # 5. Apply the complete kernel patch and the independent binder-freezer patch.
+      #    Dry-run each patch with zero fuzz before applying it.
       - name: "5. Apply kernel patches"
         run: |
-          cd kernel_source
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+
+          test -s "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          test -s "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
+          test -s "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
 
-      # 6. 接入固定版本的 SukiSU builtin-new，并应用 5.4 适配补丁
-      - name: "6. Integrate SukiSU"
+      # 6. 检出 builtin-new 最新分支，并严格检查 5.4 适配补丁能否应用。
+      - name: "6. Integrate SukiSU builtin-new"
         run: |
+          set -euo pipefail
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
 
-          git init "$KSU"
-          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git 0804a40956b4345fa5ce392170a907e174d402f0
-          git -C "$KSU" checkout --detach FETCH_HEAD
+          rm -rf "$KSU"
+          git clone --depth=1 --single-branch --branch builtin-new \
+            https://github.com/SukiSU-Ultra/SukiSU-Ultra.git "$KSU"
+
+          SUKISU_REF="$(git -C "$KSU" rev-parse HEAD)"
+          echo "[+] SukiSU builtin-new commit: $SUKISU_REF"
+          echo "SUKISU_REF=$SUKISU_REF" >> "$GITHUB_ENV"
 
           cd "${GITHUB_WORKSPACE}/kernel_source"
+          rm -rf drivers/kernelsu
           ln -s ../KernelSU/kernel drivers/kernelsu
-          printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
-          sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
+          grep -Fqx 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile || \
+            printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> drivers/Makefile
+
+          # Add the KSU Kconfig entry only once, immediately before the final endmenu.
+          python3 - <<'PYKCONFIG'
+          from pathlib import Path
+
+          p = Path("drivers/Kconfig")
+          text = p.read_text()
+          entry = 'source "drivers/kernelsu/Kconfig"'
+          count = sum(line.strip() == entry for line in text.splitlines())
+
+          if count > 1:
+              raise SystemExit(f"ERROR: duplicated KSU Kconfig entries: {count}")
+          if count == 0:
+              pos = text.rfind("\\nendmenu")
+              if pos < 0:
+                  raise SystemExit("ERROR: final endmenu not found in drivers/Kconfig")
+              text = text[:pos] + "\\n" + entry + text[pos:]
+              p.write_text(text)
+
+          if sum(line.strip() == entry for line in p.read_text().splitlines()) != 1:
+              raise SystemExit("ERROR: failed to install exactly one KSU Kconfig entry")
+          PYKCONFIG
+
+          test -L drivers/kernelsu
+          test "$(readlink -f drivers/kernelsu)" = "$(readlink -f "$KSU/kernel")"
+          grep -Fqx 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          grep -Fqx 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          # The 5.4 adaptation is based on builtin-new; do not allow a fuzzy/partial apply.
+          patch -d "$KSU" --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
           patch -d "$KSU" -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+
+          git -C "$KSU" diff --check
+          grep -Fq 'ksu_handle_faccessat_kernel' "$KSU/kernel/feature/sucompat.c"
+          grep -Fq 'ksu_handle_stat_kernel' "$KSU/kernel/feature/sucompat.c"
+          grep -Fq 'ksu_selinux_hide_snapshot_legacy' "$KSU/kernel/feature/selinux_hide.c"
+          grep -Fq 'ksu_seccomp_allow_reboot' "$KSU/kernel/hook/setuid_hook.c"
+          echo "[+] SukiSU patch applied cleanly to builtin-new: $SUKISU_REF"
 
       # 7. 配置 + 检查 + 编译
       - name: "7. Configure and build kernel"
