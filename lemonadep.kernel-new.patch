@@ -2484,7 +2484,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..dc69b4fa48be9caefc08a7ef46d3175f0f4b1973
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2322 @@
+@@ -0,0 +1,2316 @@
 +#include <linux/version.h>
 +#include <linux/cred.h>
 +#include <linux/fs.h>
@@ -2538,19 +2538,13 @@ index 0000000000000000000000000000000000000000..dc69b4fa48be9caefc08a7ef46d3175f
 +	return 0;
 +}
 +
-+extern bool is_ksu_domain(void);
++extern bool susfs_is_current_ksu_domain(void);
++extern u32 susfs_ksu_sid;
++extern u32 susfs_priv_app_sid;
 +extern void setup_selinux(const char *domain, struct cred *cred);
 +extern struct cred *ksu_cred;
 +extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
 +extern struct vfsmount *susfs_get_non_sus_vfsmnt_from_vfsmnt(struct vfsmount *vfsmnt);
-+
-+u32 susfs_ksu_sid;
-+u32 susfs_priv_app_sid;
-+
-+bool susfs_is_current_ksu_domain(void)
-+{
-+	return is_ksu_domain();
-+}
 +
 +void susfs_init_selinux_sids(void)
 +{
