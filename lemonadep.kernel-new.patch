@@ -143,38 +143,35 @@ index 910b407d267ec799dcfc3e0f2688657a03e123bc..9bec15d82998e5f03e3acab6c5ade657
  
  #include <trace/events/sched.h>
  
-+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK)
 +extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);
-+extern void ksu_sucompat_execveat_finish(int ret, int handled, int tmp_fd);
++extern int ksu_handle_post_execveat_sucompat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags, int *retval);
 +#endif
 +
  int suid_dumpable = 0;
  
  static LIST_HEAD(formats);
-@@ -1909,7 +1914,22 @@ static int do_execveat_common(int fd, struct filename *filename,
+@@ -1907,6 +1912,19 @@ static int do_execveat_common(int fd, struct filename *filename,
+ 			      struct user_arg_ptr argv,
  			      struct user_arg_ptr envp,
  			      int flags)
  {
 -	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
 +	int retval;
-+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-+	int ksu_sucompat_handled = 0;
-+	int ksu_sucompat_tmp_fd = -1;
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK)
++	int ksu_sucompat_ret = -EINVAL;
 +
-+	if (!IS_ERR_OR_NULL(filename)) {
-+		ksu_sucompat_handled = ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
-+		if (ksu_sucompat_handled)
-+			ksu_sucompat_tmp_fd = fd;
-+	}
++	if (!IS_ERR_OR_NULL(filename))
++		ksu_sucompat_ret = ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);
 +#endif
 +	retval = __do_execve_file(fd, filename, argv, envp, flags, NULL);
-+#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
-+	ksu_sucompat_execveat_finish(retval, ksu_sucompat_handled, ksu_sucompat_tmp_fd);
++#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK)
++	if (ksu_sucompat_ret == 0)
++		(void)ksu_handle_post_execveat_sucompat(&fd, &filename, &argv, &envp,
++						       &flags, &retval);
 +#endif
 +	return retval;
  }
- 
- int do_execve_file(struct file *file, void *__argv, void *__envp)
 diff --git a/fs/namei.c b/fs/namei.c
 index 60b0dc43e7456d711d0362c3b77bdab75d253c4c..0fe60ecdc1c584486484110c7ca3e94d20533629 100644
 --- a/fs/namei.c
@@ -2151,11 +2148,27 @@ index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c6986979
  	return error;
  }
  #endif
+diff --git a/fs/read_write.c b/fs/read_write.c
+index 301c4a4ba1d05d656d13183252577e230e0c962a..0000000000000000000000000000000000000000 100644
+--- a/fs/read_write.c
++++ b/fs/read_write.c
+@@ -595,4 +595,11 @@
++#ifdef CONFIG_KSU_SUSFS
++extern void ksu_handle_sys_read(unsigned int fd);
++#endif
++
+ SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)
+ {
++#ifdef CONFIG_KSU_SUSFS
++	ksu_handle_sys_read(fd);
++#endif
+ 	return ksys_read(fd, buf, count);
+ }
 diff --git a/fs/stat.c b/fs/stat.c
 index 298eb77668a766cf9feafa586bba613a6fe19eeb..1f92a649187093a09c5e8c20c14e2270846192fb 100644
 --- a/fs/stat.c
 +++ b/fs/stat.c
-@@ -17,9 +17,39 @@
+@@ -17,9 +17,42 @@
  #include <linux/syscalls.h>
  #include <linux/pagemap.h>
  #include <linux/compat.h>
@@ -2168,6 +2181,9 @@ index 298eb77668a766cf9feafa586bba613a6fe19eeb..1f92a649187093a09c5e8c20c14e2270
 +#include "internal.h"
 +
 +#ifdef CONFIG_KSU
++#ifdef CONFIG_KSU_SUSFS
++extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
++#endif
 +#if defined(CONFIG_KSU_SUSFS) && defined(CONFIG_KSU_SUSFS_INLINE_HOOK) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE) && !defined(CONFIG_KSU_HACK_ARM64_BRANCH_LINK)
 +extern int ksu_handle_stat_kernel(int *dfd, struct filename **filename_user, int *flags);
 +extern bool ksu_su_compat_is_enabled(void);
@@ -2224,6 +2240,18 @@ index 298eb77668a766cf9feafa586bba613a6fe19eeb..1f92a649187093a09c5e8c20c14e2270
  }
  EXPORT_SYMBOL(vfs_getattr_nosec);
  
+@@ -144,7 +193,11 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
+ 	if (f.file) {
+ 		error = vfs_getattr(&f.file->f_path, stat,
+ 				    request_mask, query_flags);
++#ifdef CONFIG_KSU_SUSFS
++		if (!error)
++			ksu_handle_vfs_fstat(fd, &stat->size);
++#endif
+ 		fdput(f);
+ 	}
+ 	return error;
+ }
 @@ -171,6 +217,12 @@ int vfs_statx(int dfd, const char __user *filename, int flags,
  	struct path path;
  	int error = -EINVAL;
@@ -6044,12 +6072,16 @@ diff --git a/kernel/sys.c b/kernel/sys.c
 index 3ed05f046c92e2bd9e036b4a95172917dcebf3ac..429ad6f0cca6f8e9d5ccda152bcb913e045d05ce 100644
 --- a/kernel/sys.c
 +++ b/kernel/sys.c
-@@ -197,6 +197,10 @@ out:
+@@ -197,6 +197,14 @@ out:
  	return error;
  }
  
 +#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +extern bool susfs_is_priority_uid_filtered(uid_t uid);
++#endif
++
++#ifdef CONFIG_KSU_SUSFS
++extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);
 +#endif
 +
  SYSCALL_DEFINE3(setpriority, int, which, int, who, int, niceval)
@@ -6077,6 +6109,15 @@ index 3ed05f046c92e2bd9e036b4a95172917dcebf3ac..429ad6f0cca6f8e9d5ccda152bcb913e
  			user = find_user(uid);
  			if (!user)
  				goto out_unlock;	/* No processes for this user */
+@@ -679,5 +695,8 @@ long __sys_setresuid(uid_t ruid, uid_t euid, uid_t suid)
+ 	retval = security_task_fix_setuid(new, old, LSM_SETID_RES);
+ 	if (retval < 0)
+ 		goto error;
+ 
++#ifdef CONFIG_KSU_SUSFS
++	ksu_handle_setresuid(ruid, euid, suid);
++#endif
+ 	return commit_creds(new);
 @@ -1240,12 +1252,20 @@ static int override_release(char __user *release, size_t len)
  	return ret;
  }
@@ -7563,6 +7604,27 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
  
  	avc_ss_reset(state->avc, seqno);
  	selnl_notify_policyload(seqno);
+diff --git a/drivers/input/input.c b/drivers/input/input.c
+index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..0000000000000000000000000000000000000000 100644
+--- a/drivers/input/input.c
++++ b/drivers/input/input.c
+@@ -12,3 +12,8 @@
+ #include <linux/init.h>
+ #include <linux/types.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/jump_label.h>
++extern struct static_key_true ksu_is_input_hook_enabled;
++extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);
++#endif
+ #include <linux/idr.h>
+@@ -451,3 +456,7 @@ void input_event(struct input_dev *dev,
+ 		spin_lock_irqsave(&dev->event_lock, flags);
++#ifdef CONFIG_KSU_SUSFS
++		if (static_key_enabled(&ksu_is_input_hook_enabled.key))
++			ksu_handle_input_handle_event(&type, &code, &value);
++#endif
+ 		input_handle_event(dev, type, code, value);
+ 		spin_unlock_irqrestore(&dev->event_lock, flags);
 diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/msm/cvp/msm_cvp.c
 --- a/drivers/media/platform/msm/cvp/msm_cvp.c
 +++ b/drivers/media/platform/msm/cvp/msm_cvp.c
@@ -7808,32 +7870,6 @@ diff --git a/techpack/display/oplus/oplus_display_panel.c b/techpack/display/opl
  	cdev_del(&panel_cdev);
  err_cdev_add:
  	class_destroy(panel_class);
-diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_adfr.c
---- a/techpack/display/oplus/oplus_adfr.c
-+++ b/techpack/display/oplus/oplus_adfr.c
-@@ -1864,11 +1864,19 @@
- 	struct dsi_display *display = dsi_display;
- 	int h_skew = SDC_ADFR;
- 	int rc = 0;
- 
--	if (!display || !display->panel || !display->panel->cur_mode) {
--		DSI_ERR("kVRR dsi_display_auto_mode_update Invalid params\n");
-+	if (!display) {
-+		DSI_ERR("kVRR dsi_display_auto_mode_update Invalid display\n");
- 		return -EINVAL;
-+	}
-+
-+	/* The pre-commit callback can run while the panel is off or modeset is
-+	 * tearing down.  Keep pending ADFR updates for the next valid mode.
-+	 */
-+	if (!display->panel || !display->panel->cur_mode) {
-+		DSI_DEBUG("kVRR skip auto mode update: panel mode is not ready\n");
-+		return 0;
- 	}
- 
- 	h_skew = display->panel->cur_mode->timing.h_skew;
- 	if ((h_skew != SDC_ADFR) && (h_skew != SDC_MFR)) {
-
 diff --git a/net/core/dev.c b/net/core/dev.c
 --- a/net/core/dev.c
 +++ b/net/core/dev.c
