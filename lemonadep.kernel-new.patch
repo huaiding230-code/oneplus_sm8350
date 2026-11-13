@@ -139,7 +139,7 @@ diff --git a/fs/exec.c b/fs/exec.c
 index 910b407d267ec799dcfc3e0f2688657a03e123bc..463376611f06073c7a658f0eacf75c57e57ac831 100644
 --- a/fs/exec.c
 +++ b/fs/exec.c
-@@ -72,7 +72,12 @@
+@@ -72,8 +72,13 @@
  #include "internal.h"
  
  #include <trace/events/sched.h>
@@ -152,6 +152,7 @@ index 910b407d267ec799dcfc3e0f2688657a03e123bc..463376611f06073c7a658f0eacf75c57
  int suid_dumpable = 0;
  
  static LIST_HEAD(formats);
+ static DEFINE_RWLOCK(binfmt_lock);
 @@ -1909,7 +1914,20 @@
  			      struct user_arg_ptr envp,
  			      int flags)
@@ -7619,7 +7620,7 @@ diff --git a/drivers/input/input.c b/drivers/input/input.c
 index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..520002f1e73beafd4bd902b988a6a60e8dd44d7f 100644
 --- a/drivers/input/input.c
 +++ b/drivers/input/input.c
-@@ -9,7 +9,12 @@
+@@ -9,8 +9,13 @@
  #define pr_fmt(fmt) KBUILD_BASENAME ": " fmt
  
  #include <linux/init.h>
@@ -7631,7 +7632,9 @@ index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..520002f1e73beafd4bd902b988a6a60e
 +#endif
  #include <linux/idr.h>
  #include <linux/input/mt.h>
- #include <linux/module.h>
+-#include <linux/module.h>
++#include <linux/module.h>
++#include <linux/slab.h>
 @@ -449,6 +454,10 @@void input_event(struct input_dev *dev,
  	if (is_event_supported(type, dev->evbit, EV_MAX)) {
  
