@@ -7960,7 +7960,7 @@ diff --git a/drivers/block/zram/zram_drv.c b/drivers/block/zram/zram_drv.c
 diff --git a/scripts/Makefile.build b/scripts/Makefile.build
 --- a/scripts/Makefile.build
 +++ b/scripts/Makefile.build
-@@ -163,5 +163,5 @@
+@@ -165,5 +165,5 @@
  cmd_modversions_c =								\
 -	if $(LLVM_NM) $@ | grep -q __ksymtab; then				\
 +	if $(LLVM_NM) $@ | grep '__ksymtab' >/dev/null; then			\
