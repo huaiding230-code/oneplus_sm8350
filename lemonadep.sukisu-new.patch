@@ -306,7 +306,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 +	if (!filename_ptr || IS_ERR_OR_NULL(*filename_ptr))
 +		return 0;
 +	filename = *filename_ptr;
-+	if (!filename->name || !is_su_allowed((const void **)&filename->name))
++	if (!filename->name)
 +		return 0;
 +
 +	path = (char *)filename->name;
