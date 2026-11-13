@@ -98,10 +98,10 @@ jobs:
           if count > 1:
               raise SystemExit(f"ERROR: duplicated KSU Kconfig entries: {count}")
           if count == 0:
-              pos = text.rfind("\\nendmenu")
+              pos = text.rfind("\nendmenu")
               if pos < 0:
                   raise SystemExit("ERROR: final endmenu not found in drivers/Kconfig")
-              text = text[:pos] + "\\n" + entry + text[pos:]
+              text = text[:pos] + "\n" + entry + text[pos:]
               p.write_text(text)
 
           if sum(line.strip() == entry for line in p.read_text().splitlines()) != 1:
