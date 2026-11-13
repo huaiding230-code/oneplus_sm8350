@@ -2252,7 +2252,7 @@ index 298eb77668a766cf9feafa586bba613a6fe19eeb..732a63803b3dfdbd5da19695b74329d3
  }
  EXPORT_SYMBOL(vfs_getattr_nosec);
  
-@@ -144,6 +193,10 @@int vfs_statx_fd(unsigned int fd, struct kstat *stat,
+@@ -144,6 +193,10 @@ int vfs_statx_fd(unsigned int fd, struct kstat *stat,
  	if (f.file) {
  		error = vfs_getattr(&f.file->f_path, stat,
  				    request_mask, query_flags);
@@ -7634,7 +7634,7 @@ index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..520002f1e73beafd4bd902b988a6a60e
  #include <linux/input/mt.h>
  #include <linux/module.h>
  #include <linux/slab.h>
-@@ -449,6 +454,10 @@void input_event(struct input_dev *dev,
+@@ -449,6 +454,10 @@ void input_event(struct input_dev *dev,
  	if (is_event_supported(type, dev->evbit, EV_MAX)) {
  
  		spin_lock_irqsave(&dev->event_lock, flags);
