@@ -2484,7 +2484,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..dc69b4fa48be9caefc08a7ef46d3175f0f4b1973
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,2312 @@
 +#include <linux/version.h>
 +#include <linux/cred.h>
 +#include <linux/fs.h>
@@ -2553,7 +2553,7 @@ index 0000000000000000000000000000000000000000..dc69b4fa48be9caefc08a7ef46d3175f
 +		susfs_set_batch_sid();
 +}
 +
-
++
 +#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
 +DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
 +#define SUSFS_LOGI(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_info("susfs:[%u][%d][%s] " fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
