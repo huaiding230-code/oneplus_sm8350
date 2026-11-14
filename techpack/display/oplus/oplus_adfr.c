@@ -9,6 +9,7 @@
 **  <author>        <data>        <version >        <desc>
 **  CaiHuiyue      2020/10/23        1.0           Build this moudle
 ******************************************************************/
+#include <linux/compiler.h>
 #include "sde_trace.h"
 #include "msm_drv.h"
 #include "sde_kms.h"
