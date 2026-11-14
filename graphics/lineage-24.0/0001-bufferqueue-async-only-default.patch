@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] gui: restore async-only producer throttling by default
+
+Keep the Android 16 queueBuffer fence-wait policy as the default on this
+legacy SM8350 device. Regular EGL/Vulkan producers no longer wait on the
+previous queueBuffer fence unless they explicitly opt in through the API 37
+producer-backpressure control. Async and non-blocking queues retain their
+existing throttling behavior.
+
+---
+ libs/gui/include/gui/BufferQueueCore.h | 5 +++--
+ libs/gui/BufferQueueProducer.cpp      | 19 +++++++-------------
+ 2 files changed, 10 insertions(+), 14 deletions(-)
+
+diff --git a/libs/gui/include/gui/BufferQueueCore.h b/libs/gui/include/gui/BufferQueueCore.h
+index 0042d35e..00000000 100644
+--- a/libs/gui/include/gui/BufferQueueCore.h
++++ b/libs/gui/include/gui/BufferQueueCore.h
+@@ -396,4 +396,5 @@
+     bool mAllowExtraAcquire = false;
+ 
+-    // state of producer throttling, see setProducerThrottlingEnabled()
+-    bool mProducerThrottlingEnabled = true;
++    // Regular EGL/Vulkan producer throttling is opt-in; async/non-blocking
++    // BufferQueues retain their existing queueBuffer() throttling behavior.
++    bool mProducerThrottlingEnabled = false;
+diff --git a/libs/gui/BufferQueueProducer.cpp b/libs/gui/BufferQueueProducer.cpp
+index a8b95da2..00000000 100644
+--- a/libs/gui/BufferQueueProducer.cpp
++++ b/libs/gui/BufferQueueProducer.cpp
+@@ -1020,5 +1020,5 @@
+     uint64_t currentFrameNumber = 0;
+     BufferItem item;
+     int connectedApi;
+-    bool enableEglCpuThrottling = true;
++    bool enableEglCpuThrottling = false;
+     sp<Fence> lastQueuedFence;
+@@ -1224,13 +1224,8 @@
+         connectedApi = mCore->mConnectedApi;
+-        if (com::android::graphics::libgui::flags::bq_producer_backpressure_control()) {
+-            if (mCore->mProducerThrottlingEnabled) {
+-                // throttling is enabled via setProducerThrottlingEnabled(true) [default]
+-                enableEglCpuThrottling = true;
+-            } else {
+-                // throttling is disabled via setProducerThrottlingEnabled(false), in this case
+-                // we disable it only if we're not in async mode (since async mode doesn't
+-                // throttle in dequeueBuffer()) or if mDequeueBufferCannotBlock is set.
+-                enableEglCpuThrottling = mCore->mAsyncMode || mCore->mDequeueBufferCannotBlock;
+-            }
+-        }
++        // Preserve the Android 16 policy for async/non-blocking queues.
++        enableEglCpuThrottling = mCore->mAsyncMode || mCore->mDequeueBufferCannotBlock;
++        // API 37 can opt regular EGL/Vulkan producers back into queueBuffer throttling.
++        if (com::android::graphics::libgui::flags::bq_producer_backpressure_control()) {
++            enableEglCpuThrottling |= mCore->mProducerThrottlingEnabled;
++        }
+         lastQueuedFence = std::move(mLastQueueBufferFence);
