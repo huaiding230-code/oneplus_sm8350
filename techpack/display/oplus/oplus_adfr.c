@@ -913,16 +913,20 @@ static int oplus_dsi_display_enable_and_waiting_for_next_te_irq(struct dsi_displ
 {
 	int const switch_te_timeout = msecs_to_jiffies(1100);
 
+	/*
+	 * Arm the completion before enabling the TE IRQ. Otherwise an early
+	 * TE can be completed and then lost when reinit_completion() runs.
+	 */
+	reinit_completion(&display->switch_te_gate);
+	WRITE_ONCE(display->panel->vsync_switch_pending, true);
 	dsi_display_adfr_change_te_irq_status(display, true);
 	DSI_INFO("kVRR Waiting for the next TE to switch\n");
 
-	display->panel->vsync_switch_pending = true;
-	reinit_completion(&display->switch_te_gate);
-
 	if (!wait_for_completion_timeout(&display->switch_te_gate, switch_te_timeout)) {
 		DSI_ERR("kVRR vsync switch TE check failed\n");
+		WRITE_ONCE(display->panel->vsync_switch_pending, false);
 		dsi_display_adfr_change_te_irq_status(display, false);
-		return -EINVAL;
+		return -ETIMEDOUT;
 	}
 
 	return 0;
@@ -953,7 +957,11 @@ static int oplus_dsi_display_vsync_switch_check_te(struct dsi_display *display, 
 		return -EINVAL;
 	}
 
-	oplus_dsi_display_enable_and_waiting_for_next_te_irq(display);
+	rc = oplus_dsi_display_enable_and_waiting_for_next_te_irq(display);
+	if (rc) {
+		DSI_ERR("kVRR TE wait failed before vsync switch, rc=%d\n", rc);
+		return rc;
+	}
 
 	if (oplus_adfr_compatibility_mode == false) {
 		if (level) {
@@ -1010,11 +1018,13 @@ static int oplus_dsi_display_set_vsync_switch_gpio(struct dsi_display *display, 
 				gpio_set_value(panel->vsync_switch_gpio, 0);//TP Vsync
 				DSI_INFO("kVRR set vsync_switch_gpio to 0\n");
 			}
-			panel->vsync_switch_gpio_level = level;
-			SDE_ATRACE_INT("vsync_switch_gpio_level", panel->vsync_switch_gpio_level);
+			if (!rc) {
+				panel->vsync_switch_gpio_level = level;
+				SDE_ATRACE_INT("vsync_switch_gpio_level", panel->vsync_switch_gpio_level);
+			}
 		}
 	} else {
-		oplus_dsi_display_vsync_switch_check_te(display, level);
+		rc = oplus_dsi_display_vsync_switch_check_te(display, level);
 	}
 
 	mutex_unlock(&display->display_lock);
@@ -1046,7 +1056,7 @@ ssize_t oplus_set_vsync_switch(struct kobject *obj,
 	if (ret)
 		pr_err("kVRR oplus_dsi_display_set_vsync_switch_gpio(%d) fail\n", vsync_switch_gpio);
 
-	return count;
+	return ret ? ret : count;
 }
 
 ssize_t oplus_get_vsync_switch(struct kobject *obj,
@@ -1081,9 +1091,12 @@ void oplus_dsi_display_vsync_switch(void *disp, bool force_te_vsync)
 		if (oplus_adfr_get_vsync_mode() == OPLUS_EXTERNAL_TE_TP_VSYNC) {
 			if (display->panel->vsync_switch_gpio_level == OPLUS_VSYNC_SWITCH_TP) {
 				level = OPLUS_VSYNC_SWITCH_TE;
-				oplus_dsi_display_vsync_switch_check_te(display, level);
-
-				display->panel->force_te_vsync = true;
+				rc = oplus_dsi_display_vsync_switch_check_te(display, level);
+				if (!rc) {
+					display->panel->force_te_vsync = true;
+				} else {
+					DSI_ERR("kVRR forced TE switch failed, rc=%d\n", rc);
+				}
 			}
 		}
 	} else {
@@ -1110,7 +1123,10 @@ void oplus_dsi_display_vsync_switch(void *disp, bool force_te_vsync)
 			level = OPLUS_VSYNC_SWITCH_TP;
 		}
 
-		oplus_dsi_display_vsync_switch_check_te(display, level);
+		rc = oplus_dsi_display_vsync_switch_check_te(display, level);
+		if (rc)
+			DSI_ERR("kVRR vsync switch to level %d failed, rc=%d\n",
+				level, rc);
 	}
 }
 
