@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+Subject: [PATCH] am: retain shared app-zygote UID ranges until all users exit
+
+Android 17 can create separate managed and native AppZygote instances for
+the same application. Both instances still share the allocator entry keyed
+by processName and defining UID. Do not free that shared range when only
+one zygote becomes idle. Also account for isolated ProcessRecords that have
+already reserved a UID but have not yet joined an AppZygote process list.
+
+---
+ services/core/java/com/android/server/am/ProcessList.java | 57 ++++++++++++++++++++++---
+ .../com/android/server/am/ActivityManagerServiceTest.java | 60 +++++++++++++++++++++++++
+ 2 files changed, 111 insertions(+), 6 deletions(-)
+
+diff --git a/services/core/java/com/android/server/am/ProcessList.java b/services/core/java/com/android/server/am/ProcessList.java
+index d8e2cfaa..00000000 100644
+--- a/services/core/java/com/android/server/am/ProcessList.java
++++ b/services/core/java/com/android/server/am/ProcessList.java
+@@ -2307,11 +2307,21 @@
+     public void killAppZygoteIfNeededLocked(AppZygote appZygote, boolean force) {
+         final ApplicationInfo appInfo = appZygote.getAppInfo();
+         ArrayList<ProcessRecord> zygoteProcesses = mAppZygoteProcesses.get(appZygote);
+         if (zygoteProcesses != null && (force || zygoteProcesses.size() == 0)) {
++            if (!force && hasAppZygoteProcessLocked(appInfo.processName, appInfo.uid)) {
++                // An isolated ProcessRecord can reserve its UID before it is added to
++                // this zygote's process list. Keep the zygote and range until it starts
++                // or is removed from ProcessList.
++                mService.mHandler.removeMessages(KILL_APP_ZYGOTE_MSG, appZygote);
++                Message msg = mService.mHandler.obtainMessage(KILL_APP_ZYGOTE_MSG, appZygote);
++                mService.mHandler.sendMessageDelayed(msg, KILL_APP_ZYGOTE_DELAY_MS);
++                return;
++            }
+             // Only remove if no longer in use now, or forced kill
+             mAppZygotes.remove(appZygote.getProcessName(), appInfo.uid);
+             mAppZygoteProcesses.remove(appZygote);
+-            mAppIsolatedUidRangeAllocator.freeUidRangeLocked(appInfo);
++            freeAppZygoteUidRangeIfUnusedLocked(appInfo.processName, appInfo.uid);
+             appZygote.stopZygote();
+         }
+     }
+ 
++    @GuardedBy("mService")
++    private boolean hasAppZygoteLocked(String processName, int uid) {
++        for (int i = 0; i < mAppZygoteProcesses.size(); i++) {
++            final ApplicationInfo appInfo = mAppZygoteProcesses.keyAt(i).getAppInfo();
++            if (appInfo.uid == uid && processName.equals(appInfo.processName)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    @GuardedBy("mService")
++    private boolean hasAppZygoteProcessLocked(String processName, int uid) {
++        for (int i = 0; i < mIsolatedProcesses.size(); i++) {
++            final ProcessRecord isolatedProcess = mIsolatedProcesses.valueAt(i);
++            final HostingRecord hostingRecord = isolatedProcess.getHostingRecord();
++            if (hostingRecord != null && hostingRecord.usesAppZygote()
++                    && hostingRecord.getDefiningUid() == uid
++                    && processName.equals(isolatedProcess.info.processName)) {
++                return true;
++            }
++        }
++        return false;
++    }
++
++    @GuardedBy("mService")
++    private void freeAppZygoteUidRangeIfUnusedLocked(String processName, int uid) {
++        if (!hasAppZygoteLocked(processName, uid)
++                && !hasAppZygoteProcessLocked(processName, uid)) {
++            final ApplicationInfo appInfo = new ApplicationInfo();
++            appInfo.processName = processName;
++            appInfo.uid = uid;
++            mAppIsolatedUidRangeAllocator.freeUidRangeLocked(appInfo);
++        }
++    }
++
+     @GuardedBy("mService")
+     private void removeProcessFromAppZygoteLocked(final ProcessRecord app) {
+@@ -2365,6 +2400,8 @@
+                     mService.mHandler.sendMessageDelayed(msg, KILL_APP_ZYGOTE_DELAY_MS);
+                 }
+             }
+         }
++        freeAppZygoteUidRangeIfUnusedLocked(app.info.processName,
++                app.getHostingRecord().getDefiningUid());
+     }
+ 
+     @VisibleForTesting
+diff --git a/services/tests/mockingservicestests/src/com/android/server/am/ActivityManagerServiceTest.java b/services/tests/mockingservicestests/src/com/android/server/am/ActivityManagerServiceTest.java
+index 9e9fbcde..00000000 100644
+--- a/services/tests/mockingservicestests/src/com/android/server/am/ActivityManagerServiceTest.java
++++ b/services/tests/mockingservicestests/src/com/android/server/am/ActivityManagerServiceTest.java
+@@ -2688,6 +2688,66 @@
+         assertEquals(nativeZygote,
+                 mAms.mProcessList.mAppZygotes.get(processName + "_zygote_native", appUid));
+     }
+ 
++    @Test
++    @RequiresFlagsEnabled(android.os.Flags.FLAG_NATIVE_APP_ZYGOTE)
++    public void testAppZygoteUidRangeRetainedForPendingProcessesAndOtherZygote()
++            throws Exception {
++        final int appUid = 10001;
++        final String packageName = "com.test.app";
++        final String processName = "com.test.app";
++        final int userId = UserHandle.getUserId(appUid);
++
++        ApplicationInfo info = new ApplicationInfo();
++        info.packageName = packageName;
++        info.processName = processName;
++        info.uid = appUid;
++
++        final IsolatedUidRangeAllocator allocator =
++                mAms.mProcessList.mAppIsolatedUidRangeAllocator;
++        allocator.getOrCreateIsolatedUidRangeLocked(processName, appUid);
++        final int isolatedUid = allocator.getIsolatedUidRangeLocked(processName, appUid)
++                .allocateIsolatedUidLocked(userId);
++        assertTrue(isolatedUid > 0);
++
++        HostingRecord managedHostingRecord = HostingRecord.byAppZygote(
++                HostingRecord.HOSTING_TYPE_BOUND_SERVICE,
++                new ComponentName(packageName, "ManagedService"),
++                packageName, appUid, processName, false /* isNativeService */,
++                Process.INVALID_UID /* callerUid */, null /* callerProcessName */);
++        HostingRecord nativeHostingRecord = HostingRecord.byAppZygote(
++                HostingRecord.HOSTING_TYPE_BOUND_SERVICE,
++                new ComponentName(packageName, "NativeService"),
++                packageName, appUid, processName, true /* isNativeService */,
++                Process.INVALID_UID /* callerUid */, null /* callerProcessName */);
++        ProcessRecord managedApp = new ProcessRecord(mAms, info, processName, appUid);
++        managedApp.setHostingRecord(managedHostingRecord);
++        ProcessRecord nativeApp = new ProcessRecord(mAms, info, processName, appUid);
++        nativeApp.setHostingRecord(nativeHostingRecord);
++
++        spyOn(mAms.mProcessList);
++        AppZygote managedZygote = mock(AppZygote.class);
++        AppZygote nativeZygote = mock(AppZygote.class);
++        doReturn(info).when(managedZygote).getAppInfo();
++        doReturn(info).when(nativeZygote).getAppInfo();
++        doReturn(processName + "_zygote").when(managedZygote).getProcessName();
++        doReturn(processName + "_zygote_native").when(nativeZygote).getProcessName();
++        doReturn(managedZygote).when(mAms.mProcessList).newAppZygote(
++                any(), any(), anyInt(), anyInt(), anyInt(), eq(false), anyString());
++        doReturn(nativeZygote).when(mAms.mProcessList).newAppZygote(
++                any(), any(), anyInt(), anyInt(), anyInt(), eq(true), anyString());
++
++        mAms.mProcessList.createAppZygoteForProcessIfNeeded(managedApp);
++        mAms.mProcessList.createAppZygoteForProcessIfNeeded(nativeApp);
++        mAms.mProcessList.mAppZygoteProcesses.get(managedZygote).clear();
++        mAms.mProcessList.mAppZygoteProcesses.get(nativeZygote).clear();
++
++        ProcessRecord pendingProcess = new ProcessRecord(mAms, info, processName, isolatedUid);
++        pendingProcess.setHostingRecord(nativeHostingRecord);
++        mAms.mProcessList.mIsolatedProcesses.put(isolatedUid, pendingProcess);
++
++        mAms.mProcessList.killAppZygoteIfNeededLocked(managedZygote, false);
++        assertEquals(managedZygote,
++                mAms.mProcessList.mAppZygotes.get(processName + "_zygote", appUid));
++        assertNotNull(allocator.getIsolatedUidRangeLocked(processName, appUid));
++        verify(managedZygote, never()).stopZygote();
++
++        mAms.mProcessList.mIsolatedProcesses.remove(isolatedUid);
++        mAms.mProcessList.killAppZygoteIfNeededLocked(managedZygote, false);
++        assertNull(mAms.mProcessList.mAppZygotes.get(processName + "_zygote", appUid));
++        assertNotNull(allocator.getIsolatedUidRangeLocked(processName, appUid));
++        mAms.mProcessList.killAppZygoteIfNeededLocked(nativeZygote, false);
++        assertNull(allocator.getIsolatedUidRangeLocked(processName, appUid));
++        verify(managedZygote).stopZygote();
++        verify(nativeZygote).stopZygote();
++    }
++
+     @Test
+     @RequiresFlagsDisabled(android.app.privatecompute.flags.Flags.FLAG_ENABLE_PCC_FRAMEWORK_SUPPORT)
+     public void testisOutgoingTransactionsAuditable_flagDisabled() {
