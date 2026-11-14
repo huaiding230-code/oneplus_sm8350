@@ -4,6 +4,7 @@
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
  */
 
+#include <linux/compiler.h>
 #include <linux/list.h>
 #include <linux/of.h>
 #include <linux/of_gpio.h>
@@ -561,10 +562,10 @@ static irqreturn_t dsi_display_panel_te_irq_handler(int irq, void *data)
 	SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
 	complete_all(&display->esd_te_gate);
 #ifdef OPLUS_BUG_STABILITY
-	if (oplus_adfr_is_support()) {
-		if (display->panel->vsync_switch_pending) {
+	if (oplus_adfr_is_support() && display->panel) {
+		if (READ_ONCE(display->panel->vsync_switch_pending)) {
+			WRITE_ONCE(display->panel->vsync_switch_pending, false);
 			complete_all(&display->switch_te_gate);
-			display->panel->vsync_switch_pending = false;
 		}
 	}
 #endif /*OPLUS_BUG_STABILITY*/
