@@ -47,13 +47,13 @@ jobs:
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/binder-freezer-enable.patch"
 
-      # 6. 接入固定版本的 SukiSU builtin-new，并应用 5.4 适配补丁
+      # 6. 跟踪 SukiSU builtin-new 上游最新提交，并应用 5.4 适配补丁
       - name: "6. Integrate SukiSU"
         run: |
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
 
           git init "$KSU"
-          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git 0804a40956b4345fa5ce392170a907e174d402f0
+          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin-new
           git -C "$KSU" checkout --detach FETCH_HEAD
 
           cd "${GITHUB_WORKSPACE}/kernel_source"
