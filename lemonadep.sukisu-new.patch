@@ -135,13 +135,6 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  static int ksu_prepare_fake_status_page()
  {
  	struct page *real_page = ksu_selinux_kernel_status_page();
-@@ -252,1 +252,6 @@
- 	ksu_fake_status_page = new_page;
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+	if (legacy_fake_ss_initialized)
-+		fake_ss.status_page = new_page;
-+	ksu_legacy_update_running();
-+#endif
 @@ -225,7 +320,9 @@
   *   <  4.3 : extern bool fake_status_initialize_key;
   *            test with a plain READ_ONCE().
@@ -152,6 +145,13 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  struct page *fake_status __read_mostly = NULL;
  
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+@@ -252,1 +252,6 @@
+ 	ksu_fake_status_page = new_page;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	if (legacy_fake_ss_initialized)
++		fake_ss.status_page = new_page;
++	ksu_legacy_update_running();
++#endif
 @@ -359,8 +456,12 @@
  	if (fake_status) {
  		if (ksu_fake_status_init_pending())
@@ -165,11 +165,6 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	} else {
  		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
  	}
-@@ -415,1 +420,4 @@
- 	// selinux_setprocattr hook init is on lsm.
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+	ksu_legacy_update_running();
-+#endif
 @@ -398,7 +502,9 @@
  	else
  		ksu_selinux_hide_enabled = false;
@@ -181,6 +176,12 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	// kernel-side status/context/access spoof follows this flag
  	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
  #endif
+
+@@ -415,1 +420,4 @@
+ 	// selinux_setprocattr hook init is on lsm.
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	ksu_legacy_update_running();
++#endif
 
 diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
 --- a/kernel/feature/selinux_hide.h
@@ -412,6 +413,17 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
+@@ -55,7 +55,10 @@
+ 	track_throne(false);
+ #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+ 	// Renew the priority uid bitmap filter after packages.list changed
+ 	susfs_parse_priority_app_strings();
+ #endif
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++	susfs_parse_sus_path_app_strings();
++#endif
+ 	return;
+
 @@ -106,6 +106,10 @@
  
  	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
@@ -424,16 +436,6 @@ diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
  
  slow_path:
 
-@@ -55,7 +55,10 @@
- 	track_throne(false);
- #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
- 	// Renew the priority uid bitmap filter after packages.list changed
- 	susfs_parse_priority_app_strings();
- #endif
-+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-+	susfs_parse_sus_path_app_strings();
-+#endif
- 	return;
 
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 --- a/kernel/runtime/boot_event.c
@@ -594,6 +596,15 @@ diff --git a/kernel/setup.sh b/kernel/setup.sh
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
+@@ -96,6 +96,9 @@
+ 		case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+ 			susfs_add_sus_path_loop(arg);
+ 			return 0;
++		case CMD_SUSFS_SET_SUS_PATH_UID_FILTER:
++			susfs_set_sus_path_uid_filter(arg);
++			return 0;
+ #endif // CONFIG_KSU_SUSFS_SUS_PATH
+
 @@ -176,8 +176,19 @@
  	void __user *arg4 = (void __user *)*arg;
  
@@ -616,14 +627,6 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
  			pr_err("install ksu fd reply err\n");
 
-@@ -96,6 +96,9 @@
- 		case CMD_SUSFS_ADD_SUS_PATH_LOOP:
- 			susfs_add_sus_path_loop(arg);
- 			return 0;
-+		case CMD_SUSFS_SET_SUS_PATH_UID_FILTER:
-+			susfs_set_sus_path_uid_filter(arg);
-+			return 0;
- #endif // CONFIG_KSU_SUSFS_SUS_PATH
 
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 --- a/kernel/selinux/selinux.c
