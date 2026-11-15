@@ -8588,4 +8588,45 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
 -		oplus_dsi_display_vsync_switch_check_te(display, level);
  	}
  }
+
+# False error-level diagnostic spam confirmed in the source:
+# - IPA PM clients may legally omit an activation callback; log this at debug.
+# - Oplus charger state traces are normal successful 5-second poll output.
+# Their work cadence and power-management behavior are intentionally unchanged.
+
+diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
+--- a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
++++ b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
+@@ -443,7 +443,7 @@ static void activate_work_func(struct work_struct *work)
+ 		client->callback(client->callback_params,
+ 			IPA_PM_CLIENT_ACTIVATED);
+ 	} else {
+-		IPA_PM_ERR_RL("client has no callback");
++		IPA_PM_DBG_LOW("client %s has no activation callback\n", client->name);
+ 	}
+ 	mutex_unlock(&ipa_pm_ctx->client_mutex);
  
+diff --git a/drivers/power/oplus_chg/charger_ic/oplus_battery_sm8350.c b/drivers/power/oplus_chg/charger_ic/oplus_battery_sm8350.c
+--- a/drivers/power/oplus_chg/charger_ic/oplus_battery_sm8350.c
++++ b/drivers/power/oplus_chg/charger_ic/oplus_battery_sm8350.c
+@@ -2007,7 +2007,7 @@ static int smbchg_get_charge_enable(void)
+ 		chg_err("set disable charging fail, rc=%d\n", rc);
+ 		return rc;
+ 	}
+-	chg_err("get charge enable[%d]\n", pst->prop[BATT_CHG_EN]);
++	pr_debug("get charge enable[%d]\n", pst->prop[BATT_CHG_EN]);
+ 
+ 	return pst->prop[BATT_CHG_EN];
+ }
+diff --git a/drivers/power/oplus_chg/oplus_charger.c b/drivers/power/oplus_chg/oplus_charger.c
+--- a/drivers/power/oplus_chg/oplus_charger.c
++++ b/drivers/power/oplus_chg/oplus_charger.c
+@@ -8464,7 +8464,7 @@ static void oplus_chg_qc_config(struct oplus_chg_chip *chip)
+ 	}
+ 	if (!chip->chg_ops->set_qc_config || !chip->chg_ops->get_charger_subtype)
+ 		return;
+-	chg_err("chip->charger_type[%d], subtype[%d]\n",
++	pr_debug("chip->charger_type[%d], subtype[%d]\n",
+ 		chip->charger_type, chip->chg_ops->get_charger_subtype());
+ 
+ 	if (chip->charger_volt > 7500) {
