@@ -1,3 +1,4 @@
+# Synced SUSFS upstream gki-android12-5.10 commit 6dff25f2b2508f91df309e537771d612dccd201a (2026-11-14); ported SUS_PATH UID filter to Linux 5.4 with legacy behavior retained until explicitly configured.
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4
 # COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v3
 # This file REPLACES the previous separate kernel integration patch and
@@ -2483,7 +2484,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2790 @@
+@@ -0,0 +1,2788 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -3424,8 +3425,6 @@ new file mode 100644
 +	rcu_read_unlock();
 +	return false;
 +}
-+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
-+
 +#endif // #ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +
 +/* sus_mount */
@@ -5590,10 +5589,9 @@ index 0000000000000000000000000000000000000000..974f90edd3e099377e9cd1a170cc497e
 +#endif /* _LINUX_KSU_SELINUX_HIDE_H */
 diff --git a/include/linux/susfs.h b/include/linux/susfs.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b1d8c17df87551b3ded6403f907b1a0f7a336fe3
 --- /dev/null
 +++ b/include/linux/susfs.h
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,274 @@
 +#ifndef KSU_SUSFS_H
 +#define KSU_SUSFS_H
 +
@@ -5642,6 +5640,12 @@ index 0000000000000000000000000000000000000000..b1d8c17df87551b3ded6403f907b1a0f
 +	struct list_head                        list;
 +	struct st_susfs_sus_path                info;
 +	char                                    target_pathname[SUSFS_MAX_LEN_PATHNAME];
++};
++
++/* sus_path uid filter */
++struct st_susfs_sus_path_uid_filter {
++	char                                    app_strings[SUSFS_APP_STR_BUF_SIZE];
++	int                                     err;
 +};
 +#endif
 +
@@ -5758,7 +5762,6 @@ index 0000000000000000000000000000000000000000..b1d8c17df87551b3ded6403f907b1a0f
 +
 +/* priority UID filter */
 +#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
-+#define SUSFS_APP_STR_BUF_SIZE 65535
 +struct st_susfs_priority_uid_filter {
 +	char                                    app_strings[SUSFS_APP_STR_BUF_SIZE];
 +	int                                     err;
@@ -5796,6 +5799,8 @@ index 0000000000000000000000000000000000000000..b1d8c17df87551b3ded6403f907b1a0f
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +void susfs_add_sus_path(void __user **user_info);
 +void susfs_add_sus_path_loop(void __user **user_info);
++void susfs_set_sus_path_uid_filter(void __user **user_info);
++void susfs_parse_sus_path_app_strings(void);
 +#endif
 +
 +/* sus_mount */
@@ -5861,16 +5866,17 @@ index 0000000000000000000000000000000000000000..b1d8c17df87551b3ded6403f907b1a0f
 +void susfs_init(void);
 +
 +#endif
+
 diff --git a/include/linux/susfs_def.h b/include/linux/susfs_def.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..8039c5a574282d0d97d8bf5e8df27975ce10de0e
 --- /dev/null
 +++ b/include/linux/susfs_def.h
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,174 @@
 +#ifndef KSU_SUSFS_DEF_H
 +#define KSU_SUSFS_DEF_H
 +
 +#include <linux/bits.h>
++#include <linux/bitops.h>
 +#include <linux/string.h>
 +#include <linux/cred.h>
 +#include <linux/thread_info.h>
@@ -5884,6 +5890,7 @@ index 0000000000000000000000000000000000000000..8039c5a574282d0d97d8bf5e8df27975
 +#define CMD_SUSFS_SET_ANDROID_DATA_ROOT_PATH 0x55551 /* deprecated */
 +#define CMD_SUSFS_SET_SDCARD_ROOT_PATH 0x55552 /* deprecated */
 +#define CMD_SUSFS_ADD_SUS_PATH_LOOP 0x55553
++#define CMD_SUSFS_SET_SUS_PATH_UID_FILTER 0x55554
 +#define CMD_SUSFS_ADD_SUS_MOUNT 0x55560 /* deprecated */
 +#define CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS 0x55561
 +#define CMD_SUSFS_UMOUNT_FOR_ZYGOTE_ISO_SERVICE 0x55562 /* deprecated */
@@ -5922,6 +5929,12 @@ index 0000000000000000000000000000000000000000..8039c5a574282d0d97d8bf5e8df27975
 +#ifndef FUSE_SUPER_MAGIC
 +#define FUSE_SUPER_MAGIC 0x65735546
 +#endif
++
++#define SUSFS_APP_STR_BUF_SIZE 65535
++#define SUSFS_UID_FILTER_MIN_UID 10000
++#define SUSFS_UID_FILTER_MAX_UID 19999
++#define SUSFS_UID_FILTER_UID_NUM (SUSFS_UID_FILTER_MAX_UID - SUSFS_UID_FILTER_MIN_UID + 1)
++#define SUSFS_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_UID_FILTER_UID_NUM)
 +
 +/*
 + * mnt->mnt.mnt_flags => An 'int' primitive storing flag 'VFSMOUNT_MNT_FLAGS_'
@@ -6033,6 +6046,7 @@ index 0000000000000000000000000000000000000000..8039c5a574282d0d97d8bf5e8df27975
 +		unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &inode->i_mapping->flags)) && \
 +		susfs_is_current_proc_umounted_app()
 +#endif // #ifndef KSU_SUSFS_DEF_H
+
 diff --git a/init/Kconfig b/init/Kconfig
 index 4a08321034a6c1b9013db432ed325101e08c591f..e131e50f416ea44210bcfeb96cb64f87319608b7 100644
 --- a/init/Kconfig
