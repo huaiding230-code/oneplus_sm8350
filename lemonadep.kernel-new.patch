@@ -8465,7 +8465,7 @@ diff --git a/scripts/Makefile.build b/scripts/Makefile.build
 diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_adfr.c
 --- a/techpack/display/oplus/oplus_adfr.c
 +++ b/techpack/display/oplus/oplus_adfr.c
-@@ -10,6 +10,7 @@
+@@ -10,5 +10,6 @@
  **  CaiHuiyue      2020/10/23        1.0           Build this moudle
  ******************************************************************/
 +#include <linux/compiler.h>
@@ -8498,7 +8498,7 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
  	}
  
  	return 0;
-@@ -953,7 +958,11 @@
+@@ -953,6 +958,10 @@
  		return -EINVAL;
  	}
  
@@ -8552,7 +8552,7 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
  			}
  		}
  	} else {
-@@ -1110,7 +1124,10 @@
+@@ -1110,6 +1124,9 @@
  			level = OPLUS_VSYNC_SWITCH_TP;
  		}
  
