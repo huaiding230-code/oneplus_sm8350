@@ -8193,6 +8193,21 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  #endif
  	mutex_lock(&display->display_lock);
  
+@@ -561,10 +561,10 @@
+ 	SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
+ 	complete_all(&display->esd_te_gate);
+ #ifdef OPLUS_BUG_STABILITY
+ 	if (oplus_adfr_is_support()) {
+-		if (display->panel->vsync_switch_pending) {
+-			complete_all(&display->switch_te_gate);
+-			display->panel->vsync_switch_pending = false;
++		if (READ_ONCE(display->panel->vsync_switch_pending)) {
++			WRITE_ONCE(display->panel->vsync_switch_pending, false);
++			complete_all(&display->switch_te_gate);
+ 		}
+ 	}
+ #endif /*OPLUS_BUG_STABILITY*/
+
  	rc = dsi_display_mipi_host_deinit(display);
 diff --git a/techpack/display/oplus/oplus_display_private_api.c b/techpack/display/oplus/oplus_display_private_api.c
 --- a/techpack/display/oplus/oplus_display_private_api.c
@@ -8459,15 +8474,15 @@ diff --git a/scripts/Makefile.build b/scripts/Makefile.build
 diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_adfr.c
 --- a/techpack/display/oplus/oplus_adfr.c
 +++ b/techpack/display/oplus/oplus_adfr.c
-@@ -10,5 +10,6 @@
+@@ -9,6 +9,7 @@
+ **  <author>        <data>        <version >        <desc>
  **  CaiHuiyue      2020/10/23        1.0           Build this moudle
  ******************************************************************/
 +#include <linux/compiler.h>
  #include "sde_trace.h"
  #include "msm_drv.h"
  #include "sde_kms.h"
-@@ -912,17 +913,21 @@
- static int oplus_dsi_display_enable_and_waiting_for_next_te_irq(struct dsi_display *display)
+@@ -913,16 +914,20 @@
  {
  	int const switch_te_timeout = msecs_to_jiffies(1100);
  
@@ -8487,37 +8502,38 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
  		DSI_ERR("kVRR vsync switch TE check failed\n");
 +		WRITE_ONCE(display->panel->vsync_switch_pending, false);
  		dsi_display_adfr_change_te_irq_status(display, false);
--		return -EINVAL;
 +		return -ETIMEDOUT;
+-		return -EINVAL;
  	}
  
  	return 0;
-@@ -953,6 +958,10 @@
+@@ -953,7 +958,11 @@
  		return -EINVAL;
  	}
  
--	oplus_dsi_display_enable_and_waiting_for_next_te_irq(display);
 +	rc = oplus_dsi_display_enable_and_waiting_for_next_te_irq(display);
 +	if (rc) {
 +		DSI_ERR("kVRR TE wait failed before vsync switch, rc=%d\n", rc);
 +		return rc;
 +	}
+-	oplus_dsi_display_enable_and_waiting_for_next_te_irq(display);
  
  	if (oplus_adfr_compatibility_mode == false) {
+ 		if (level) {
 @@ -1010,11 +1019,13 @@
  				gpio_set_value(panel->vsync_switch_gpio, 0);//TP Vsync
  				DSI_INFO("kVRR set vsync_switch_gpio to 0\n");
  			}
--			panel->vsync_switch_gpio_level = level;
--			SDE_ATRACE_INT("vsync_switch_gpio_level", panel->vsync_switch_gpio_level);
 +			if (!rc) {
 +				panel->vsync_switch_gpio_level = level;
 +				SDE_ATRACE_INT("vsync_switch_gpio_level", panel->vsync_switch_gpio_level);
 +			}
+-			panel->vsync_switch_gpio_level = level;
+-			SDE_ATRACE_INT("vsync_switch_gpio_level", panel->vsync_switch_gpio_level);
  		}
  	} else {
--		oplus_dsi_display_vsync_switch_check_te(display, level);
 +		rc = oplus_dsi_display_vsync_switch_check_te(display, level);
+-		oplus_dsi_display_vsync_switch_check_te(display, level);
  	}
  
  	mutex_unlock(&display->display_lock);
@@ -8525,8 +8541,8 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
  	if (ret)
  		pr_err("kVRR oplus_dsi_display_set_vsync_switch_gpio(%d) fail\n", vsync_switch_gpio);
  
--	return count;
 +	return ret ? ret : count;
+-	return count;
  }
  
  ssize_t oplus_get_vsync_switch(struct kobject *obj,
@@ -8534,29 +8550,30 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
  		if (oplus_adfr_get_vsync_mode() == OPLUS_EXTERNAL_TE_TP_VSYNC) {
  			if (display->panel->vsync_switch_gpio_level == OPLUS_VSYNC_SWITCH_TP) {
  				level = OPLUS_VSYNC_SWITCH_TE;
--				oplus_dsi_display_vsync_switch_check_te(display, level);
--
--				display->panel->force_te_vsync = true;
 +				rc = oplus_dsi_display_vsync_switch_check_te(display, level);
 +				if (!rc) {
 +					display->panel->force_te_vsync = true;
 +				} else {
 +					DSI_ERR("kVRR forced TE switch failed, rc=%d\n", rc);
 +				}
+-				oplus_dsi_display_vsync_switch_check_te(display, level);
+-
+-				display->panel->force_te_vsync = true;
  			}
  		}
  	} else {
-@@ -1110,6 +1124,9 @@
+@@ -1110,7 +1124,10 @@
  			level = OPLUS_VSYNC_SWITCH_TP;
  		}
  
--		oplus_dsi_display_vsync_switch_check_te(display, level);
 +		rc = oplus_dsi_display_vsync_switch_check_te(display, level);
 +		if (rc)
 +			DSI_ERR("kVRR vsync switch to level %d failed, rc=%d\n",
 +				level, rc);
+-		oplus_dsi_display_vsync_switch_check_te(display, level);
  	}
  }
+ 
 diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/dsi_display.c
 --- a/techpack/display/msm/dsi/dsi_display.c
 +++ b/techpack/display/msm/dsi/dsi_display.c
