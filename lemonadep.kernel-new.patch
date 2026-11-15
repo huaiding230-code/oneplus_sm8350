@@ -184,9 +184,9 @@ index 60b0dc43e7456d711d0362c3b77bdab75d253c4c..0fe60ecdc1c584486484110c7ca3e94d
  #include <linux/bitops.h>
  #include <linux/init_task.h>
  #include <linux/uaccess.h>
-+#if defined(CONFIG_KSU_SUSFS_SUS_PATH) || defined(CONFIG_KSU_SUSFS_OPEN_REDIRECT)
++#ifdef CONFIG_KSU_SUSFS
 +#include <linux/susfs_def.h>
-+#endif
++#endif // #ifdef CONFIG_KSU_SUSFS
  
  #include "internal.h"
  #include "mount.h"
@@ -195,7 +195,7 @@ index 60b0dc43e7456d711d0362c3b77bdab75d253c4c..0fe60ecdc1c584486484110c7ca3e94d
  #include <trace/events/namei.h>
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-+extern bool susfs_is_inode_sus_path(struct inode *inode);
++extern __attribute__((hot)) bool susfs_is_inode_sus_path(struct inode *inode);
 +extern const struct qstr susfs_fake_qstr_name;
 +#endif
 +
@@ -1841,14 +1841,16 @@ diff --git a/fs/readdir.c b/fs/readdir.c
 index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c69869797f58e7f6 100644
 --- a/fs/readdir.c
 +++ b/fs/readdir.c
-@@ -24,6 +24,27 @@
+@@ -24,6 +24,29 @@
  
  #include <asm/unaligned.h>
  
-+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++#ifdef CONFIG_KSU_SUSFS
 +#include <linux/susfs_def.h>
++#endif // #ifdef CONFIG_KSU_SUSFS
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +extern int susfs_get_data_path(struct path *path);
-+extern bool susfs_is_inode_sus_path(struct inode *inode);
++extern __attribute__((hot)) bool susfs_is_inode_sus_path(struct inode *inode);
 +static bool susfs_hide_dirent(struct super_block *sb, unsigned long ino)
 +{
 +	struct inode *inode;
