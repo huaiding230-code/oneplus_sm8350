@@ -61,7 +61,7 @@ diff --git a/services/core/java/com/android/server/am/ProcessList.java b/service
                      // TODO(b/467504571) Create tests for this interaction between
                      // ProcessList and UidTransitionPolicy
  
-@@ -2408,10 +2418,16 @@
+@@ -2408,11 +2418,17 @@
                      // site.
                      getUidTransitionPolicy().disallowAllUidTransitionsFrom(uid);
                  } else {
@@ -69,6 +69,7 @@ diff --git a/services/core/java/com/android/server/am/ProcessList.java b/service
 -                        mAppIsolatedUidRangeAllocator.getIsolatedUidRangeLocked(
 -                                app.info.processName, app.getHostingRecord().getDefiningUid());
 -                    // Create the app-zygote and provide it with the UID-range it's allowed
+-                    // to setresuid/setresgid to.
 +                    final IsolatedUidRange uidRange =
 +                        mAppIsolatedUidRangeAllocator.getIsolatedUidRangeLocked(
 +                                app.info.processName, app.getHostingRecord().getDefiningUid());
@@ -79,9 +80,10 @@ diff --git a/services/core/java/com/android/server/am/ProcessList.java b/service
 +                        Slog.e(TAG, message);
 +                        throw new IllegalStateException(message);
 +                    }
-                     // to setresuid/setresgid to.
++                    // Create the app-zygote and provide it with the UID-range it's allowed
                      firstUid = UserHandle.getUid(userId, uidRange.mFirstUid);
                      lastUid = UserHandle.getUid(userId, uidRange.mLastUid);
+                 }
 @@ -3456,8 +3472,8 @@
          if (hostingRecord == null || !hostingRecord.usesAppZygote()) {
              // Allocate an isolated UID from the global range
