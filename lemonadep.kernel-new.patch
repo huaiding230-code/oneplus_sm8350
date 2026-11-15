@@ -8205,17 +8205,11 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  		DSI_INFO("20627 panel add esd err flag detect\n");
  		dsi_display_register_esd_err_irq(display);
  		dsi_display_err_flag_work_init(display);
-@@ -6320,8 +6322,9 @@
- 		return;
- 	}
- 
- #ifdef OPLUS_BUG_STABILITY
+@@ -6324,1 +6326,2 @@
 -    oplus_display_private_api_exit();
 +    if (display == get_main_display())
 +		oplus_display_private_api_exit();
- #endif
- 	mutex_lock(&display->display_lock);
- 
+
 diff --git a/techpack/display/oplus/oplus_display_private_api.c b/techpack/display/oplus/oplus_display_private_api.c
 --- a/techpack/display/oplus/oplus_display_private_api.c
 +++ b/techpack/display/oplus/oplus_display_private_api.c
