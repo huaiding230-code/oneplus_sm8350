@@ -431,7 +431,7 @@ diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
 @@ -110,6 +110,10 @@
  
- 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \\n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
+ 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
  	track_throne(false);
 +#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +	/* Refresh the priority UID bitmap after packages.list changes. */
@@ -617,13 +617,13 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
 +		int fd;
 +		/* ksud starts as root; later requests must come from a manager UID. */
 +		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
-+			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\\n",
++			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
 +					    current_uid().val);
 +			return -EPERM;
 +		}
 +		fd = ksu_install_fd();
  
- 		pr_info("[%d] install ksu fd: %d\\n", current->pid, fd);
+ 		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
  
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
