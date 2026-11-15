@@ -606,6 +606,26 @@ diff --git a/kernel/setup.sh b/kernel/setup.sh
 
 
 
+diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
+--- a/kernel/supercall/supercall.c
++++ b/kernel/supercall/supercall.c
+@@ -179,7 +179,14 @@
+ 	void __user *arg4 = (void __user *)*arg;
+ 
+ 	if (magic2 == KSU_INSTALL_MAGIC2) {
+-		int fd = ksu_install_fd();
++		int fd;
++		/* ksud starts as root; later requests must come from a manager UID. */
++		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
++			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\\n",
++					    current_uid().val);
++			return -EPERM;
++		}
++		fd = ksu_install_fd();
+ 
+ 		pr_info("[%d] install ksu fd: %d\\n", current->pid, fd);
+ 		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
+ 
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 --- a/kernel/selinux/selinux.c
 +++ b/kernel/selinux/selinux.c
