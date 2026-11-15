@@ -69,7 +69,8 @@ jobs:
           ln -s ../KernelSU/kernel drivers/kernelsu
           sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
 
-          patch -d "$KSU" -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          git -C "$KSU" apply --check --whitespace=nowarn "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          git -C "$KSU" apply --whitespace=nowarn "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
 
       # 7. 配置 + 检查 + 编译
       - name: "7. Configure and build kernel"
