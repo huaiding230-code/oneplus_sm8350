@@ -1,5 +1,6 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
 # Synced against SukiSU-Ultra builtin-new HEAD 3fd4652a7c0a20d0ee5580b1da90bd16845b608d (2026-11-14); workflow tracks builtin-new.
+# SUSFS path UID filter dispatch and package-list refresh are adapted from upstream 6dff25f2b2508f91df309e537771d612dccd201a.
 # Device-specific and Linux 5.4 compatibility changes only.
 # SUSFS extension, AVC spoof, mount-hide and LSM integration are provided by upstream builtin-new.
 # Apply once to a clean SukiSU builtin-new checkout after applying lemonadep.kernel-new.patch.
@@ -134,7 +135,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  static int ksu_prepare_fake_status_page()
  {
  	struct page *real_page = ksu_selinux_kernel_status_page();
-@@ -342,1 +342,6 @@
+@@ -252,1 +252,6 @@
  	ksu_fake_status_page = new_page;
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +	if (legacy_fake_ss_initialized)
@@ -165,7 +166,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	} else {
  		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
  	}
-@@ -510,1 +515,4 @@
+@@ -415,1 +420,4 @@
  	// selinux_setprocattr hook init is on lsm.
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +	ksu_legacy_update_running();
@@ -424,6 +425,17 @@ diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
  
  slow_path:
 
+@@ -55,7 +55,10 @@
+ 	track_throne(false);
+ #ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
+ 	// Renew the priority uid bitmap filter after packages.list changed
+ 	susfs_parse_priority_app_strings();
+ #endif
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++	susfs_parse_sus_path_app_strings();
++#endif
+ 	return;
+
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 --- a/kernel/runtime/boot_event.c
 +++ b/kernel/runtime/boot_event.c
@@ -605,6 +617,14 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
  			pr_err("install ksu fd reply err\n");
 
+@@ -96,6 +96,9 @@
+ 		case CMD_SUSFS_ADD_SUS_PATH_LOOP:
+ 			susfs_add_sus_path_loop(arg);
+ 			return 0;
++		case CMD_SUSFS_SET_SUS_PATH_UID_FILTER:
++			susfs_set_sus_path_uid_filter(arg);
++			return 0;
+ #endif // CONFIG_KSU_SUSFS_SUS_PATH
 
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 --- a/kernel/selinux/selinux.c
