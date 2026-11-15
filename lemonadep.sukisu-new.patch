@@ -1,5 +1,5 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
-# Verified against SukiSU-Ultra builtin-new HEAD fd9181d3ddfccb603ee91c31ca9f3984a77a7d45 (2026-11-13); workflow tracks builtin-new.
+# Synced against SukiSU-Ultra builtin-new HEAD 3fd4652a7c0a20d0ee5580b1da90bd16845b608d (2026-11-14); workflow tracks builtin-new.
 # Device-specific and Linux 5.4 compatibility changes only.
 # SUSFS extension, AVC spoof, mount-hide and LSM integration are provided by upstream builtin-new.
 # Apply once to a clean SukiSU builtin-new checkout after applying lemonadep.kernel-new.patch.
@@ -134,17 +134,13 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  static int ksu_prepare_fake_status_page()
  {
  	struct page *real_page = ksu_selinux_kernel_status_page();
-@@ -207,6 +297,11 @@
- #endif
- 
+@@ -342,1 +342,6 @@
  	ksu_fake_status_page = new_page;
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +	if (legacy_fake_ss_initialized)
 +		fake_ss.status_page = new_page;
 +	ksu_legacy_update_running();
 +#endif
- 
- 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%d\n", fake_status->sequence);
  
 @@ -225,7 +320,9 @@
   *   <  4.3 : extern bool fake_status_initialize_key;
@@ -169,16 +165,11 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	} else {
  		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
  	}
-@@ -370,6 +471,9 @@
- #endif
- 
+@@ -510,1 +515,4 @@
  	// selinux_setprocattr hook init is on lsm.
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +	ksu_legacy_update_running();
 +#endif
- 
- 	// downstream/slow_avc_audit_defs.h
- 	ksu_init_slow_avc_audit_hook();
 @@ -398,7 +502,9 @@
  	else
  		ksu_selinux_hide_enabled = false;
