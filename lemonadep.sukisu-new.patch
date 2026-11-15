@@ -429,32 +429,23 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
-@@ -57,7 +57,10 @@
- 	// Renew the priority uid bitmap filter after packages.list changed
- 	susfs_parse_priority_app_strings();
- #endif
-+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-+	susfs_parse_sus_path_app_strings();
-+#endif
- 	return;
- }
+@@ -108,6 +108,10 @@
+ 	if (unlikely((void *)new_dentry->d_parent->d_inode != system_dir_inode_ptr))
+ 		goto slow_path;
  
- static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry *new_dentry)
-@@ -106,6 +109,13 @@
- 
- 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
+ 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \\n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
  	track_throne(false);
 +#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
 +	/* Refresh the priority UID bitmap after packages.list changes. */
 +	susfs_parse_priority_app_strings();
 +#endif
-+#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-+	susfs_parse_sus_path_app_strings();
-+#endif
+ #if defined(CONFIG_KSU_SUSFS_SUS_PATH) 
+ 	// Renew the sus path uid bitmap filter after packages.list changed
+ 	susfs_parse_sus_path_app_strings();
+ #endif // CONFIG_KSU_SUSFS_SUS_PATH
  	return;
  
  slow_path:
-
 
 
 diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
@@ -619,41 +610,6 @@ diff --git a/kernel/setup.sh b/kernel/setup.sh
      grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
 
 
-diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
---- a/kernel/supercall/supercall.c
-+++ b/kernel/supercall/supercall.c
-@@ -99,7 +99,10 @@
- 		case CMD_SUSFS_ADD_SUS_PATH_LOOP:
- 			susfs_add_sus_path_loop(arg);
- 			return 0;
-+		case CMD_SUSFS_SET_SUS_PATH_UID_FILTER:
-+			susfs_set_sus_path_uid_filter(arg);
-+			return 0;
- #endif // CONFIG_KSU_SUSFS_SUS_PATH
- #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
- 		case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
- 			susfs_set_hide_sus_mnts_for_non_su_procs(arg);
-@@ -176,8 +179,19 @@
- 	void __user *arg4 = (void __user *)*arg;
- 
- 	if (magic2 == KSU_INSTALL_MAGIC2) {
--		int fd = ksu_install_fd();
-+		int fd;
- 
-+		/* ksud obtains its initial driver FD as root before switching to
-+		 * the manager UID in temporary_root::as_manager(). Non-root callers
-+		 * must be recognized by is_uid_manager(), including Dynamic Manager.
-+		 */
-+		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
-+			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
-+					    current_uid().val);
-+			return -EPERM;
-+		}
-+		fd = ksu_install_fd();
-+
- 		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
- 		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
- 			pr_err("install ksu fd reply err\n");
 
 
 
