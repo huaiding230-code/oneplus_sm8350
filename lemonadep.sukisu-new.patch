@@ -142,7 +142,6 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +		fake_ss.status_page = new_page;
 +	ksu_legacy_update_running();
 +#endif
- 
 @@ -225,7 +320,9 @@
   *   <  4.3 : extern bool fake_status_initialize_key;
   *            test with a plain READ_ONCE().
