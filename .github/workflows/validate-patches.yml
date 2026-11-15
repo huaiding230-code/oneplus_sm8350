@@ -55,7 +55,7 @@ jobs:
           set -euo pipefail
           cd KernelSU
           echo "SukiSU builtin-new commit: $(git rev-parse HEAD)"
-          patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
-          patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
-          git -c core.whitespace=cr-at-eol diff --check
+          git apply --check --whitespace=nowarn "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          git apply --whitespace=nowarn "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          git diff --check
           echo "SUKISU_PATCH_PREFLIGHT=PASS"
