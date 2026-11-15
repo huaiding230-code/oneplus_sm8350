@@ -2486,7 +2486,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2788 @@
+@@ -0,0 +1,2784 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -4474,14 +4474,10 @@ new file mode 100644
 + * to find out the existing uids. Only the uids within the app uid range
 + * (10000 - 19999) are supported.
 + */
-+#define SUSFS_PRIORITY_UID_FILTER_MIN_UID 10000
-+#define SUSFS_PRIORITY_UID_FILTER_MAX_UID 19999
-+#define SUSFS_PRIORITY_UID_FILTER_UID_NUM (SUSFS_PRIORITY_UID_FILTER_MAX_UID - SUSFS_PRIORITY_UID_FILTER_MIN_UID + 1)
-+#define SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN BITS_TO_LONGS(SUSFS_PRIORITY_UID_FILTER_UID_NUM)
 +
 +struct susfs_priority_uid_filter_bitmap {
 +	struct rcu_head			rcu;
-+	unsigned long			bits[SUSFS_PRIORITY_UID_FILTER_BITMAP_LEN];
++	unsigned long			bits[SUSFS_UID_FILTER_BITMAP_LEN];
 +};
 +
 +static struct susfs_priority_uid_filter_bitmap __rcu *priority_uid_filter_bitmap;
@@ -4608,8 +4604,8 @@ new file mode 100644
 +
 +			vfree(buf);
 +
-+			if (*uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
-+			    *uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
++			if (*uid < SUSFS_UID_FILTER_MIN_UID ||
++			    *uid > SUSFS_UID_FILTER_MAX_UID)
 +				return -EINVAL;
 +
 +			return 0;
@@ -4657,16 +4653,16 @@ new file mode 100644
 +			return ret;
 +		}
 +
-+		if (uid < SUSFS_PRIORITY_UID_FILTER_MIN_UID || uid > SUSFS_PRIORITY_UID_FILTER_MAX_UID) {
++		if (uid < SUSFS_UID_FILTER_MIN_UID || uid > SUSFS_UID_FILTER_MAX_UID) {
 +			SUSFS_LOGE("the uid %u of the app '%s' is out of the allowed range [%d, %d]\n",
-+					uid, token, SUSFS_PRIORITY_UID_FILTER_MIN_UID,
-+					SUSFS_PRIORITY_UID_FILTER_MAX_UID);
++					uid, token, SUSFS_UID_FILTER_MIN_UID,
++					SUSFS_UID_FILTER_MAX_UID);
 +			if (!skip_failed)
 +				return -EINVAL;
 +			continue;
 +		}
 +
-+		set_bit(uid - SUSFS_PRIORITY_UID_FILTER_MIN_UID, bits);
++		set_bit(uid - SUSFS_UID_FILTER_MIN_UID, bits);
 +		SUSFS_LOGI("app_name '%s', uid '%u' is now added to priority_uid_filter_bitmap\n", token, uid);
 +	}
 +
@@ -4880,14 +4876,14 @@ new file mode 100644
 +
 +	uid_t app_id = uid % 100000;
 +
-+	if (app_id < SUSFS_PRIORITY_UID_FILTER_MIN_UID ||
-+		app_id > SUSFS_PRIORITY_UID_FILTER_MAX_UID)
++	if (app_id < SUSFS_UID_FILTER_MIN_UID ||
++		app_id > SUSFS_UID_FILTER_MAX_UID)
 +		return false;
 +
 +	/* no need rcu_read_lock() and rcu_read_unlock() here as caller already holds it */
 +	bitmap = rcu_dereference(priority_uid_filter_bitmap);
 +	if (likely(bitmap)) {
-+		if (test_bit(app_id - SUSFS_PRIORITY_UID_FILTER_MIN_UID, bitmap->bits)) {
++		if (test_bit(app_id - SUSFS_UID_FILTER_MIN_UID, bitmap->bits)) {
 +			//SUSFS_LOGI("uid '%u' is filtered\n", uid);
 +			return true;
 +		}
@@ -5593,7 +5589,7 @@ diff --git a/include/linux/susfs.h b/include/linux/susfs.h
 new file mode 100644
 --- /dev/null
 +++ b/include/linux/susfs.h
-@@ -0,0 +1,274 @@
+@@ -0,0 +1,272 @@
 +#ifndef KSU_SUSFS_H
 +#define KSU_SUSFS_H
 +
@@ -5612,8 +5608,6 @@ new file mode 100644
 +/*********/
 +/* MACRO */
 +/*********/
-+#define getname_safe(name) (name == NULL ? ERR_PTR(-EINVAL) : getname(name))
-+#define putname_safe(name) (IS_ERR(name) ? NULL : putname(name))
 +
 +/********/
 +/* ENUM */
