@@ -47,7 +47,7 @@ jobs:
           patch --version | head -n 1
           patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
           patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
-          git diff --check
+          git -c core.whitespace=cr-at-eol diff --check
           echo "KERNEL_PATCH_PREFLIGHT=PASS"
 
       - name: Strict dry-run and apply SukiSU patch
@@ -57,5 +57,5 @@ jobs:
           echo "SukiSU builtin-new commit: $(git rev-parse HEAD)"
           patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
           patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
-          git diff --check
+          git -c core.whitespace=cr-at-eol diff --check
           echo "SUKISU_PATCH_PREFLIGHT=PASS"
