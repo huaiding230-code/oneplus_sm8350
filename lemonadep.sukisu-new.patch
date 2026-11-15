@@ -429,7 +429,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
-@@ -110,6 +110,10 @@
+@@ -110,8 +110,12 @@
  
  	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \\n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
  	track_throne(false);
