@@ -2958,12 +2958,12 @@ new file mode 100644
 +
 +__attribute__((hot)) bool susfs_is_inode_sus_path(struct inode *inode)
 +{
++	struct fuse_inode *fi = NULL;
 +	uid_t uid = current_uid().val % 100000;
 +
 +	/* Preserve the pre-filter behavior until userspace explicitly sets a list. */
 +	if (!READ_ONCE(susfs_sus_path_uid_filter_enabled))
 +		return susfs_is_inode_sus_path_legacy(inode);
-+	struct fuse_inode *fi = NULL;
 +
 +	if (uid < 10000) {
 +		return false;
