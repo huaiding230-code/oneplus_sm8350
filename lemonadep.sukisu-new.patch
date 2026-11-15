@@ -136,7 +136,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  static int ksu_prepare_fake_status_page()
  {
  	struct page *real_page = ksu_selinux_kernel_status_page();
-@@ -248,5 +338,10 @@
+@@ -248,9 +338,14 @@
  	fake_status->sequence = 0;
  	fake_status->policyload = 0;
  #endif
@@ -147,6 +147,10 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +		fake_ss.status_page = new_page;
 +	ksu_legacy_update_running();
 +#endif
+     
+ 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%d\n", fake_status->sequence);
+             
+ 	return 0;
 @@ -268,7 +363,9 @@
   *   <  4.3 : extern bool fake_status_initialize_key;
   *            test with a plain READ_ONCE().
@@ -170,7 +174,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	} else {
  		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
  	}
-@@ -411,5 +512,8 @@
+@@ -411,9 +512,12 @@
  	ksu_init_hook_sel_handle_status_ops_open();
  	ksu_init_hook_transaction_ops_write();
  #endif
@@ -179,7 +183,10 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +	ksu_legacy_update_running();
 +#endif
-
+ 	
+ 	// downstream/slow_avc_audit_defs.h
+ 	ksu_init_slow_avc_audit_hook();
+ 
 @@ -441,7 +545,9 @@
  	else
  		ksu_selinux_hide_enabled = false;
@@ -426,7 +433,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
-@@ -51,11 +51,14 @@
+@@ -51,15 +51,18 @@
  	if (!strnstr(buf, "/system/packages.list", 128))
  		return;
  
@@ -441,7 +448,10 @@ diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 +#endif
  	return;
  }
-
+ 
+ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry *new_dentry)
+ {
+ 	// skip kernel threads
 @@ -106,6 +109,13 @@
  
  	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
@@ -636,7 +646,6 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  #endif // CONFIG_KSU_SUSFS_SUS_PATH
  #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
  		case CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS:
-
 @@ -176,8 +179,19 @@
  	void __user *arg4 = (void __user *)*arg;
  
