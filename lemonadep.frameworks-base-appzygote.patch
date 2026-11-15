@@ -1,0 +1,104 @@
+# Android 17 / LineageOS 24.0 / OnePlus 9 Pro (lemonadep)
+# AppZygote isolated-UID range selection fix.
+#
+# Root cause:
+# UID allocation previously selected mGlobalAppIsolatedUids when the SafeSetID
+# policy file existed, even if getUidTransitionPolicy() failed to initialize.
+# AppZygote creation required a non-null policy and then looked up the per-app
+# range, which was absent because the UID had been allocated globally. This
+# caused uidRange.mFirstUid to throw a NullPointerException.
+#
+# Fix:
+# Use one policy-initialization predicate for allocation, AppZygote creation,
+# and cleanup. Failed SafeSetID policy initialization consistently falls back
+# to the per-AppZygote range allocator. Add a defensive non-null check so any
+# future bookkeeping mismatch is reported as a controlled process-start error
+# rather than a system_server NullPointerException.
+#
+# Apply from the root of LineageOS/android_frameworks_base at lineage-24.0:
+#   git apply --check lemonadep.frameworks-base-appzygote.patch
+#   git apply lemonadep.frameworks-base-appzygote.patch
+#
+diff --git a/services/core/java/com/android/server/am/ProcessList.java b/services/core/java/com/android/server/am/ProcessList.java
+--- a/services/core/java/com/android/server/am/ProcessList.java
++++ b/services/core/java/com/android/server/am/ProcessList.java
+@@ -435,9 +435,23 @@
+             }
+         }
+ 
+-        return mUidTransitionPolicy;
+-    }
+-
++        return mUidTransitionPolicy;
++    }
++
++    /**
++     * Whether AppZygotes use the shared SafeSetID isolated UID range.
++     *
++     * Keep UID allocation, AppZygote creation, and cleanup on the same
++     * decision. If policy initialization fails, all paths fall back to the
++     * per-AppZygote range allocator.
++     */
++    @GuardedBy("mService")
++    private boolean isAppZygoteUidPolicyEnabledLocked() {
++        return Flags.useSafesetidUidPolicy2()
++                && UidTransitionPolicy.isEnabled()
++                && getUidTransitionPolicy() != null;
++    }
++
+     /**
+      * The currently running isolated processes.
+      */
+@@ -2319,9 +2333,6 @@
+     @GuardedBy("mService")
+     private void removeProcessFromAppZygoteLocked(final ProcessRecord app) {
+         // Free the isolated uid for this process
+-        if (Flags.useSafesetidUidPolicy2()
+-                && UidTransitionPolicy.isEnabled()
+-                && getUidTransitionPolicy() != null) {
+             // TODO(b/467504571) Create tests for this interaction between
+             // ProcessList and UidTransitionPolicy
+             mGlobalAppIsolatedUids.freeIsolatedUidLocked(app.uid);
+@@ -2387,9 +2398,6 @@
+ 
+                 final int userId = UserHandle.getUserId(uid);
+ 
+-                if (Flags.useSafesetidUidPolicy2()
+-                        && UidTransitionPolicy.isEnabled()
+-                        && getUidTransitionPolicy() != null) {
+                     // TODO(b/467504571) Create tests for this interaction between
+                     // ProcessList and UidTransitionPolicy
+ 
+@@ -2408,10 +2416,17 @@
+                     // site.
+                     getUidTransitionPolicy().disallowAllUidTransitionsFrom(uid);
+                 } else {
+-                    final IsolatedUidRange uidRange =
+-                        mAppIsolatedUidRangeAllocator.getIsolatedUidRangeLocked(
+-                                app.info.processName, app.getHostingRecord().getDefiningUid());
+-                    // Create the app-zygote and provide it with the UID-range it's allowed
++                    final IsolatedUidRange uidRange =
++                        mAppIsolatedUidRangeAllocator.getIsolatedUidRangeLocked(
++                                app.info.processName, app.getHostingRecord().getDefiningUid());
++                    if (uidRange == null) {
++                        final String message = "Missing isolated UID range for AppZygote "
++                                + appZygoteName + ", process=" + app.info.processName
++                                + ", definingUid=" + app.getHostingRecord().getDefiningUid();
++                        Slog.e(TAG, message);
++                        throw new IllegalStateException(message);
++                    }
++                    // Create the app-zygote and provide it with the UID-range it's allowed
+                     // to setresuid/setresgid to.
+                     firstUid = UserHandle.getUid(userId, uidRange.mFirstUid);
+                     lastUid = UserHandle.getUid(userId, uidRange.mLastUid);
+@@ -3456,8 +3471,8 @@
+         if (hostingRecord == null || !hostingRecord.usesAppZygote()) {
+             // Allocate an isolated UID from the global range
+             return mGlobalIsolatedUids;
+-        } else if (Flags.useSafesetidUidPolicy2() && UidTransitionPolicy.isEnabled()) {
+-            return mGlobalAppIsolatedUids;
++        } else if (isAppZygoteUidPolicyEnabledLocked()) {
++            return mGlobalAppIsolatedUids;
+         } else {
+             return mAppIsolatedUidRangeAllocator.getOrCreateIsolatedUidRangeLocked(
+                     info.processName, hostingRecord.getDefiningUid());
