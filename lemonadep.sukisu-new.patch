@@ -512,7 +512,7 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
  	// copied from Magisk rules
  	// suRights
  	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
-@@ -180,6 +206,11 @@
+@@ -180,6 +208,11 @@
  void apply_kernelsu_rules()
  {
  	struct policydb *db;
