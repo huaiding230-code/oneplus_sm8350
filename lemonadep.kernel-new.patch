@@ -8170,7 +8170,30 @@ diff --git a/drivers/media/platform/msm/cvp/msm_cvp_internal.h b/drivers/media/p
 diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/dsi_display.c
 --- a/techpack/display/msm/dsi/dsi_display.c
 +++ b/techpack/display/msm/dsi/dsi_display.c
-@@ -6259,9 +6259,10 @@
+
+@@ -5,6 +5,7 @@
+  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
+  */
+ 
++#include <linux/compiler.h>
+ #include <linux/list.h>
+ #include <linux/of.h>
+ #include <linux/of_gpio.h>
+@@ -561,10 +562,10 @@
+ 	SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
+ 	complete_all(&display->esd_te_gate);
+ #ifdef OPLUS_BUG_STABILITY
+-	if (oplus_adfr_is_support()) {
+-		if (display->panel->vsync_switch_pending) {
++	if (oplus_adfr_is_support() && display->panel) {
++		if (READ_ONCE(display->panel->vsync_switch_pending)) {
++			WRITE_ONCE(display->panel->vsync_switch_pending, false);
+ 			complete_all(&display->switch_te_gate);
+-			display->panel->vsync_switch_pending = false;
+ 		}
+ 	}
+ #endif /*OPLUS_BUG_STABILITY*/
+@@ -6259,9 +6260,10 @@
  	dsi_display_register_te_irq(display);
  
  	msm_register_vm_event(master, dev, &vm_event_ops, (void *)display);
@@ -8182,7 +8205,7 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  		DSI_INFO("20627 panel add esd err flag detect\n");
  		dsi_display_register_esd_err_irq(display);
  		dsi_display_err_flag_work_init(display);
-@@ -6320,9 +6321,10 @@
+@@ -6320,8 +6322,9 @@
  		return;
  	}
  
@@ -8193,22 +8216,6 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  #endif
  	mutex_lock(&display->display_lock);
  
-@@ -561,10 +561,10 @@
- 	SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
- 	complete_all(&display->esd_te_gate);
- #ifdef OPLUS_BUG_STABILITY
- 	if (oplus_adfr_is_support()) {
--		if (display->panel->vsync_switch_pending) {
--			complete_all(&display->switch_te_gate);
--			display->panel->vsync_switch_pending = false;
-+		if (READ_ONCE(display->panel->vsync_switch_pending)) {
-+			WRITE_ONCE(display->panel->vsync_switch_pending, false);
-+			complete_all(&display->switch_te_gate);
- 		}
- 	}
- #endif /*OPLUS_BUG_STABILITY*/
-
- 	rc = dsi_display_mipi_host_deinit(display);
 diff --git a/techpack/display/oplus/oplus_display_private_api.c b/techpack/display/oplus/oplus_display_private_api.c
 --- a/techpack/display/oplus/oplus_display_private_api.c
 +++ b/techpack/display/oplus/oplus_display_private_api.c
@@ -8574,28 +8581,3 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
  	}
  }
  
-diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/dsi_display.c
---- a/techpack/display/msm/dsi/dsi_display.c
-+++ b/techpack/display/msm/dsi/dsi_display.c
-@@ -5,6 +5,7 @@
-  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
-  */
- 
-+#include <linux/compiler.h>
- #include <linux/list.h>
- #include <linux/of.h>
- #include <linux/of_gpio.h>
-@@ -561,10 +562,10 @@
- 	SDE_EVT32(SDE_EVTLOG_FUNC_CASE1);
- 	complete_all(&display->esd_te_gate);
- #ifdef OPLUS_BUG_STABILITY
--	if (oplus_adfr_is_support()) {
--		if (display->panel->vsync_switch_pending) {
-+	if (oplus_adfr_is_support() && display->panel) {
-+		if (READ_ONCE(display->panel->vsync_switch_pending)) {
-+			WRITE_ONCE(display->panel->vsync_switch_pending, false);
- 			complete_all(&display->switch_te_gate);
--			display->panel->vsync_switch_pending = false;
- 		}
- 	}
- #endif /*OPLUS_BUG_STABILITY*/
