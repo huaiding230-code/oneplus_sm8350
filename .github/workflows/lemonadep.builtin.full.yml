@@ -63,7 +63,7 @@ jobs:
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
 
           git init "$KSU"
-          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Ultra/SukiSU-Ultra.git refs/heads/builtin-new
+          git -C "$KSU" fetch --depth=1 https://github.com/SukiSU-Nova/SukiSU-Nova.git refs/heads/builtin-new
           git -C "$KSU" checkout --detach FETCH_HEAD
           echo "SukiSU builtin-new commit: $(git -C "$KSU" rev-parse HEAD)"
 
