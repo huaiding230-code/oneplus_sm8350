@@ -38,8 +38,8 @@ jobs:
           set -euo pipefail
           cd sukisu_source
           test "$(git rev-parse HEAD)" = "5a3ec4145059ed2c4f22c70a16a28a616e104c33"
-          patch --dry-run -p1 --fuzz=0 < "\${GITHUB_WORKSPACE}/lemonadep.ksud-lowpower.patch"
-          patch -p1 --fuzz=0 < "\${GITHUB_WORKSPACE}/lemonadep.ksud-lowpower.patch"
+          patch --dry-run -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.ksud-lowpower.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.ksud-lowpower.patch"
           grep -q 'timerfd_create' userspace/ksud/src/temporary_root.rs
           grep -q 'inotify_init1' userspace/ksud/src/temporary_root.rs
           grep -q 'CLOCK_BOOTTIME' userspace/ksud/src/temporary_root.rs
@@ -62,7 +62,7 @@ jobs:
 
       - name: Build arm64 ksud
         env:
-          ANDROID_NDK_HOME: \${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
           KSU_PACKAGE_NAME: com.sukisu.ultra
         run: |
           set -euo pipefail
@@ -77,12 +77,12 @@ jobs:
           unset RUSTFLAGS
 
           cargo +stable build --target aarch64-linux-android --release --manifest-path ./userspace/ksud/Cargo.toml
-          KSUD="\${GITHUB_WORKSPACE}/sukisu_source/target/aarch64-linux-android/release/ksud"
+          KSUD="${GITHUB_WORKSPACE}/sukisu_source/target/aarch64-linux-android/release/ksud"
           test -s "$KSUD"
           file "$KSUD"
           readelf -h "$KSUD" | grep -q 'AArch64'
 
-          MOD="\${GITHUB_WORKSPACE}/ksud_lowpower_module"
+          MOD="${GITHUB_WORKSPACE}/ksud_lowpower_module"
           mkdir -p "$MOD"
           install -m 0755 "$KSUD" "$MOD/ksud"
           printf '%s\n' "SukiSU source commit: 5a3ec4145059ed2c4f22c70a16a28a616e104c33" > "$MOD/SOURCE_COMMIT.txt"
@@ -98,7 +98,7 @@ jobs:
 
           cat > "$MOD/post-fs-data.sh" <<'EOF'
           #!/system/bin/sh
-          MODDIR=\${0%/*}
+          MODDIR=${0%/*}
           SRC="$MODDIR/ksud"
           DST="/data/adb/ksud"
           BACKUP="/data/adb/ksud-lowpower.original"
@@ -139,13 +139,13 @@ jobs:
           # Stop only the temporary-root watcher; leave the main ksud daemon untouched.
           OLD_WATCHERS=""
           for PROC in /proc/[0-9]*; do
-              PID=\${PROC##*/}
+              PID=${PROC##*/}
               [ -r "$PROC/cmdline" ] || continue
               ARGS="$(tr '\000' ' ' < "$PROC/cmdline" 2>/dev/null)"
               [ -n "$ARGS" ] || continue
               set -- $ARGS
-              [ "\${1##*/}" = "ksud" ] || continue
-              [ "\${2:-}" = "temporary-root" ] && [ "\${3:-}" = "watch" ] || continue
+              [ "${1##*/}" = "ksud" ] || continue
+              [ "${2:-}" = "temporary-root" ] && [ "${3:-}" = "watch" ] || continue
               kill -TERM "$PID" 2>/dev/null || true
               OLD_WATCHERS="$OLD_WATCHERS $PID"
           done
@@ -190,13 +190,13 @@ jobs:
 
           OLD_WATCHERS=""
           for PROC in /proc/[0-9]*; do
-              PID=\${PROC##*/}
+              PID=${PROC##*/}
               [ -r "$PROC/cmdline" ] || continue
               ARGS="$(tr '\000' ' ' < "$PROC/cmdline" 2>/dev/null)"
               [ -n "$ARGS" ] || continue
               set -- $ARGS
-              [ "\${1##*/}" = "ksud" ] || continue
-              [ "\${2:-}" = "temporary-root" ] && [ "\${3:-}" = "watch" ] || continue
+              [ "${1##*/}" = "ksud" ] || continue
+              [ "${2:-}" = "temporary-root" ] && [ "${3:-}" = "watch" ] || continue
               kill -TERM "$PID" 2>/dev/null || true
               OLD_WATCHERS="$OLD_WATCHERS $PID"
           done
@@ -226,13 +226,13 @@ jobs:
 
           cat > "$MOD/uninstall.sh" <<'EOF'
           #!/system/bin/sh
-          MODDIR=\${0%/*}
+          MODDIR=${0%/*}
           "$MODDIR/restore.sh"
           EOF
 
           cat > "$MOD/action.sh" <<'EOF'
           #!/system/bin/sh
-          MODDIR=\${0%/*}
+          MODDIR=${0%/*}
           "$MODDIR/restore.sh"
           EOF
 
@@ -265,8 +265,8 @@ jobs:
 
           chmod 0755 "$MOD/post-fs-data.sh" "$MOD/restore.sh" "$MOD/uninstall.sh" "$MOD/action.sh"
           cd "$MOD"
-          zip -r9 "\${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip" .
-          unzip -tqq "\${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip"
+          zip -r9 "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip" .
+          unzip -tqq "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip"
 
       - name: Upload flashable module
         uses: actions/upload-artifact@v7
