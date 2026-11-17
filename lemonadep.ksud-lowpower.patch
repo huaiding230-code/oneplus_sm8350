@@ -1,5 +1,4 @@
 diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary_root.rs
-index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..0000000000000000000000000000000000000000 100644
 --- a/userspace/ksud/src/temporary_root.rs
 +++ b/userspace/ksud/src/temporary_root.rs
 @@ -10,7 +10,6 @@
@@ -169,7 +168,7 @@ index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..00000000000000000000000000000000
  pub fn watch() -> Result<()> {
      if unsafe { libc::getuid() } != 0 {
          bail!("root required");
-@@ -563,11 +696,42 @@
+@@ -563,12 +696,42 @@
          }
          Err(e) => return Err(e),
      };
