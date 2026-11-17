@@ -105,8 +105,8 @@ jobs:
           cat > "$MOD/module.prop" <<'EOF'
           id=ksud_lowpower_lease_watch
           name=KSUD Low-Power Lease Watcher
-          version=1.5
-          versionCode=6
+          version=1.6
+          versionCode=7
           author=lemonadep kernel project
           description=Standalone event-driven temporary-root watcher; leaves installed ksud binary unchanged.
           EOF
@@ -169,26 +169,62 @@ jobs:
               ! lp_has_watcher "$LP_NAME"
           }
 
+          LP_WATCH_LOCK="${LP_WATCH_LOCK:-/data/adb/ksu/temporary-root/watch.lock}"
+
+          lp_holds_watch_lock() {
+              LP_PID="$1"
+              for LP_FD in /proc/"$LP_PID"/fd/*; do
+                  [ -e "$LP_FD" ] || continue
+                  LP_TARGET="$(readlink "$LP_FD" 2>/dev/null)" || continue
+                  [ "$LP_TARGET" = "$LP_WATCH_LOCK" ] || continue
+                  LP_INFO="/proc/$LP_PID/fdinfo/${LP_FD##*/}"
+                  grep -Eq '^lock:[[:space:]]*[0-9]+:[[:space:]]+FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE([[:space:]]|$)' "$LP_INFO" 2>/dev/null && return 0
+              done
+              return 1
+          }
+
+          lp_has_active_watcher() {
+              LP_NAME="$1"
+              for LP_PROC in /proc/[0-9]*; do
+                  [ -d "$LP_PROC" ] || continue
+                  LP_PID="${LP_PROC##*/}"
+                  if lp_is_watcher "$LP_NAME" "$LP_PID" &&
+                      lp_holds_watch_lock "$LP_PID"; then
+                      return 0
+                  fi
+              done
+              return 1
+          }
+
           lp_start_watcher() {
               LP_BIN="$1"
               LP_NAME="$2"
               [ -x "$LP_BIN" ] || return 1
 
-              # Do not spawn a duplicate worker when restore/fallback is called.
-              lp_has_watcher "$LP_NAME" && return 0
+              # Startup is valid only once the worker owns the shared flock.
+              lp_has_active_watcher "$LP_NAME" && return 0
 
               "$LP_BIN" temporary-root watch >/dev/null 2>&1 &
               LP_CHILD=$!
-              # A duplicate worker exits immediately when watch.lock is held.
-              # Wait once before declaring startup successful.
-              sleep 1
-              if kill -0 "$LP_CHILD" 2>/dev/null &&
-                  lp_is_watcher "$LP_NAME" "$LP_CHILD"; then
-                  return 0
-              fi
+              LP_COUNT=0
+              while [ "$LP_COUNT" -lt 10 ]; do
+                  lp_has_active_watcher "$LP_NAME" && return 0
+                  if ! kill -0 "$LP_CHILD" 2>/dev/null ||
+                      ! lp_is_watcher "$LP_NAME" "$LP_CHILD"; then
+                      break
+                  fi
+                  sleep 1
+                  LP_COUNT=$((LP_COUNT + 1))
+              done
 
               kill -TERM "$LP_CHILD" 2>/dev/null || true
-              return 1
+              LP_COUNT=0
+              while kill -0 "$LP_CHILD" 2>/dev/null && [ "$LP_COUNT" -lt 3 ]; do
+                  sleep 1
+                  LP_COUNT=$((LP_COUNT + 1))
+              done
+              kill -KILL "$LP_CHILD" 2>/dev/null || true
+              lp_has_active_watcher "$LP_NAME"
           }
           EOF
 
@@ -247,8 +283,8 @@ jobs:
               log_msg "standalone watcher did not stop"
               exit 1
           fi
-          if lp_has_watcher ksud; then
-              log_msg "stock watcher already active"
+          if lp_has_active_watcher ksud; then
+              log_msg "stock watcher already active and owns watch.lock"
               exit 0
           fi
           [ -s "$STOCK" ] && [ -x "$STOCK" ] || {
@@ -291,6 +327,7 @@ jobs:
           - Does NOT change the kernel image, kernel config, or main ksud daemon.
           - Stops only the stock temporary-root watcher process.
           - Starts a separate ksud-lowpower temporary-root watcher.
+          - Startup is accepted only after the worker owns the shared watch.lock flock.
           - If the new watcher fails, attempts to restart the stock watcher.
           - Action disables this module and restores the stock watcher.
           - Uninstall also restores the stock watcher.
@@ -320,6 +357,24 @@ jobs:
             echo "runner cannot expand numeric /proc PID paths"
             exit 1
           }
+          LP_WATCH_LOCK="/tmp/ksud-lock-test/watch.lock"
+          mkdir -p "${LP_WATCH_LOCK%/*}"
+          . "$MOD/watcher-common.sh"
+          flock -n "$LP_WATCH_LOCK" sleep 15 &
+          LP_TEST_PID=$!
+          LP_LOCK_OK=0
+          for _ in $(seq 1 20); do
+            if lp_holds_watch_lock "$LP_TEST_PID"; then LP_LOCK_OK=1; break; fi
+            sleep 0.1
+          done
+          kill -0 "$LP_TEST_PID"
+          test "$LP_LOCK_OK" -eq 1
+          kill "$LP_TEST_PID" 2>/dev/null || true
+          wait "$LP_TEST_PID" 2>/dev/null || true
+          if lp_holds_watch_lock "$LP_TEST_PID"; then
+            echo "watcher lock detector returned true after lock release"
+            exit 1
+          fi
           cd "$MOD"
           zip -r9 "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip" .
           unzip -tqq "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip"
