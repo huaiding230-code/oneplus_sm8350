@@ -178,7 +178,7 @@ jobs:
                   LP_TARGET="$(readlink "$LP_FD" 2>/dev/null)" || continue
                   [ "$LP_TARGET" = "$LP_WATCH_LOCK" ] || continue
                   LP_INFO="/proc/$LP_PID/fdinfo/${LP_FD##*/}"
-                  grep -Eq '^lock:[[:space:]]*[0-9]+:[[:space:]]+FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE([[:space:]]|$)' "$LP_INFO" 2>/dev/null && return 0
+                  grep -Eq "^lock:[[:space:]]*[0-9]+:[[:space:]]+FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE[[:space:]]+$LP_PID([[:space:]]|$)" "$LP_INFO" 2>/dev/null && return 0
               done
               return 1
           }
@@ -369,6 +369,10 @@ jobs:
           done
           kill -0 "$LP_TEST_PID"
           test "$LP_LOCK_OK" -eq 1
+          if lp_holds_watch_lock "$"; then
+            echo "watcher lock detector accepted a process without the lock"
+            exit 1
+          fi
           kill "$LP_TEST_PID" 2>/dev/null || true
           wait "$LP_TEST_PID" 2>/dev/null || true
           if lp_holds_watch_lock "$LP_TEST_PID"; then
