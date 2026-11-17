@@ -8766,7 +8766,8 @@ diff --git a/drivers/power/oplus/v1/oplus_charger.c b/drivers/power/oplus/v1/opl
 +		if (chip->soc >= 0 && chip->soc <= OPLUS_FULL_SOC)
 +			gauge_soc_for_recovery = chip->soc;
 +		if (chip->smooth_soc >= 0 && chip->smooth_soc <= OPLUS_FULL_SOC &&
-+		    chip->smooth_soc > gauge_soc_for_recovery)
++		    (gauge_soc_for_recovery < 0 ||
++		     chip->smooth_soc < gauge_soc_for_recovery))
 +			gauge_soc_for_recovery = chip->smooth_soc;
 +		if (gauge_soc_for_recovery >= 0) {
 +			vbatt_recovery_target = min(gauge_soc_for_recovery,
