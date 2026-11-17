@@ -164,16 +164,22 @@ jobs:
               LP_BIN="$1"
               LP_NAME="$2"
               [ -x "$LP_BIN" ] || return 1
+
+              # Do not spawn a duplicate worker when restore/fallback is called.
+              lp_has_watcher "$LP_NAME" && return 0
+
               "$LP_BIN" temporary-root watch >/dev/null 2>&1 &
               LP_CHILD=$!
-              LP_COUNT=0
-              while [ "$LP_COUNT" -lt 10 ]; do
-                  lp_has_watcher "$LP_NAME" && return 0
-                  kill -0 "$LP_CHILD" 2>/dev/null || break
-                  sleep 1
-                  LP_COUNT=$((LP_COUNT + 1))
-              done
-              lp_has_watcher "$LP_NAME"
+              # A duplicate worker exits immediately when watch.lock is held.
+              # Wait once before declaring startup successful.
+              sleep 1
+              if kill -0 "$LP_CHILD" 2>/dev/null &&
+                  lp_is_watcher "$LP_NAME" "$LP_CHILD"; then
+                  return 0
+              fi
+
+              kill -TERM "$LP_CHILD" 2>/dev/null || true
+              return 1
           }
           EOF
 

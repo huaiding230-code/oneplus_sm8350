@@ -168,7 +168,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
  pub fn watch() -> Result<()> {
      if unsafe { libc::getuid() } != 0 {
          bail!("root required");
-@@ -563,11 +696,41 @@
+@@ -563,11 +696,39 @@
          }
          Err(e) => return Err(e),
      };
@@ -194,20 +194,18 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
 +            .iter()
 +            .any(|lease| expired(&lease.boot, &boot, lease.deadline, now));
 +
-+        let next_deadline = if retry_failed_revoke {
-+            // Do not busy-loop if a manager profile cannot yet be revoked.
-+            Some(now.saturating_add(60))
-+        } else {
-+            leases
-+                .iter()
-+                .filter(|lease| lease.boot == boot)
-+                .filter_map(|lease| lease.deadline)
-+                .min()
-+        };
-+
-+        // Keep watching even when there are no timed leases: a new lease may
-+        // be created later. The daily timeout also recovers from a lost inotify event.
-+        let deadline = next_deadline.unwrap_or_else(|| now.saturating_add(86400));
++        // Retry failed revocations, but never postpone another lease's expiry.
++        let retry_deadline = retry_failed_revoke.then_some(now.saturating_add(60));
++        let next_deadline = leases
++            .iter()
++            .filter(|lease| lease.boot == boot)
++            .filter_map(|lease| lease.deadline)
++            .min();
++        let deadline = retry_deadline
++            .into_iter()
++            .chain(next_deadline)
++            .min()
++            .unwrap_or_else(|| now.saturating_add(86400));
 +
 +        // Sleep until the next expiry or a state-file change. No 1 Hz wakeups.
 +        wait_for_lease_change(&watcher, deadline)?;
