@@ -8631,9 +8631,9 @@ diff --git a/drivers/power/oplus_chg/oplus_charger.c b/drivers/power/oplus_chg/o
  
  	if (chip->charger_volt > 7500) {
 
-diff --git a/drivers/power/oplus/v1/oplus_charger.c b/drivers/power/oplus/v1/oplus_charger.c
---- a/drivers/power/oplus/v1/oplus_charger.c
-+++ b/drivers/power/oplus/v1/oplus_charger.c
+diff --git a/drivers/power/oplus/oplus_charger.c b/drivers/power/oplus/oplus_charger.c
+--- a/drivers/power/oplus/oplus_charger.c
++++ b/drivers/power/oplus/oplus_charger.c
 @@ -8552,8 +8552,11 @@
  #define SOC_SYNC_DOWN_RATE_45S			9
  #define SOC_SYNC_DOWN_RATE_40S			8
