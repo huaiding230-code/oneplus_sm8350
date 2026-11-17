@@ -14,7 +14,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
  }
  
 -fn sweep() -> Result<()> {
-+fn sweep() -> Result<Vec<Lease>> {
++fn sweep() -> Result<(Vec<Lease>, String, u64)> {
      let _guard = lock("state.lock", false)?;
      let mut leases = load()?;
      let boot = boot_id()?;
@@ -23,7 +23,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
          save(&leases)?;
      }
 -    Ok(())
-+    Ok(leases)
++    Ok((leases, boot, now))
  }
  
  pub fn start() -> Result<()> {
@@ -168,7 +168,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
  pub fn watch() -> Result<()> {
      if unsafe { libc::getuid() } != 0 {
          bail!("root required");
-@@ -563,11 +696,35 @@
+@@ -563,11 +696,32 @@
          }
          Err(e) => return Err(e),
      };
@@ -179,7 +179,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
 -            log::error!("temporary root sweep failed: {e:#}");
 -        }
 -        std::thread::sleep(Duration::from_secs(1));
-+        let leases = match sweep() {
++        let (leases, boot, now) = match sweep() {
 +            Ok(leases) => leases,
 +            Err(e) => {
 +                log::error!("temporary root sweep failed: {e:#}");
@@ -187,10 +187,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
 +                continue;
 +            }
 +        };
-+
-+        let boot = boot_id()?;
-+        let now = boottime()?;
-+        let retry_failed_revoke = leases
++\n+        let retry_failed_revoke = leases
 +            .iter()
 +            .any(|lease| expired(&lease.boot, &boot, lease.deadline, now));
 +
@@ -212,7 +209,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
 diff --git a/userspace/ksud/src/main.rs b/userspace/ksud/src/main.rs
 --- a/userspace/ksud/src/main.rs
 +++ b/userspace/ksud/src/main.rs
-@@ -35,4 +35,5 @@
+@@ -33,4 +33,5 @@
  mod feature;
  mod feature_id;
 +mod lease_schedule;
