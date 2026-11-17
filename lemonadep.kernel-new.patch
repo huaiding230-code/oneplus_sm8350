@@ -8694,7 +8694,7 @@ diff --git a/drivers/power/oplus/v1/oplus_charger.c b/drivers/power/oplus/v1/opl
  
  	if (chip->nightstandby_support) {
  		if (get_soc_feature()) {
-@@ -8831,19 +8857,69 @@
+@@ -8831,19 +8857,70 @@
  	} else {
  		soc_down_limit = SOC_SYNC_DOWN_RATE_40S;
  	}
@@ -9206,7 +9206,7 @@ diff --git a/drivers/power/oplus/gauge_ic/oplus_bq27541.c b/drivers/power/oplus/
  /*static int bq28z610_get_2cell_balance_time(void)
  {
  	u8 balance_time[BQ28Z610_MAC_CELL_BALANCE_TIME_SIZE] = {0,0,0,0};
-@@ -5241,9 +5303,13 @@
+@@ -5241,10 +5303,14 @@
  		fg_ic->pc_pre = 0;
  		fg_ic->qs_pre = 0;
  	}
