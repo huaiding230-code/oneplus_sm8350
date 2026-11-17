@@ -105,8 +105,9 @@ jobs:
 
           cat > "$MOD/watcher-common.sh" <<'EOF'
           #!/system/bin/sh
-          set -f
 
+          # Keep pathname expansion enabled: the process scanners below depend on
+          # /proc/[0-9]* expanding to numeric PID directories.
           lp_is_watcher() {
               LP_NAME="$1"
               LP_PID="$2"
@@ -303,6 +304,14 @@ jobs:
           for SCRIPT in "$MOD/post-fs-data.sh" "$MOD/restore.sh" "$MOD/uninstall.sh" "$MOD/action.sh" "$MOD/watcher-common.sh"; do
             sh -n "$SCRIPT"
           done
+          if grep -Eq '^[[:space:]]*set[[:space:]]+-f([[:space:]]|$)' "$MOD/watcher-common.sh"; then
+            echo "watcher-common.sh must keep /proc PID glob expansion enabled"
+            exit 1
+          fi
+          sh -c 'set -- /proc/[0-9]*; test "$#" -gt 1' || {
+            echo "runner cannot expand numeric /proc PID paths"
+            exit 1
+          }
           cd "$MOD"
           zip -r9 "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip" .
           unzip -tqq "${GITHUB_WORKSPACE}/KSUD-Low-Power-Fix.zip"
