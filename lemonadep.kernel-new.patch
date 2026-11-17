@@ -8975,7 +8975,7 @@ diff --git a/drivers/power/oplus/gauge_ic/oplus_bq27541.c b/drivers/power/oplus/
 -}
 -
 -
- static int bq27541_read_i2c_onebyte(struct chip_bq27541 *chip, u8 cmd, u8 *returnData)
+-static int bq27541_read_i2c_onebyte(struct chip_bq27541 *chip, u8 cmd, u8 *returnData)
 +	mutex_unlock(&chip->chip_mutex);
 +	//pr_err(" cmd = 0x%x, returnData = 0x%x\r\n",cmd,*returnData)  ;
 +	return 0;
@@ -9015,6 +9015,7 @@ diff --git a/drivers/power/oplus/gauge_ic/oplus_bq27541.c b/drivers/power/oplus/
 +}
 +
 +
++static int bq27541_read_i2c_onebyte(struct chip_bq27541 *chip, u8 cmd, u8 *returnData)
  {
  	int retry = 3;
  	s32 ret = 0;
