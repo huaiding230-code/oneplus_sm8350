@@ -168,7 +168,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
  pub fn watch() -> Result<()> {
      if unsafe { libc::getuid() } != 0 {
          bail!("root required");
-@@ -563,11 +696,32 @@
+@@ -563,11 +696,33 @@
          }
          Err(e) => return Err(e),
      };
@@ -187,7 +187,8 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
 +                continue;
 +            }
 +        };
-+\n+        let retry_failed_revoke = leases
++
++        let retry_failed_revoke = leases
 +            .iter()
 +            .any(|lease| expired(&lease.boot, &boot, lease.deadline, now));
 +
