@@ -168,7 +168,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
  pub fn watch() -> Result<()> {
      if unsafe { libc::getuid() } != 0 {
          bail!("root required");
-@@ -563,11 +696,39 @@
+@@ -563,11 +696,35 @@
          }
          Err(e) => return Err(e),
      };
@@ -194,21 +194,90 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
 +            .iter()
 +            .any(|lease| expired(&lease.boot, &boot, lease.deadline, now));
 +
-+        // Retry failed revocations, but never postpone another lease's expiry.
-+        let retry_deadline = retry_failed_revoke.then_some(now.saturating_add(60));
-+        let next_deadline = leases
-+            .iter()
-+            .filter(|lease| lease.boot == boot)
-+            .filter_map(|lease| lease.deadline)
-+            .min();
-+        let deadline = retry_deadline
-+            .into_iter()
-+            .chain(next_deadline)
-+            .min()
-+            .unwrap_or_else(|| now.saturating_add(86400));
++        let deadline = crate::lease_schedule::next_deadline(
++            now,
++            retry_failed_revoke,
++            leases
++                .iter()
++                .filter(|lease| lease.boot == boot)
++                .filter_map(|lease| lease.deadline),
++        );
 +
 +        // Sleep until the next expiry or a state-file change. No 1 Hz wakeups.
 +        wait_for_lease_change(&watcher, deadline)?;
      }
  }
  
+
+diff --git a/userspace/ksud/src/main.rs b/userspace/ksud/src/main.rs
+--- a/userspace/ksud/src/main.rs
++++ b/userspace/ksud/src/main.rs
+@@ -35,4 +35,5 @@
+ mod feature;
+ mod feature_id;
++mod lease_schedule;
+ #[cfg(target_os = "android")]
+ mod hot_install;
+
+diff --git a/userspace/ksud/src/lease_schedule.rs b/userspace/ksud/src/lease_schedule.rs
+new file mode 100644
+--- /dev/null
++++ b/userspace/ksud/src/lease_schedule.rs
+@@ -0,0 +1,57 @@
++/// Compute the next watcher retry/lease deadline without scheduling in the past.
++///
++/// Expired leases that failed revocation remain in the state file. Their stored
++/// deadline must not be reused as the next timer deadline, or timerfd becomes
++/// immediately readable and the watcher spins instead of waiting for retry.
++pub fn next_deadline(
++    now: u64,
++    retry_failed_revoke: bool,
++    lease_deadlines: impl IntoIterator<Item = u64>,
++) -> u64 {
++    let retry_deadline = retry_failed_revoke.then_some(now.saturating_add(60));
++    let next_lease_deadline = lease_deadlines
++        .into_iter()
++        .filter(|deadline| *deadline > now)
++        .min();
++
++    retry_deadline
++        .into_iter()
++        .chain(next_lease_deadline)
++        .min()
++        .unwrap_or_else(|| now.saturating_add(86400))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::next_deadline;
++
++    #[test]
++    fn failed_expired_lease_retries_after_sixty_seconds() {
++        assert_eq!(next_deadline(100, true, [50]), 160);
++    }
++
++    #[test]
++    fn earlier_live_lease_expiry_precedes_retry() {
++        assert_eq!(next_deadline(100, true, [130, 250]), 130);
++    }
++
++    #[test]
++    fn retry_precedes_later_live_lease_expiry() {
++        assert_eq!(next_deadline(100, true, [200]), 160);
++    }
++
++    #[test]
++    fn no_timed_leases_uses_daily_recovery_timeout() {
++        assert_eq!(next_deadline(100, false, []), 86500);
++    }
++
++    #[test]
++    fn retry_without_timed_leases_uses_sixty_seconds() {
++        assert_eq!(next_deadline(100, true, []), 160);
++    }
++
++    #[test]
++    fn deadlines_saturate_instead_of_overflowing() {
++        assert_eq!(next_deadline(u64::MAX - 5, true, [u64::MAX]), u64::MAX);
++    }
++}
