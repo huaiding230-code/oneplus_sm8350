@@ -169,7 +169,7 @@ index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..00000000000000000000000000000000
  pub fn watch() -> Result<()> {
      if unsafe { libc::getuid() } != 0 {
          bail!("root required");
-@@ -563,11 +696,43 @@
+@@ -563,11 +696,42 @@
          }
          Err(e) => return Err(e),
      };
@@ -206,11 +206,9 @@ index 137f37a47225e1b99ceae1ce8d244e2ab91852ee..00000000000000000000000000000000
 +                .min()
 +        };
 +
-+        // No time-limited leases remain. Boot-scoped leases are revoked on the
-+        // next boot by the one-shot post-fs-data sweep, so no daemon is needed.
-+        let Some(deadline) = next_deadline else {
-+            return Ok(());
-+        };
++        // Keep watching even when there are no timed leases: a new lease may
++        // be created later. The daily timeout also recovers from a lost inotify event.
++        let deadline = next_deadline.unwrap_or_else(|| now.saturating_add(86400));
 +
 +        // Sleep until the next expiry or a state-file change. No 1 Hz wakeups.
 +        wait_for_lease_change(&watcher, deadline)?;
