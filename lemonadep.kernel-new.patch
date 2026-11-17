@@ -9223,3 +9223,15 @@ diff --git a/drivers/power/oplus/gauge_ic/oplus_bq27541.c b/drivers/power/oplus/
  
  	/*for zy0603 battery protect cuase turn off mos*/
  	fg_ic->protect_check_done = false;
+diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h
+--- a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h
++++ b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h
+@@ -13,7 +13,7 @@
+ #define IPA_PM_MAX_EX_CL 64
+ #define IPA_PM_THRESHOLD_MAX 5
+ #define IPA_PM_EXCEPTION_MAX 5
+-#define IPA_PM_DEFERRED_TIMEOUT 100
++#define IPA_PM_DEFERRED_TIMEOUT 10
+ 
+ /*
+  * ipa_pm group names
