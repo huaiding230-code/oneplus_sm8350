@@ -168,7 +168,7 @@ diff --git a/userspace/ksud/src/temporary_root.rs b/userspace/ksud/src/temporary
  pub fn watch() -> Result<()> {
      if unsafe { libc::getuid() } != 0 {
          bail!("root required");
-@@ -563,12 +696,42 @@
+@@ -563,11 +696,42 @@
          }
          Err(e) => return Err(e),
      };
