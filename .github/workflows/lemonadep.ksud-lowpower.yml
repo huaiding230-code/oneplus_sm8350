@@ -91,266 +91,160 @@ jobs:
 
           MOD="${GITHUB_WORKSPACE}/ksud_lowpower_module"
           mkdir -p "$MOD"
-          install -m 0755 "$KSUD" "$MOD/ksud"
+          install -m 0755 "$KSUD" "$MOD/ksud-lowpower"
           printf '%s\n' "SukiSU userspace source commit: c60f21b9e00e35e898f8d21e0612465b76b9beec" > "$MOD/SOURCE_COMMIT.txt"
 
           cat > "$MOD/module.prop" <<'EOF'
           id=ksud_lowpower_lease_watch
           name=KSUD Low-Power Lease Watcher
-          version=1.0
-          versionCode=1
+          version=1.1
+          versionCode=2
           author=lemonadep kernel project
-          description=Event-driven temporary-root lease watcher; removes 1 Hz polling and uses non-wakeup BOOTTIME timer scheduling.
+          description=Standalone event-driven temporary-root watcher; leaves installed ksud binary unchanged.
+          EOF
+
+          cat > "$MOD/watcher-common.sh" <<'EOF'
+          #!/system/bin/sh
+          set -f
+
+          lp_is_watcher() {
+              LP_NAME="$1"
+              LP_PID="$2"
+              [ -r "/proc/$LP_PID/cmdline" ] || return 1
+              LP_ARGS="$(tr '\000' ' ' < "/proc/$LP_PID/cmdline" 2>/dev/null)"
+              [ -n "$LP_ARGS" ] || return 1
+              set -- $LP_ARGS
+              [ "${1##*/}" = "$LP_NAME" ] &&
+                  [ "${2:-}" = "temporary-root" ] &&
+                  [ "${3:-}" = "watch" ]
+          }
+
+          lp_has_watcher() {
+              LP_NAME="$1"
+              for LP_PROC in /proc/[0-9]*; do
+                  [ -d "$LP_PROC" ] || continue
+                  lp_is_watcher "$LP_NAME" "${LP_PROC##*/}" && return 0
+              done
+              return 1
+          }
+
+          lp_stop_watchers() {
+              LP_NAME="$1"
+              LP_PIDS=""
+              for LP_PROC in /proc/[0-9]*; do
+                  [ -d "$LP_PROC" ] || continue
+                  LP_PID="${LP_PROC##*/}"
+                  if lp_is_watcher "$LP_NAME" "$LP_PID"; then
+                      kill -TERM "$LP_PID" 2>/dev/null || true
+                      LP_PIDS="$LP_PIDS $LP_PID"
+                  fi
+              done
+              LP_COUNT=0
+              while [ "$LP_COUNT" -lt 10 ]; do
+                  LP_REMAIN=0
+                  for LP_PID in $LP_PIDS; do
+                      lp_is_watcher "$LP_NAME" "$LP_PID" && LP_REMAIN=1
+                  done
+                  [ "$LP_REMAIN" -eq 0 ] && break
+                  sleep 1
+                  LP_COUNT=$((LP_COUNT + 1))
+              done
+              for LP_PID in $LP_PIDS; do
+                  lp_is_watcher "$LP_NAME" "$LP_PID" && kill -KILL "$LP_PID" 2>/dev/null || true
+              done
+              LP_COUNT=0
+              while lp_has_watcher "$LP_NAME" && [ "$LP_COUNT" -lt 5 ]; do
+                  sleep 1
+                  LP_COUNT=$((LP_COUNT + 1))
+              done
+              ! lp_has_watcher "$LP_NAME"
+          }
+
+          lp_start_watcher() {
+              LP_BIN="$1"
+              LP_NAME="$2"
+              [ -x "$LP_BIN" ] || return 1
+              "$LP_BIN" temporary-root watch >/dev/null 2>&1 &
+              LP_CHILD=$!
+              LP_COUNT=0
+              while [ "$LP_COUNT" -lt 10 ]; do
+                  lp_has_watcher "$LP_NAME" && return 0
+                  kill -0 "$LP_CHILD" 2>/dev/null || break
+                  sleep 1
+                  LP_COUNT=$((LP_COUNT + 1))
+              done
+              lp_has_watcher "$LP_NAME"
+          }
           EOF
 
           cat > "$MOD/post-fs-data.sh" <<'EOF'
           #!/system/bin/sh
           MODDIR=${0%/*}
-          SRC="$MODDIR/ksud"
-          DST="/data/adb/ksud"
-          BACKUP="/data/adb/ksud-lowpower.original"
-          TMP="/data/adb/.ksud-lowpower.$$"
-          RESTART_WATCHERS=0
+          STOCK="/data/adb/ksud"
+          WATCHER="$MODDIR/ksud-lowpower"
+          . "$MODDIR/watcher-common.sh" || exit 1
 
           log_msg() {
               log -t ksud-lowpower "$1" 2>/dev/null || true
           }
 
-          is_watcher() {
-              IW_PID="$1"
-              [ -r "/proc/$IW_PID/cmdline" ] || return 1
-              IW_ARGS="$(tr '\000' ' ' < "/proc/$IW_PID/cmdline" 2>/dev/null)"
-              [ -n "$IW_ARGS" ] || return 1
-              set -- $IW_ARGS
-              [ "${1##*/}" = "ksud" ] &&
-                  [ "${2:-}" = "temporary-root" ] &&
-                  [ "${3:-}" = "watch" ]
-          }
-
-          has_watcher() {
-              for PROC in /proc/[0-9]*; do
-                  [ -d "$PROC" ] || continue
-                  is_watcher "${PROC##*/}" && return 0
-              done
-              return 1
-          }
-
-          stop_watchers() {
-              OLD_WATCHERS=""
-              for PROC in /proc/[0-9]*; do
-                  [ -d "$PROC" ] || continue
-                  PID=${PROC##*/}
-                  if is_watcher "$PID"; then
-                      kill -TERM "$PID" 2>/dev/null || true
-                      OLD_WATCHERS="$OLD_WATCHERS $PID"
-                  fi
-              done
-
-              for PID in $OLD_WATCHERS; do
-                  COUNT=0
-                  while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt 30 ]; do
-                      sleep 0.1
-                      COUNT=$((COUNT + 1))
-                  done
-                  if kill -0 "$PID" 2>/dev/null; then
-                      kill -KILL "$PID" 2>/dev/null || true
-                  fi
-              done
-
-              COUNT=0
-              while has_watcher && [ "$COUNT" -lt 20 ]; do
-                  sleep 0.1
-                  COUNT=$((COUNT + 1))
-              done
-              if has_watcher; then
-                  log_msg "temporary-root watcher did not exit"
-                  return 1
-              fi
-              return 0
-          }
-
-          start_watcher() {
-              "$DST" temporary-root watch >/dev/null 2>&1 &
-              WATCH_PID=$!
-              COUNT=0
-              while [ "$COUNT" -lt 30 ]; do
-                  if has_watcher; then
-                      return 0
-                  fi
-                  if ! kill -0 "$WATCH_PID" 2>/dev/null; then
-                      break
-                  fi
-                  sleep 0.1
-                  COUNT=$((COUNT + 1))
-              done
-              has_watcher
-          }
-
-          restore_backup() {
-              [ -s "$BACKUP" ] || return 1
-              cp "$BACKUP" "$TMP" || return 1
-              chown 0:0 "$TMP" 2>/dev/null || true
-              chmod 0755 "$TMP" || return 1
-              mv -f "$TMP" "$DST" || return 1
-              restorecon "$DST" 2>/dev/null || true
-              return 0
-          }
-
-          [ -s "$SRC" ] && [ -x "$SRC" ] || {
-              log_msg "patched ksud binary is missing"
+          [ -s "$STOCK" ] && [ -x "$STOCK" ] || {
+              log_msg "stock ksud missing; refusing to alter watcher state"
               exit 1
           }
-          [ -f "$DST" ] && [ ! -L "$DST" ] || {
-              log_msg "installed ksud is not a regular file; refusing replacement"
+          [ -s "$WATCHER" ] && [ -x "$WATCHER" ] || {
+              log_msg "standalone watcher binary missing"
               exit 1
           }
 
-          # Keep a single rollback copy of the original executable.
-          if [ ! -s "$BACKUP" ]; then
-              cp -p "$DST" "$BACKUP" || {
-                  log_msg "failed to back up the original ksud"
-                  exit 1
-              }
-              chown 0:0 "$BACKUP" 2>/dev/null || true
-              chmod 0755 "$BACKUP" || exit 1
-              restorecon "$BACKUP" 2>/dev/null || true
+          # Only the temporary-root watcher is replaced. The installed ksud
+          # binary and its main event daemon are never modified.
+          if ! lp_stop_watchers ksud; then
+              log_msg "stock temporary-root watcher did not stop"
+              exit 1
+          fi
+          if ! lp_stop_watchers ksud-lowpower; then
+              log_msg "previous module watcher did not stop"
+              lp_start_watcher "$STOCK" ksud || log_msg "stock watcher restart failed"
+              exit 1
+          fi
+          if ! lp_start_watcher "$WATCHER" ksud-lowpower; then
+              log_msg "standalone watcher failed; restoring stock watcher"
+              lp_start_watcher "$STOCK" ksud || log_msg "stock watcher fallback failed"
+              exit 1
           fi
 
-          # Stage the new executable before touching the active worker.
-          if ! cmp -s "$SRC" "$DST"; then
-              cp "$SRC" "$TMP" || exit 1
-              chown 0:0 "$TMP" 2>/dev/null || true
-              chmod 0755 "$TMP" || exit 1
-
-              # Stop only ksud temporary-root watch. The main ksud event daemon
-              # remains alive and continues handling manager/kernel events.
-              stop_watchers || {
-                  rm -f "$TMP"
-                  exit 1
-              }
-
-              if ! mv -f "$TMP" "$DST"; then
-                  rm -f "$TMP"
-                  "$DST" temporary-root watch >/dev/null 2>&1 &
-                  log_msg "atomic ksud replacement failed; original watcher restarted"
-                  exit 1
-              fi
-              restorecon "$DST" 2>/dev/null || true
-              RESTART_WATCHERS=1
-              log_msg "installed event-driven ksud"
-          fi
-
-          if ! has_watcher; then
-              if ! start_watcher; then
-                  log_msg "patched watcher failed; restoring original ksud"
-                  if restore_backup; then
-                      start_watcher || log_msg "original watcher also failed to start"
-                  fi
-                  exit 1
-              fi
-          fi
-
-          log_msg "event-driven temporary-root watcher active"
+          log_msg "standalone event-driven watcher active; stock ksud binary unchanged"
           exit 0
           EOF
 
           cat > "$MOD/restore.sh" <<'EOF'
           #!/system/bin/sh
-          DST="/data/adb/ksud"
-          BACKUP="/data/adb/ksud-lowpower.original"
-          TMP="/data/adb/.ksud-lowpower-restore.$$"
+          MODDIR=${0%/*}
+          STOCK="/data/adb/ksud"
+          . "$MODDIR/watcher-common.sh" || exit 1
 
           log_msg() {
               log -t ksud-lowpower "$1" 2>/dev/null || true
           }
 
-          is_watcher() {
-              IW_PID="$1"
-              [ -r "/proc/$IW_PID/cmdline" ] || return 1
-              IW_ARGS="$(tr '\000' ' ' < "/proc/$IW_PID/cmdline" 2>/dev/null)"
-              [ -n "$IW_ARGS" ] || return 1
-              set -- $IW_ARGS
-              [ "${1##*/}" = "ksud" ] &&
-                  [ "${2:-}" = "temporary-root" ] &&
-                  [ "${3:-}" = "watch" ]
-          }
-
-          has_watcher() {
-              for PROC in /proc/[0-9]*; do
-                  [ -d "$PROC" ] || continue
-                  is_watcher "${PROC##*/}" && return 0
-              done
-              return 1
-          }
-
-          stop_watchers() {
-              OLD_WATCHERS=""
-              for PROC in /proc/[0-9]*; do
-                  [ -d "$PROC" ] || continue
-                  PID=${PROC##*/}
-                  if is_watcher "$PID"; then
-                      kill -TERM "$PID" 2>/dev/null || true
-                      OLD_WATCHERS="$OLD_WATCHERS $PID"
-                  fi
-              done
-              for PID in $OLD_WATCHERS; do
-                  COUNT=0
-                  while kill -0 "$PID" 2>/dev/null && [ "$COUNT" -lt 30 ]; do
-                      sleep 0.1
-                      COUNT=$((COUNT + 1))
-                  done
-                  if kill -0 "$PID" 2>/dev/null; then
-                      kill -KILL "$PID" 2>/dev/null || true
-                  fi
-              done
-              COUNT=0
-              while has_watcher && [ "$COUNT" -lt 20 ]; do
-                  sleep 0.1
-                  COUNT=$((COUNT + 1))
-              done
-              if has_watcher; then
-                  log_msg "temporary-root watcher did not exit"
-                  return 1
-              fi
-              return 0
-          }
-
-          start_watcher() {
-              "$DST" temporary-root watch >/dev/null 2>&1 &
-              WATCH_PID=$!
-              COUNT=0
-              while [ "$COUNT" -lt 30 ]; do
-                  if has_watcher; then
-                      return 0
-                  fi
-                  if ! kill -0 "$WATCH_PID" 2>/dev/null; then
-                      break
-                  fi
-                  sleep 0.1
-                  COUNT=$((COUNT + 1))
-              done
-              has_watcher
-          }
-
-          [ -s "$BACKUP" ] && [ -x "$BACKUP" ] || {
-              log_msg "original ksud backup not found; nothing restored"
-              exit 0
-          }
-
-          stop_watchers || exit 1
-          cp "$BACKUP" "$TMP" || exit 1
-          chown 0:0 "$TMP" 2>/dev/null || true
-          chmod 0755 "$TMP" || exit 1
-          mv -f "$TMP" "$DST" || exit 1
-          restorecon "$DST" 2>/dev/null || true
-
-          # Retain the backup unless the original watcher is confirmed alive.
-          if ! start_watcher; then
-              log_msg "original watcher failed to start; rollback copy retained"
+          if ! lp_stop_watchers ksud-lowpower; then
+              log_msg "standalone watcher did not stop"
               exit 1
           fi
-          rm -f "$BACKUP"
-          log_msg "original ksud restored"
+          if lp_has_watcher ksud; then
+              log_msg "stock watcher already active"
+              exit 0
+          fi
+          [ -s "$STOCK" ] && [ -x "$STOCK" ] || {
+              log_msg "stock ksud missing; cannot restore stock watcher"
+              exit 1
+          }
+          if ! lp_start_watcher "$STOCK" ksud; then
+              log_msg "stock watcher failed to start"
+              exit 1
+          fi
+          log_msg "stock temporary-root watcher restored"
           exit 0
           EOF
 
@@ -363,6 +257,7 @@ jobs:
           cat > "$MOD/action.sh" <<'EOF'
           #!/system/bin/sh
           MODDIR=${0%/*}
+          touch "$MODDIR/disable"
           "$MODDIR/restore.sh"
           EOF
 
@@ -370,34 +265,36 @@ jobs:
           KSUD Low-Power Lease Watcher
 
           Target: OnePlus 9 Pro / lemonadep, LineageOS 24.0, Android 17.
-          SukiSU-Nova userspace source commit:
+          SukiSU-Nova source commit:
           c60f21b9e00e35e898f8d21e0612465b76b9beec
-          Source userspace temporary_root.rs blob:
-          137f37a47225e1b99ceae1ce8d244e2ab91852ee
 
-          This module replaces only /data/adb/ksud with an arm64 build from the
-          matching SukiSU-Nova userspace source plus the event-driven watcher fix.
-          It does not modify the kernel image or kernel configuration.
+          This is a KernelSU/SukiSU module ZIP, not an AnyKernel3 kernel ZIP.
+          Install with the KernelSU/SukiSU module installer and reboot.
 
-          The original executable is backed up to:
-          /data/adb/ksud-lowpower.original
+          Safety:
+          - Does NOT replace, overwrite, or back up /data/adb/ksud.
+          - Does NOT change the kernel image, kernel config, or main ksud daemon.
+          - Stops only the stock temporary-root watcher process.
+          - Starts a separate ksud-lowpower temporary-root watcher.
+          - If the new watcher fails, attempts to restart the stock watcher.
+          - Action disables this module and restores the stock watcher.
+          - Uninstall also restores the stock watcher.
 
-          The watcher uses inotify to detect lease-state file changes and a
-          non-wakeup CLOCK_BOOTTIME timerfd for the next lease deadline. The
-          existing 1 Hz polling loop is removed. The timer does not wake the phone
-          from suspend; an expired lease is processed after the device resumes.
+          Power behavior:
+          - inotify reacts to lease-state directory changes.
+          - CLOCK_BOOTTIME timerfd tracks the next lease deadline.
+          - The timer is non-wakeup and does not wake the phone from suspend.
+          - Expired leases are handled after resume; no 1 Hz polling remains.
 
-          The Action button and uninstall script restore the original ksud. The
-          module checks the replacement watcher at startup and rolls back to the
-          saved original if the patched watcher cannot start.
+          UAPI compatibility was checked against the builtin-new kernel source:
+          UAPI v6, app-profile v4, and matching GET/SET_APP_PROFILE ioctl layouts.
 
-          Rebuild this module whenever the pinned SukiSU userspace source changes.
-          Do not use the binary with another userspace build unless compatibility
-          has been verified.
+          Revalidate the source and ABI after any kernel or SukiSU update.
           EOF
 
-          chmod 0755 "$MOD/post-fs-data.sh" "$MOD/restore.sh" "$MOD/uninstall.sh" "$MOD/action.sh"
-          for SCRIPT in "$MOD/post-fs-data.sh" "$MOD/restore.sh" "$MOD/uninstall.sh" "$MOD/action.sh"; do
+
+          chmod 0755 "$MOD/post-fs-data.sh" "$MOD/restore.sh" "$MOD/uninstall.sh" "$MOD/action.sh" "$MOD/watcher-common.sh"
+          for SCRIPT in "$MOD/post-fs-data.sh" "$MOD/restore.sh" "$MOD/uninstall.sh" "$MOD/action.sh" "$MOD/watcher-common.sh"; do
             sh -n "$SCRIPT"
           done
           cd "$MOD"
