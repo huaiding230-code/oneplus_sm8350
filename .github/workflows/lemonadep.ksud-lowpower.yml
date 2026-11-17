@@ -369,7 +369,7 @@ jobs:
           done
           kill -0 "$LP_TEST_PID"
           test "$LP_LOCK_OK" -eq 1
-          if lp_holds_watch_lock "$"; then
+          if lp_holds_watch_lock "$BASHPID"; then
             echo "watcher lock detector accepted a process without the lock"
             exit 1
           fi
