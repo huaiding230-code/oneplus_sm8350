@@ -9240,21 +9240,23 @@ diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h b/techpac
 diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
 --- a/drivers/rpmsg/qcom_glink_native.c
 +++ b/drivers/rpmsg/qcom_glink_native.c
-@@ -8,3 +8,4 @@
--#include <linux/idr.h>
-+#include <linux/atomic.h>
-+#include <linux/idr.h>
- #include <linux/interrupt.h>
- #include <linux/io.h>
-diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
---- a/drivers/rpmsg/qcom_glink_native.c
-+++ b/drivers/rpmsg/qcom_glink_native.c
-@@ -1292,13 +1292,10 @@
+@@ -1100,6 +1100,8 @@
+ 	if (!left_size) {
+ 		spin_lock(&channel->recv_lock);
+ 		if (channel->ept.cb) {
++			if (channel->name && !strcmp(channel->name, "IPCRTR"))
++				glink_resume_pkt = true;
+ 			ret = channel->ept.cb(channel->ept.rpdev,
+ 					intent->data,
+ 					intent->offset,
+@@ -1292,13 +1294,12 @@
  	unsigned int param2;
  	unsigned int avail;
  	unsigned int cmd;
 +	struct glink_channel *channel;
 +	bool qrtr_data;
++	bool deferred_qrtr = false;
++	bool wake_sent = false;
  	int ret = 0;
  
 -	if (should_wake) {
@@ -9265,15 +9267,15 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  	/* To wakeup any blocking writers */
  	wake_up_all(&glink->tx_avail_notify);
  
-@@ -1313,6 +1310,31 @@
+@@ -1313,6 +1314,32 @@
  		param1 = le16_to_cpu(msg.param1);
  		param2 = le32_to_cpu(msg.param2);
  
 +		/*
-+		 * IPCRTR packets carry their own QRTR wake policy. Defer the
-+		 * generic GLINK wake until QRTR has identified the service.
++		 * Defer IPCRTR data wakeups to QRTR, where the source service
++		 * is known. All other GLINK traffic keeps the original wake path.
 +		 */
-+		if (should_wake) {
++		if (should_wake && !wake_sent) {
 +			qrtr_data = false;
 +			if (cmd == GLINK_CMD_TX_DATA ||
 +			    cmd == GLINK_CMD_TX_DATA_CONT) {
@@ -9286,17 +9288,31 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 +			}
 +
 +			if (qrtr_data) {
-+				glink_resume_pkt = true;
-+			} else if (cmpxchg(&should_wake, 1, 0)) {
++				deferred_qrtr = true;
++			} else {
 +				pr_info("%s: %d triggered %s\n", __func__,
 +					irq, glink->irqname);
 +				pm_system_wakeup();
++				wake_sent = true;
 +			}
 +		}
 +
  		switch (cmd) {
  		case GLINK_CMD_VERSION:
  		case GLINK_CMD_VERSION_ACK:
+@@ -1368,6 +1395,12 @@
+ 			break;
+ 	}
+ 
++	/* Unknown/empty IRQs and malformed deferred data retain safe wakeup. */
++	if (should_wake && !wake_sent && (!deferred_qrtr || ret)) {
++		pr_info("%s: %d triggered %s\n", __func__, irq, glink->irqname);
++		pm_system_wakeup();
++	}
++
+ 	return IRQ_HANDLED;
+ }
+ 
 diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 --- a/net/qrtr/qrtr.c
 +++ b/net/qrtr/qrtr.c
