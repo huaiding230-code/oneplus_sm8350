@@ -461,7 +461,7 @@ diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@@ -126,6 +126,29 @@
+@@ -126,6 +126,29 @@
  	ksu_allow(db, "init", "adb_data_file", "file", ALL);
  	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
  
