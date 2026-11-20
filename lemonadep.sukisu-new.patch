@@ -461,16 +461,10 @@ diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -126,6 +126,29 @@
+@@ -126,6 +126,23 @@
  	ksu_allow(db, "init", "adb_data_file", "file", ALL);
  	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
  
-+	/* Allow the main zygote to traverse adb_data_file during module scanning. */
-+	ksu_allow(db, "zygote", "adb_data_file", "dir", "search");
-+
-+	/* PowerHAL queries the vendor display configuration service. */
-+	ksu_allow(db, "hal_power_default", "vendor_hal_vnddisplayconfig_service", "service_manager", "find");
-+
 +	// Android 17 excludes system_file_type from init's generic restorecon grants.
 +	// ZN can leave staged module objects with these fallback labels; permit only
 +	// the traversal and relabel operations needed to move them to adb_data_file.
