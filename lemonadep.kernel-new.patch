@@ -16,7 +16,8 @@
 # Additional confirmed driver fixes: make the global Oplus display sysfs node
 # primary-display-only; serialize its singleton setup/teardown and roll back
 # sysfs/notifier/FFL resources; clean up Oplus panel allocation failures;
-# track CVP SYNX initialization; skip ADFR updates until a valid panel mode.
+# track CVP SYNX initialization; skip ADFR updates until a valid panel mode;
+# make GLINK suspend wakeups one-shot and exclude intentless links.
 #
 # Validation: generated as a single net diff from the supplied unpatched
 # kernel source subset to the tree after applying the original integration
@@ -9235,3 +9236,24 @@ diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h b/techpac
  
  /*
   * ipa_pm group names
+
+diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
+--- a/drivers/rpmsg/qcom_glink_native.c
++++ b/drivers/rpmsg/qcom_glink_native.c
+@@ -8,3 +8,4 @@
+-#include <linux/idr.h>
++#include <linux/atomic.h>
++#include <linux/idr.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+@@ -1295,8 +1296,9 @@ static irqreturn_t qcom_glink_native_intr(int irq, void *data)
+ 	int ret = 0;
+ 
+-	if (should_wake) {
++	/* Claim one suspend wakeup; intentless links do not wake the AP. */
++	if (!glink->intentless && cmpxchg(&should_wake, 1, 0)) {
+ 		pr_info("%s: %d triggered %s\n", __func__, irq, glink->irqname);
+ 		glink_resume_pkt = true;
+ 		pm_system_wakeup();
+ 	}
+ 	/* To wakeup any blocking writers */
