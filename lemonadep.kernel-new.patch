@@ -8562,7 +8562,7 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
  }
  
  ssize_t oplus_get_vsync_switch(struct kobject *obj,
-@@ -1081,37 +1092,43 @@
+@@ -1081,35 +1092,41 @@
  		if (oplus_adfr_get_vsync_mode() == OPLUS_EXTERNAL_TE_TP_VSYNC) {
  			if (display->panel->vsync_switch_gpio_level == OPLUS_VSYNC_SWITCH_TP) {
  				level = OPLUS_VSYNC_SWITCH_TE;
@@ -8575,8 +8575,6 @@ diff --git a/techpack/display/oplus/oplus_adfr.c b/techpack/display/oplus/oplus_
 +				} else {
 +					DSI_ERR("kVRR forced TE switch failed, rc=%d\n", rc);
 +				}
- 
- 				display->panel->force_te_vsync = true;
  			}
  		}
  	} else {
@@ -9331,7 +9329,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 --- a/net/qrtr/qrtr.c
 +++ b/net/qrtr/qrtr.c
-@@ -928,41 +928,54 @@
+@@ -928,40 +928,53 @@
  	qrtr_log_rx_msg(node, skb);
 +	/*
 +	 * Suppress only the periodic QMI DFS indications observed on
@@ -9384,7 +9382,6 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 -		    (node->nid == 5 && wake))
 +		if ((node->nid != 9 && node->nid != 5 && node->nid != 0) ||
 +		    ((node->nid == 5 || node->nid == 0) && wake))
- 		    (node->nid == 5 && wake))
  			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
  
  		qrtr_port_put(ipc);
