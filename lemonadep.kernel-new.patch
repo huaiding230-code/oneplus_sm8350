@@ -17,7 +17,8 @@
 # primary-display-only; serialize its singleton setup/teardown and roll back
 # sysfs/notifier/FFL resources; clean up Oplus panel allocation failures;
 # track CVP SYNX initialization; skip ADFR updates until a valid panel mode;
-# make GLINK suspend wakeups one-shot and exclude intentless links.
+# make GLINK suspend wakeups one-shot and exclude intentless links;
+# suppress only modem QMI DFS (service 0x30) wakeups without dropping packets.
 #
 # Validation: generated as a single net diff from the supplied unpatched
 # kernel source subset to the tree after applying the original integration
@@ -9257,3 +9258,52 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  		pm_system_wakeup();
  	}
  	/* To wakeup any blocking writers */
+
+diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
+--- a/net/qrtr/qrtr.c
++++ b/net/qrtr/qrtr.c
+@@ -140,6 +140,9 @@
+ /* backup buffers */
+ #define QRTR_BACKUP_HI_NUM	5
+ #define QRTR_BACKUP_HI_SIZE	SZ_16K
+ #define QRTR_BACKUP_LO_NUM	20
+ #define QRTR_BACKUP_LO_SIZE	SZ_1K
+ 
++/* Modem node 0 uses QMI DFS (service ID 0x30). */
++#define QRTR_MODEM_NODE_ID 0
++#define QRTR_MODEM_NON_WAKE_SVC_DFS 0x30
++
+ static struct sk_buff_head qrtr_backup_lo;
+ static struct sk_buff_head qrtr_backup_hi;
+ static struct work_struct qrtr_backup_work;
+@@ -943,11 +946,15 @@
+-		if (node->nid == 5) {
++		if (node->nid == QRTR_MODEM_NODE_ID) {
++			svc_id = qrtr_get_service_id(cb->src_node, cb->src_port);
++			/* QMI DFS is non-wakeup traffic; keep queueing the packet. */
++			if (svc_id == QRTR_MODEM_NON_WAKE_SVC_DFS)
++				wake = false;
++		} else if (node->nid == 5) {
+ 			svc_id = qrtr_get_service_id(cb->src_node, cb->src_port);
+ 			if (svc_id > 0) {
+ 				for (i = 0; i < node->no_wake_svc.size; i++) {
+ 					if (svc_id == node->no_wake_svc.arr[i]) {
+ 						wake = false;
+ 						break;
+ 					}
+ 				}
+ 			}
+ 		}
+@@ -958,7 +965,8 @@
+ 		/**
+-		 * Force wakeup for all packets except for sensors and blacklisted services
+-		 * from adsp side
++		 * Force wakeup except for ADSP's configured non-wakeup services
++		 * and the modem's QMI DFS maintenance service.
+ 		 */
+-		if ((node->nid != 9 && node->nid != 5) ||
+-		    (node->nid == 5 && wake))
++		if ((node->nid != 9 && node->nid != 5 &&
++		     node->nid != QRTR_MODEM_NODE_ID) ||
++		    ((node->nid == 5 || node->nid == QRTR_MODEM_NODE_ID) && wake))
+ 			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
