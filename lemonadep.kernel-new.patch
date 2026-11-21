@@ -2583,7 +2583,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2675 @@
+@@ -0,0 +1,2679 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -2624,10 +2624,7 @@ new file mode 100644
 + * paths.  The generic hash_for_each_possible_rcu() macro has no SRCU lockdep
 + * condition, so use the underlying hlist primitive with the right condition.
 + */
-+#define hash_for_each_possible_srcu(name, obj, member, key, srcu) \
-+	hlist_for_each_entry_rcu(obj, \
-+		&name[hash_min(key, HASH_BITS(name))], member, \
-+		srcu_read_lock_held(srcu))
++#define hash_for_each_possible_srcu(name, obj, member, key, srcu) hlist_for_each_entry_rcu(obj, &name[hash_min(key, HASH_BITS(name))], member, srcu_read_lock_held(srcu))
 +
 +static inline int susfs_validate_pathname(const char *pathname, size_t size)
 +{
@@ -2663,6 +2660,8 @@ new file mode 100644
 +#else
 +#define SUSFS_LOGI(fmt, ...)
 +#define SUSFS_LOGE(fmt, ...)
++#define SUSFS_LOGI_RL(fmt, ...) SUSFS_LOGI(fmt, ##__VA_ARGS__)
++#define SUSFS_LOGE_RL(fmt, ...) SUSFS_LOGE(fmt, ##__VA_ARGS__)
 +#endif
 +
 +static DEFINE_MUTEX(susfs_mutex_lock_sus_type);
@@ -4988,6 +4987,11 @@ new file mode 100644
 +	if (info->err) goto out_copy_to_user;
 +	buf_ptr = info->enabled_features + copied_size;
 +#endif
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
++	info->err = copy_config_to_buf("CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\n", buf_ptr, &copied_size, SUSFS_ENABLED_FEATURES_SIZE);
++	if (info->err) goto out_copy_to_user;
++	buf_ptr = info->enabled_features + copied_size;
++#endif
 +
 +	info->err = 0;
 +out_copy_to_user:
@@ -5251,7 +5255,7 @@ new file mode 100644
 +}
 +
 +/* susfs_init */
-+void susfs_init(void) {\
++void susfs_init(void) {
 +	SUSFS_LOGI("Initializing susfs_extra_works\n");
 +	INIT_WORK(&susfs_extra_works, susfs_run_extra_works);
 +	SUSFS_LOGI("susfs is initialized! version: " SUSFS_VERSION " \n");
@@ -5854,7 +5858,7 @@ diff --git a/include/linux/susfs_def.h b/include/linux/susfs_def.h
 new file mode 100644
 --- /dev/null
 +++ b/include/linux/susfs_def.h
-@@ -0,0 +1,174 @@
+@@ -0,0 +1,166 @@
 +#ifndef KSU_SUSFS_DEF_H
 +#define KSU_SUSFS_DEF_H
 +
@@ -6015,19 +6019,11 @@ new file mode 100644
 +	clear_thread_flag(TIF_PROC_NO_SU);
 +}
 +
-+#define SUSFS_IS_INODE_SUS_MAP(inode) \
-+		((inode) && (inode)->i_mapping && \
-+		 unlikely(test_bit(AS_FLAGS_SUS_MAP, &(inode)->i_mapping->flags)) && \
-+		 susfs_is_current_proc_umounted_app())
++#define SUSFS_IS_INODE_SUS_MAP(inode) ((inode) && (inode)->i_mapping && unlikely(test_bit(AS_FLAGS_SUS_MAP, &(inode)->i_mapping->flags)) && susfs_is_current_proc_umounted_app())
 +
-+#define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) \
-+		((inode) && (inode)->i_mapping && \
-+		 unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &(inode)->i_mapping->flags)))
++#define SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode) ((inode) && (inode)->i_mapping && unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &(inode)->i_mapping->flags)))
 +
-+#define SUSFS_IS_INODE_OPEN_REDIRECT(inode) \
-+		((inode) && (inode)->i_mapping && \
-+		 unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &(inode)->i_mapping->flags)) && \
-+		 susfs_is_current_proc_umounted_app())
++#define SUSFS_IS_INODE_OPEN_REDIRECT(inode) ((inode) && (inode)->i_mapping && unlikely(test_bit(AS_FLAGS_OPEN_REDIRECT, &(inode)->i_mapping->flags)) && susfs_is_current_proc_umounted_app())
 +#endif // #ifndef KSU_SUSFS_DEF_H
 
 diff --git a/init/Kconfig b/init/Kconfig
