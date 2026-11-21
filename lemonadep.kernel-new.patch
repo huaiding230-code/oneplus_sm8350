@@ -30,6 +30,8 @@
 
 # Open Redirect 5.4 alignment: drop non-upstream absolute/generation extensions; keep bounded string checks and 5.4 readlink byte-count contract.
 
+# Open Redirect parity cleanup: upstream inode-marker-first fast gate and duplicate/reverse-entry replacement; remove custom UID-scheme mask/conflict policy; retain Linux 5.4 filename and readlink API semantics.
+
 diff --git a/drivers/Makefile b/drivers/Makefile
 index aaef17c..daaf7f1 100644
 --- a/drivers/Makefile
@@ -184,7 +186,7 @@ index 910b407d267ec799dcfc3e0f2688657a03e123bc..463376611f06073c7a658f0eacf75c57
 diff --git a/fs/namei.c b/fs/namei.c
 --- a/fs/namei.c
 +++ b/fs/namei.c
-@@ -38,15 +38,27 @@
+@@ -38,15 +38,26 @@
  #include <linux/hash.h>
  #include <linux/bitops.h>
  #include <linux/init_task.h>
@@ -205,14 +207,13 @@ diff --git a/fs/namei.c b/fs/namei.c
 +#endif
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 +extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
-+extern bool susfs_open_redirect_should_lookup(void);
 +#endif
 +
  /* [Feb-1997 T. Schoebel-Theuer]
   * Fundamental changes in the pathname lookup mechanisms (namei)
   * were necessary because of omirr.  The reason is that omirr needs
   * to know the _real_ pathname, not the user-supplied one, in case
-@@ -493,8 +505,11 @@
+@@ -493,8 +504,11 @@
  	struct qstr	last;
  	struct path	root;
  	struct inode	*inode; /* path.dentry.d_inode */
@@ -224,7 +225,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	int		last_type;
  	unsigned	depth;
  	int		total_link_count;
-@@ -519,8 +534,11 @@
+@@ -519,8 +533,11 @@
  	p->name = name;
  	p->total_link_count = old ? old->total_link_count : 0;
  	p->saved = old;
@@ -236,7 +237,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  
  static void restore_nameidata(void)
  {
-@@ -1591,8 +1609,16 @@
+@@ -1591,8 +1608,16 @@
  			dput(dentry);
  			return ERR_PTR(error);
  		}
@@ -253,7 +254,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  }
  
  /*
-@@ -1607,8 +1633,11 @@
+@@ -1607,8 +1632,11 @@
  {
  	struct dentry *dentry = lookup_dcache(name, base, flags);
  	struct dentry *old;
@@ -265,7 +266,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	if (dentry)
  		return dentry;
  
-@@ -1616,16 +1645,39 @@
+@@ -1616,16 +1644,39 @@
  	if (unlikely(IS_DEADDIR(dir)))
  		return ERR_PTR(-ENOENT);
  
@@ -305,7 +306,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  }
  
  static int lookup_fast(struct nameidata *nd,
-@@ -1635,8 +1687,11 @@
+@@ -1635,8 +1686,11 @@
  	struct vfsmount *mnt = nd->path.mnt;
  	struct dentry *dentry, *parent = nd->path.dentry;
  	int status = 1;
@@ -317,7 +318,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	/*
  	 * Rename seqlock is not required here because in the off chance
  	 * of a false negative due to a concurrent rename, the caller is
-@@ -1645,8 +1700,18 @@
+@@ -1645,8 +1699,18 @@
  	if (nd->flags & LOOKUP_RCU) {
  		unsigned seq;
  		bool negative;
@@ -336,7 +337,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  			if (unlazy_walk(nd))
  				return -ECHILD;
  			return 0;
-@@ -1691,8 +1756,18 @@
+@@ -1691,8 +1755,18 @@
  			/* we'd been told to redo it in non-rcu mode */
  			status = d_revalidate(dentry, nd->flags);
  	} else {
@@ -355,7 +356,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  			return 0;
  		status = d_revalidate(dentry, nd->flags);
  	}
-@@ -1722,14 +1797,21 @@
+@@ -1722,14 +1796,21 @@
  {
  	struct dentry *dentry, *old;
  	struct inode *inode = dir->d_inode;
@@ -377,7 +378,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  		return dentry;
  	if (unlikely(!d_in_lookup(dentry))) {
  		if (!(flags & LOOKUP_NO_REVAL)) {
-@@ -1737,8 +1819,14 @@
+@@ -1737,8 +1818,14 @@
  			if (unlikely(error <= 0)) {
  				if (!error) {
  					d_invalidate(dentry);
@@ -392,7 +393,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  				}
  				dput(dentry);
  				dentry = ERR_PTR(error);
-@@ -1751,8 +1839,21 @@
+@@ -1751,8 +1838,21 @@
  			dput(dentry);
  			dentry = old;
  		}
@@ -414,7 +415,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  }
  
  static struct dentry *lookup_slow(const struct qstr *name,
-@@ -1881,8 +1982,13 @@
+@@ -1881,8 +1981,13 @@
  	err = lookup_fast(nd, &path, &inode, &seq);
  	if (unlikely(err <= 0)) {
  		if (err < 0)
@@ -428,7 +429,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  					  nd->flags);
  		if (IS_ERR(path.dentry))
  			return PTR_ERR(path.dentry);
-@@ -2154,9 +2260,17 @@
+@@ -2154,9 +2259,17 @@
  	/* At this point we know we have a real path component. */
  	for(;;) {
  		u64 hash_len;
@@ -446,7 +447,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  		if (err)
  			return err;
  
-@@ -2342,8 +2456,11 @@
+@@ -2342,8 +2455,11 @@
  static inline int lookup_last(struct nameidata *nd)
  {
  	if (nd->last_type == LAST_NORM && nd->last.name[nd->last.len])
@@ -458,7 +459,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	nd->flags &= ~LOOKUP_PARENT;
  	return walk_component(nd, 0);
  }
-@@ -3281,17 +3398,40 @@
+@@ -3281,17 +3397,40 @@
  	struct dentry *dentry;
  	int error, create_error = 0;
  	umode_t mode = op->mode;
@@ -499,22 +500,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  				return PTR_ERR(dentry);
  		}
  		if (d_in_lookup(dentry))
-@@ -3344,9 +3484,14 @@
- 		 */
- 		goto no_open;
- 	}
- 
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+	if (dir_inode->i_op->atomic_open &&
-+	    !(nd->dfd != -1 && susfs_open_redirect_should_lookup())) {
-+#else
- 	if (dir_inode->i_op->atomic_open) {
-+#endif
- 		error = atomic_open(nd, dentry, path, file, op, open_flag,
- 				    mode);
- 		if (unlikely(error == -ENOENT) && create_error)
- 			error = create_error;
-@@ -3386,8 +3531,15 @@
+@@ -3386,8 +3525,15 @@
  		error = create_error;
  		goto out_dput;
  	}
@@ -530,7 +516,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	path->mnt = nd->path.mnt;
  	return 0;
  
-@@ -3395,9 +3547,44 @@
+@@ -3395,9 +3541,43 @@
  	dput(dentry);
  	return error;
  }
@@ -548,8 +534,7 @@ diff --git a/fs/namei.c b/fs/namei.c
 +	struct inode *inode = d_backing_inode(path->dentry);
 +	int error;
 +
-+	if (nd->dfd == -1 || !susfs_open_redirect_should_lookup() ||
-+	    !inode ||
++	if (nd->dfd == -1 || !inode ||
 +	    !SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode))
 +		return 0;
 +
@@ -575,7 +560,7 @@ diff --git a/fs/namei.c b/fs/namei.c
   */
  static int do_last(struct nameidata *nd,
  		   struct file *file, const struct open_flags *op)
-@@ -3407,15 +3594,22 @@
+@@ -3407,15 +3587,22 @@
  	umode_t dir_mode = nd->inode->i_mode;
  	int open_flag = op->open_flag;
  	bool will_truncate = (open_flag & O_TRUNC) != 0;
@@ -598,7 +583,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  
  	if (nd->last_type != LAST_NORM) {
  		error = handle_dots(nd, nd->last_type);
-@@ -3508,8 +3702,20 @@
+@@ -3508,8 +3695,22 @@
  	error = follow_managed(&path, nd);
  	if (unlikely(error < 0))
  		return error;
@@ -607,7 +592,9 @@ diff --git a/fs/namei.c b/fs/namei.c
 +	/* O_CREAT and ref-walk opens reach here with a referenced path. */
 +	error = susfs_open_redirect_path(nd, &path,
 +			(op->lookup_flags | nd->flags) &
-+			(LOOKUP_FOLLOW | LOOKUP_DIRECTORY | LOOKUP_REVAL));
++			(LOOKUP_FOLLOW | LOOKUP_DIRECTORY | LOOKUP_REVAL |
++			 LOOKUP_NO_REVAL | LOOKUP_AUTOMOUNT | LOOKUP_DOWN |
++			 LOOKUP_EMPTY));
 +	if (error < 0) {
 +		path_put(&path);
 +		return error;
@@ -619,7 +606,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  		path_to_nameidata(&path, nd);
  		return -ENOENT;
  	}
-@@ -3534,8 +3740,19 @@
+@@ -3534,8 +3735,21 @@
  	/* Why this, you ask?  _Now_ we might have grown LOOKUP_JUMPED... */
  	error = complete_walk(nd);
  	if (error)
@@ -628,7 +615,9 @@ diff --git a/fs/namei.c b/fs/namei.c
 +	if (!susfs_redirect_checked) {
 +		error = susfs_open_redirect_path(nd, &nd->path,
 +				(op->lookup_flags | nd->flags) &
-+				(LOOKUP_FOLLOW | LOOKUP_DIRECTORY | LOOKUP_REVAL));
++				(LOOKUP_FOLLOW | LOOKUP_DIRECTORY | LOOKUP_REVAL |
++			 LOOKUP_NO_REVAL | LOOKUP_AUTOMOUNT | LOOKUP_DOWN |
++			 LOOKUP_EMPTY));
 +		if (error < 0)
 +			goto out;
 +		if (error > 0)
@@ -639,7 +628,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	if (open_flag & O_CREAT) {
  		error = -EISDIR;
  		if (d_is_dir(nd->path.dentry))
-@@ -3622,11 +3839,36 @@
+@@ -3622,11 +3836,36 @@
  static int do_tmpfile(struct nameidata *nd, unsigned flags,
  		const struct open_flags *op,
  		struct file *file)
@@ -652,7 +641,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	struct path path;
  	int error = path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path);
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+	if (!error && old_dfd != -1 && susfs_open_redirect_should_lookup() &&
++	if (!error && old_dfd != -1 &&
 +	    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(path.dentry->d_inode)) {
 +		struct path fake_path;
 +
@@ -676,7 +665,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  		return error;
  	error = mnt_want_write(path.mnt);
  	if (unlikely(error))
-@@ -3652,11 +3894,36 @@
+@@ -3652,11 +3891,36 @@
  }
  
  static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
@@ -689,7 +678,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	int error = path_lookupat(nd, flags, &path);
  	if (!error) {
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+		if (old_dfd != -1 && susfs_open_redirect_should_lookup() &&
++		if (old_dfd != -1 &&
 +		    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(path.dentry->d_inode)) {
 +			struct path fake_path;
 +
@@ -713,7 +702,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  		error = vfs_open(&path, file);
  		path_put(&path);
  	}
-@@ -4885,15 +5152,29 @@
+@@ -4885,15 +5149,29 @@
   * Does not touch atime.  That's up to the caller if necessary
   *
   * Does not call security hook.
@@ -2576,7 +2565,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2761 @@
+@@ -0,0 +1,2625 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -4098,139 +4087,67 @@ new file mode 100644
 +static DEFINE_MUTEX(susfs_mutex_lock_open_redirect);
 +static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, 14);
 +DEFINE_SRCU(susfs_srcu_open_redirect);
-+static unsigned long susfs_open_redirect_uid_scheme_mask;
-+
-+/*
-+ * Avoid filename_lookup() for process classes that cannot match any installed
-+ * rule. Keep inode matching for eligible classes to preserve hard-link,
-+ * symlink and dfd-relative lookup semantics.
-+ */
-+bool susfs_open_redirect_should_lookup(void)
-+{
-+	unsigned long mask = READ_ONCE(susfs_open_redirect_uid_scheme_mask);
-+	uid_t uid = current_uid().val;
-+	bool is_ksu = false;
-+	bool checked_ksu = false;
-+
-+	if (!mask)
-+		return false;
-+
-+	if ((mask & (1UL << UID_NON_APP_PROC)) && uid % 100000 < 10000)
-+		return true;
-+
-+	if (mask & (1UL << UID_ROOT_PROC_EXCEPT_SU_PROC)) {
-+		is_ksu = susfs_is_current_ksu_domain();
-+		checked_ksu = true;
-+		if (!uid && !is_ksu)
-+			return true;
-+	}
-+
-+	if (mask & (1UL << UID_NON_SU_PROC)) {
-+		if (!checked_ksu)
-+			is_ksu = susfs_is_current_ksu_domain();
-+		if (!is_ksu)
-+			return true;
-+	}
-+
-+	if ((mask & (1UL << UID_UMOUNTED_APP_PROC)) &&
-+	    susfs_is_current_proc_umounted_app())
-+		return true;
-+
-+	if ((mask & (1UL << UID_UMOUNTED_PROC)) &&
-+	    susfs_is_current_proc_umounted())
-+		return true;
-+
-+	return false;
-+}
-+
 +void susfs_add_open_redirect(void __user **user_info) {
 +	struct st_susfs_open_redirect info = {0};
-+	struct st_susfs_open_redirect_hlist *new_entry_target, *new_entry_redirected;
-+	struct st_susfs_open_redirect_hlist *entry, *old_target = NULL;
-+	struct st_susfs_open_redirect_hlist *old_reverse = NULL;
-+	struct st_susfs_open_redirect_hlist *mask_entry;
++	struct st_susfs_open_redirect_hlist *new_entry_target, *new_entry_redirected, *tmp_entry_target, *tmp_entry_redirected;
 +	struct hlist_node *tmp_hlist_node;
-+	int mask_bucket;
 +	struct path target_path, redirected_path;
 +	struct inode *target_inode, *redirected_inode;
-+	struct kstatfs target_kstatfs;
-+	int bucket;
-+	bool redirect_conflict = false;
-+
++	bool is_first_dup_found = false;
++	bool is_second_dup_found = false;
 +	if (copy_from_user(&info, (struct st_susfs_open_redirect __user*)*user_info, sizeof(info))) {
 +		info.err = -EFAULT;
 +		goto out_copy_to_user;
 +	}
-+
-+	info.err = susfs_validate_pathname(info.target_pathname,
-+					  sizeof(info.target_pathname));
++	info.err = susfs_validate_pathname(info.target_pathname, sizeof(info.target_pathname));
 +	if (!info.err)
-+		info.err = susfs_validate_pathname(info.redirected_pathname,
-+						  sizeof(info.redirected_pathname));
-+	if (info.err) {
-+		SUSFS_LOGE("invalid open_redirect pathname (%d)\n", info.err);
-+                goto out_copy_to_user;
-+        }
-+
++		info.err = susfs_validate_pathname(info.redirected_pathname, sizeof(info.redirected_pathname));
++	if (info.err)
++		goto out_copy_to_user;
 +	if (info.uid_scheme < UID_NON_APP_PROC || info.uid_scheme > UID_UMOUNTED_PROC) {
 +		info.err = -EINVAL;
 +		SUSFS_LOGE("invalid uid scheme: %d\n", info.uid_scheme);
-+                goto out_copy_to_user;
++		goto out_copy_to_user;
 +	}
-+
 +	info.err = kern_path(info.redirected_pathname, 0, &redirected_path);
 +	if (info.err) {
 +		SUSFS_LOGE("failed opening redirected file '%s'\n", info.redirected_pathname);
 +		goto out_copy_to_user;
 +	}
-+
 +	info.err = kern_path(info.target_pathname, 0, &target_path);
 +	if (info.err) {
 +		SUSFS_LOGE("failed opening target file '%s'\n", info.target_pathname);
 +		goto out_path_put_redirected_path;
 +	}
-+
 +	redirected_inode = d_backing_inode(redirected_path.dentry);
 +	if (!redirected_inode || !redirected_inode->i_mapping) {
 +		SUSFS_LOGE("redirected_inode || redirected_inode->i_mapping is NULL\n");
 +		info.err = -ENOENT;
 +		goto out_path_put_target_path;
 +	}
-+
 +	target_inode = d_backing_inode(target_path.dentry);
 +	if (!target_inode || !target_inode->i_mapping) {
 +		SUSFS_LOGE("target_inode || target_inode->i_mapping is NULL\n");
 +		info.err = -ENOENT;
 +		goto out_path_put_target_path;
 +	}
-+
 +	if (redirected_inode->i_sb->s_magic == FUSE_SUPER_MAGIC ||
 +	    target_inode->i_sb->s_magic == FUSE_SUPER_MAGIC) {
 +		SUSFS_LOGE("FUSE fs is not supported for open_redirect feature\n");
 +		info.err = -EINVAL;
 +		goto out_path_put_target_path;
 +	}
-+
-+	info.err = vfs_statfs(&target_path, &target_kstatfs);
-+	if (info.err) {
-+		SUSFS_LOGE("vfs_statfs() failed for target '%s': %d\n",
-+			   info.target_pathname, info.err);
-+		goto out_path_put_target_path;
-+	}
-+
 +	new_entry_target = kzalloc(sizeof(struct st_susfs_open_redirect_hlist), GFP_KERNEL);
 +	if (!new_entry_target) {
 +		info.err = -ENOMEM;
 +		goto out_path_put_target_path;
 +	}
-+
 +	new_entry_redirected = kzalloc(sizeof(struct st_susfs_open_redirect_hlist), GFP_KERNEL);
 +	if (!new_entry_redirected) {
 +		info.err = -ENOMEM;
 +		kfree(new_entry_target);
 +		goto out_path_put_target_path;
 +	}
-+
 +	new_entry_target->target_ino = target_inode->i_ino;
 +	new_entry_target->target_dev = target_inode->i_sb->s_dev;
 +	new_entry_target->redirected_ino = redirected_inode->i_ino;
@@ -4238,11 +4155,8 @@ new file mode 100644
 +	new_entry_target->info.uid_scheme = info.uid_scheme;
 +	new_entry_target->reversed_lookup_only = false;
 +	new_entry_target->spoofed_mnt_id = real_mount(target_path.mnt)->mnt_id;
-+	memcpy(&new_entry_target->spoofed_kstatfs, &target_kstatfs,
-+	       sizeof(target_kstatfs));
-+	info.err = 0;
++	(void)vfs_statfs(&target_path, &new_entry_target->spoofed_kstatfs);
 +	memcpy(&new_entry_target->info, &info, sizeof(info));
-+
 +	new_entry_redirected->target_ino = redirected_inode->i_ino;
 +	new_entry_redirected->target_dev = redirected_inode->i_sb->s_dev;
 +	new_entry_redirected->redirected_ino = target_inode->i_ino;
@@ -4251,115 +4165,54 @@ new file mode 100644
 +	new_entry_redirected->reversed_lookup_only = true;
 +	new_entry_redirected->spoofed_mnt_id = new_entry_target->spoofed_mnt_id;
 +	memcpy(&new_entry_redirected->spoofed_kstatfs, &new_entry_target->spoofed_kstatfs, sizeof(struct kstatfs));
-+	strscpy(new_entry_redirected->info.target_pathname,
-+		info.redirected_pathname,
-+		sizeof(new_entry_redirected->info.target_pathname));
-+	strscpy(new_entry_redirected->info.redirected_pathname,
-+		info.target_pathname,
-+		sizeof(new_entry_redirected->info.redirected_pathname));
-+
-+	/*
-+	 * A redirected pathname can have only one reverse mapping.  Multiple
-+	 * different source paths pointing at the same destination would make
-+	 * readlink/maps spoofing ambiguous.
-+	 */
++	strscpy(new_entry_redirected->info.target_pathname, info.redirected_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
++	strscpy(new_entry_redirected->info.redirected_pathname, info.target_pathname, SUSFS_MAX_LEN_PATHNAME - 1);
 +	mutex_lock(&susfs_mutex_lock_open_redirect);
-+	hash_for_each_safe(OPEN_REDIRECT_HLIST, bucket, tmp_hlist_node, entry, node) {
-+		if (entry->reversed_lookup_only &&
-+		    !strcmp(entry->info.target_pathname,
-+			    info.redirected_pathname) &&
-+		    strcmp(entry->info.redirected_pathname,
-+			   info.target_pathname)) {
-+			redirect_conflict = true;
++	hash_for_each_possible_safe(OPEN_REDIRECT_HLIST, tmp_entry_target, tmp_hlist_node, node, target_inode->i_ino) {
++		if (!strcmp(tmp_entry_target->info.target_pathname, info.target_pathname)) {
++			if (tmp_entry_target->reversed_lookup_only) {
++				SUSFS_LOGE("duplicated '%s' cannot be removed/added because it is used for reversed lookup only\n", info.target_pathname);
++				mutex_unlock(&susfs_mutex_lock_open_redirect);
++				info.err = -EINVAL;
++				kfree(new_entry_redirected);
++				kfree(new_entry_target);
++				goto out_path_put_target_path;
++			}
++			is_first_dup_found = true;
++			hash_del_rcu(&tmp_entry_target->node);
 +			break;
 +		}
 +	}
-+	if (redirect_conflict) {
-+		mutex_unlock(&susfs_mutex_lock_open_redirect);
-+		info.err = -EEXIST;
-+		kfree(new_entry_redirected);
-+		kfree(new_entry_target);
-+		goto out_path_put_target_path;
-+	}
-+
-+	/* Find an existing rule by pathname, not by the current inode number.
-+	 * The file at a pathname may have been replaced since the old rule was
-+	 * installed, in which case hashing by the new inode would miss it.
-+	 */
-+	hash_for_each_safe(OPEN_REDIRECT_HLIST, bucket, tmp_hlist_node, entry, node) {
-+		if (!entry->reversed_lookup_only &&
-+		    !strcmp(entry->info.target_pathname, info.target_pathname)) {
-+			old_target = entry;
-+			hash_del_rcu(&old_target->node);
-+			break;
-+		}
-+	}
-+
-+	/* Remove the paired reverse entry belonging to the replaced rule. */
-+	if (old_target) {
-+		hash_for_each_safe(OPEN_REDIRECT_HLIST, bucket,
-+				   tmp_hlist_node, entry, node) {
-+			if (entry->reversed_lookup_only &&
-+			    entry->target_ino == old_target->redirected_ino &&
-+			    entry->target_dev == old_target->redirected_dev &&
-+			    !strcmp(entry->info.target_pathname,
-+				    old_target->info.redirected_pathname) &&
-+			    !strcmp(entry->info.redirected_pathname,
-+				    old_target->info.target_pathname)) {
-+				old_reverse = entry;
-+				hash_del_rcu(&old_reverse->node);
++	if (is_first_dup_found) {
++		hash_for_each_possible_safe(OPEN_REDIRECT_HLIST, tmp_entry_redirected, tmp_hlist_node, node, redirected_inode->i_ino) {
++			if (!strcmp(tmp_entry_redirected->info.target_pathname, info.redirected_pathname)) {
++				is_second_dup_found = true;
++				hash_del_rcu(&tmp_entry_redirected->node);
 +				break;
 +			}
 +		}
 +	}
-+
-+	SUSFS_LOGI("target_pathname: '%s', redirected_pathname: '%s', target_i_ino: '%lu', redirected_i_ino: '%lu', target_s_dev: '%lu', redirected_s_dev: '%lu', uid_scheme: '%d', reversed_lookup_only: %d, spoofed_mnt_id: %d, is successfully added to OPEN_REDIRECT_HLIST\n",
-+		new_entry_target->info.target_pathname, new_entry_target->info.redirected_pathname, new_entry_target->target_ino, new_entry_target->redirected_ino, new_entry_target->target_dev, new_entry_target->redirected_dev, new_entry_target->info.uid_scheme, new_entry_target->reversed_lookup_only, new_entry_target->spoofed_mnt_id);
-+	SUSFS_LOGI("target_pathname: '%s', redirected_pathname: '%s', target_i_ino: '%lu', redirected_i_ino: '%lu', target_s_dev: '%lu', redirected_s_dev: '%lu', uid_scheme: '%d', reversed_lookup_only: %d, spoofed_mnt_id: %d, is successfully added to OPEN_REDIRECT_HLIST\n",
-+		new_entry_redirected->info.target_pathname, new_entry_redirected->info.redirected_pathname, new_entry_redirected->target_ino, new_entry_redirected->redirected_ino, new_entry_redirected->target_dev, new_entry_redirected->redirected_dev, new_entry_redirected->info.uid_scheme, new_entry_redirected->reversed_lookup_only, new_entry_redirected->spoofed_mnt_id);
-+	/* Publish the filter bit before exposing a new rule; stale bits only
-+	 * cause a harmless extra lookup if a rule is later replaced.
-+	 */
-+	WRITE_ONCE(susfs_open_redirect_uid_scheme_mask,
-+		   READ_ONCE(susfs_open_redirect_uid_scheme_mask) |
-+		   (1UL << info.uid_scheme));
-+	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node,
-+		     new_entry_target->target_ino);
-+	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node,
-+		     new_entry_redirected->target_ino);
-+	{
-+		unsigned long active_uid_scheme_mask = 0;
-+
-+		hash_for_each(OPEN_REDIRECT_HLIST, mask_bucket, mask_entry, node) {
-+			if (!mask_entry->reversed_lookup_only)
-+				active_uid_scheme_mask |=
-+					1UL << mask_entry->info.uid_scheme;
-+		}
-+		WRITE_ONCE(susfs_open_redirect_uid_scheme_mask,
-+			   active_uid_scheme_mask);
-+	}
++	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node, new_entry_target->target_ino);
++	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node, new_entry_redirected->target_ino);
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
 +	mutex_unlock(&susfs_mutex_lock_open_redirect);
-+
-+	if (old_target || old_reverse) {
++	if (is_first_dup_found) {
 +		synchronize_srcu(&susfs_srcu_open_redirect);
-+		kfree(old_reverse);
-+		kfree(old_target);
++		if (is_second_dup_found)
++			kfree(tmp_entry_redirected);
++		kfree(tmp_entry_target);
 +	}
 +	info.err = 0;
-+
 +out_path_put_target_path:
 +	path_put(&target_path);
 +out_path_put_redirected_path:
 +	path_put(&redirected_path);
 +out_copy_to_user:
-+	if (copy_to_user(&((struct st_susfs_open_redirect __user*)*user_info)->err, &info.err, sizeof(info.err))) {
++	if (copy_to_user(&((struct st_susfs_open_redirect __user*)*user_info)->err, &info.err, sizeof(info.err)))
 +		info.err = -EFAULT;
-+	}
 +	SUSFS_LOGI("CMD_SUSFS_ADD_OPEN_REDIRECT -> ret: %d\n", info.err);
 +}
-+
 +struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode) {
 +	struct st_susfs_open_redirect_hlist *entry = NULL;
 +	struct filename *new_filename = NULL;
