@@ -1009,7 +1009,7 @@ diff --git a/fs/open.c b/fs/open.c
 index 3f9f5fda8ebf772b6fa3644b17c98d72c2fdc446..ccc2d7627ecfcaffe901613cd05049242ec75ad1 100644
 --- a/fs/open.c
 +++ b/fs/open.c
-@@ -33,8 +33,26 @@
+@@ -33,8 +33,27 @@
  #include <linux/dnotify.h>
  #include <linux/compat.h>
  
@@ -1020,6 +1020,7 @@ index 3f9f5fda8ebf772b6fa3644b17c98d72c2fdc446..ccc2d7627ecfcaffe901613cd0504924
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 +#include <linux/susfs.h>
 +extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
++extern bool susfs_open_redirect_should_lookup(void);
 +#endif
 +
  #include "internal.h"
@@ -1079,9 +1080,9 @@ index 3f9f5fda8ebf772b6fa3644b17c98d72c2fdc446..ccc2d7627ecfcaffe901613cd0504924
 +	 * existing registered file; a lookup miss simply falls through to the
 +	 * normal create path.
 +	 */
-+	if (READ_ONCE(susfs_open_redirect_is_enabled) &&
-+	    !(op.open_flag & __O_TMPFILE) &&
-+	    !((op.open_flag & O_CREAT) && (op.open_flag & O_EXCL))) {
++	if (!(op.open_flag & __O_TMPFILE) &&
++	    !((op.open_flag & O_CREAT) && (op.open_flag & O_EXCL)) &&
++	    susfs_open_redirect_should_lookup()) {
 +		struct path path;
 +		struct filename *lookup_name, *redirected;
 +		struct inode *inode;
@@ -1901,13 +1902,14 @@ index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c6986979
  	int error;
  	struct fd f = fdget_pos(fd);
  	struct readdir_callback buf = {
-@@ -189,11 +221,23 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
+@@ -189,11 +221,24 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	buf.sb = file_inode(f.file)->i_sb;
-+	if (buf.sb->s_magic == FUSE_SUPER_MAGIC) {
++	if (buf.sb->s_magic == FUSE_SUPER_MAGIC &&
++	    susfs_is_current_proc_umounted_app()) {
 +		path_err = susfs_get_data_path(&path);
 +		if (!path_err)
 +			buf.sb = d_inode(path.dentry)->i_sb;
@@ -1957,13 +1959,14 @@ index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c6986979
  	struct fd f;
  	struct getdents_callback buf = {
  		.ctx.actor = filldir,
-@@ -285,6 +340,14 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -285,6 +340,15 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	buf.sb = file_inode(f.file)->i_sb;
-+	if (buf.sb->s_magic == FUSE_SUPER_MAGIC) {
++	if (buf.sb->s_magic == FUSE_SUPER_MAGIC &&
++	    susfs_is_current_proc_umounted_app()) {
 +		path_err = susfs_get_data_path(&path);
 +		if (!path_err)
 +			buf.sb = d_inode(path.dentry)->i_sb;
@@ -2012,13 +2015,14 @@ index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c6986979
  	struct fd f;
  	struct getdents_callback64 buf = {
  		.ctx.actor = filldir64,
-@@ -371,6 +449,14 @@ int ksys_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent,
+@@ -371,6 +449,15 @@ int ksys_getdents64(unsigned int fd, struct linux_dirent64 __user *dirent,
  	if (!f.file)
  		return -EBADF;
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	buf.sb = file_inode(f.file)->i_sb;
-+	if (buf.sb->s_magic == FUSE_SUPER_MAGIC) {
++	if (buf.sb->s_magic == FUSE_SUPER_MAGIC &&
++	    susfs_is_current_proc_umounted_app()) {
 +		path_err = susfs_get_data_path(&path);
 +		if (!path_err)
 +			buf.sb = d_inode(path.dentry)->i_sb;
@@ -2070,13 +2074,14 @@ index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c6986979
  	int error;
  	struct fd f = fdget_pos(fd);
  	struct compat_readdir_callback buf = {
-@@ -459,11 +560,23 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
+@@ -459,11 +560,24 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	buf.sb = file_inode(f.file)->i_sb;
-+	if (buf.sb->s_magic == FUSE_SUPER_MAGIC) {
++	if (buf.sb->s_magic == FUSE_SUPER_MAGIC &&
++	    susfs_is_current_proc_umounted_app()) {
 +		path_err = susfs_get_data_path(&path);
 +		if (!path_err)
 +			buf.sb = d_inode(path.dentry)->i_sb;
@@ -2126,13 +2131,14 @@ index 07a3b5baa40472251abbe15ac209137832f0ebe1..b021621c1c8016dcee8abc72c6986979
  	struct fd f;
  	struct compat_linux_dirent __user * lastdirent;
  	struct compat_getdents_callback buf = {
-@@ -547,6 +671,14 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
+@@ -547,6 +671,15 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
  	if (!f.file)
  		return -EBADF;
  
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
 +	buf.sb = file_inode(f.file)->i_sb;
-+	if (buf.sb->s_magic == FUSE_SUPER_MAGIC) {
++	if (buf.sb->s_magic == FUSE_SUPER_MAGIC &&
++	    susfs_is_current_proc_umounted_app()) {
 +		path_err = susfs_get_data_path(&path);
 +		if (!path_err)
 +			buf.sb = d_inode(path.dentry)->i_sb;
@@ -2484,7 +2490,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2784 @@
+@@ -0,0 +1,2843 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -4076,6 +4082,64 @@ new file mode 100644
 +static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, 14);
 +DEFINE_SRCU(susfs_srcu_open_redirect);
 +bool susfs_open_redirect_is_enabled;
++static unsigned long susfs_open_redirect_uid_scheme_mask;
++
++/* Rebuild under susfs_mutex_lock_open_redirect after every rule replacement. */
++static void susfs_open_redirect_refresh_uid_scheme_mask(void)
++{
++	struct st_susfs_open_redirect_hlist *entry;
++	unsigned int bucket;
++	unsigned long mask = 0;
++
++	hash_for_each(OPEN_REDIRECT_HLIST, bucket, entry, node) {
++		if (!entry->reversed_lookup_only)
++			mask |= 1UL << entry->info.uid_scheme;
++	}
++	WRITE_ONCE(susfs_open_redirect_uid_scheme_mask, mask);
++}
++
++/*
++ * Avoid filename_lookup() for process classes that cannot match any installed
++ * rule. Keep inode matching for eligible classes to preserve hard-link,
++ * symlink and dfd-relative lookup semantics.
++ */
++bool susfs_open_redirect_should_lookup(void)
++{
++	unsigned long mask = READ_ONCE(susfs_open_redirect_uid_scheme_mask);
++	uid_t uid = current_uid().val;
++	bool is_ksu = false;
++	bool checked_ksu = false;
++
++	if (!READ_ONCE(susfs_open_redirect_is_enabled) || !mask)
++		return false;
++
++	if ((mask & (1UL << UID_NON_APP_PROC)) && uid % 100000 < 10000)
++		return true;
++
++	if (mask & (1UL << UID_ROOT_PROC_EXCEPT_SU_PROC)) {
++		is_ksu = susfs_is_current_ksu_domain();
++		checked_ksu = true;
++		if (!uid && !is_ksu)
++			return true;
++	}
++
++	if (mask & (1UL << UID_NON_SU_PROC)) {
++		if (!checked_ksu)
++			is_ksu = susfs_is_current_ksu_domain();
++		if (!is_ksu)
++			return true;
++	}
++
++	if ((mask & (1UL << UID_UMOUNTED_APP_PROC)) &&
++	    susfs_is_current_proc_umounted_app())
++		return true;
++
++	if ((mask & (1UL << UID_UMOUNTED_PROC)) &&
++	    susfs_is_current_proc_umounted())
++		return true;
++
++	return false;
++}
 +
 +void susfs_add_open_redirect(void __user **user_info) {
 +	struct st_susfs_open_redirect info = {0};
@@ -4267,6 +4331,7 @@ new file mode 100644
 +		     new_entry_redirected->target_ino);
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
++	susfs_open_redirect_refresh_uid_scheme_mask();
 +	WRITE_ONCE(susfs_open_redirect_is_enabled, true);
 +	mutex_unlock(&susfs_mutex_lock_open_redirect);
 +
