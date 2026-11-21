@@ -8194,19 +8194,7 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  		}
  	}
  #endif /*OPLUS_BUG_STABILITY*/
-@@ -6259,9 +6260,10 @@
- 	dsi_display_register_te_irq(display);
- 
- 	msm_register_vm_event(master, dev, &vm_event_ops, (void *)display);
- #ifdef OPLUS_BUG_STABILITY
--	oplus_display_private_api_init();
-+	if (display == get_main_display())
-+		oplus_display_private_api_init();
- 	if(display->panel->esd_config.esd_err_flag_enabled) {
- 		DSI_INFO("20627 panel add esd err flag detect\n");
- 		dsi_display_register_esd_err_irq(display);
- 		dsi_display_err_flag_work_init(display);
-@@ -6317,16 +6319,17 @@
+@@ -6317,16 +6318,17 @@
  	display = platform_get_drvdata(pdev);
  	if (!display || !display->panel_node) {
  		DSI_ERR("invalid display\n");
