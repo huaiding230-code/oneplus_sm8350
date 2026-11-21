@@ -8307,7 +8307,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 --- a/net/qrtr/qrtr.c
 +++ b/net/qrtr/qrtr.c
-@@ -926,13 +934,34 @@
+@@ -926,6 +926,28 @@
  	}
  
  	qrtr_log_rx_msg(node, skb);
@@ -8336,6 +8336,7 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
  	/* All control packets and non-local destined data packets should be
  	 * queued to the worker for forwarding handling.
  	 */
+@@ -932,7 +954,8 @@
  	if (cb->type != QRTR_TYPE_DATA || cb->dst_node != qrtr_local_nid) {
  		skb_queue_tail(&node->rx_queue, skb);
  		kthread_queue_work(&node->kworker, &node->read_data);
@@ -8345,7 +8346,7 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
  	} else {
  		ipc = qrtr_port_lookup(cb->dst_port);
  		if (!ipc) {
-@@ -959,8 +980,8 @@
+@@ -959,8 +982,8 @@
  		 * Force wakeup for all packets except for sensors and blacklisted services
  		 * from adsp side
  		 */
