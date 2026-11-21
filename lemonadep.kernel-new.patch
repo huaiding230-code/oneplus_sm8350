@@ -24,6 +24,8 @@
 
 # SUSFS 5.4 review fixes merged 2026-11-21: lookup_open fake-qstr retry, UID-aware dcache/readdir, no per-getdents /data lookup, and O_TMPFILE/O_PATH redirect handling.
 
+# OPEN_REDIRECT Linux 5.4 path_openat-equivalent: redirect resolved path in do_last before vfs_open; remove do_sys_open preflight and global enabled latch; recompute live UID scheme mask.
+
 diff --git a/drivers/Makefile b/drivers/Makefile
 index aaef17c..daaf7f1 100644
 --- a/drivers/Makefile
@@ -178,7 +180,8 @@ index 910b407d267ec799dcfc3e0f2688657a03e123bc..463376611f06073c7a658f0eacf75c57
 diff --git a/fs/namei.c b/fs/namei.c
 --- a/fs/namei.c
 +++ b/fs/namei.c
-@@ -39,6 +39,9 @@
+@@ -38,15 +38,27 @@
+ #include <linux/hash.h>
  #include <linux/bitops.h>
  #include <linux/init_task.h>
  #include <linux/uaccess.h>
@@ -188,7 +191,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  
  #include "internal.h"
  #include "mount.h"
-@@ -46,6 +49,14 @@
+ 
  #define CREATE_TRACE_POINTS
  #include <trace/events/namei.h>
  
@@ -198,12 +201,15 @@ diff --git a/fs/namei.c b/fs/namei.c
 +#endif
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
 +extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
++extern bool susfs_open_redirect_should_lookup(void);
 +#endif
 +
  /* [Feb-1997 T. Schoebel-Theuer]
   * Fundamental changes in the pathname lookup mechanisms (namei)
   * were necessary because of omirr.  The reason is that omirr needs
-@@ -494,6 +505,9 @@
+  * to know the _real_ pathname, not the user-supplied one, in case
+@@ -493,8 +505,11 @@
+ 	struct qstr	last;
  	struct path	root;
  	struct inode	*inode; /* path.dentry.d_inode */
  	unsigned int	flags;
@@ -213,7 +219,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  	unsigned	seq, m_seq;
  	int		last_type;
  	unsigned	depth;
-@@ -520,6 +534,9 @@
+ 	int		total_link_count;
+@@ -519,8 +534,11 @@
+ 	p->name = name;
  	p->total_link_count = old ? old->total_link_count : 0;
  	p->saved = old;
  	current->nameidata = p;
@@ -223,7 +231,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  }
  
  static void restore_nameidata(void)
-@@ -1592,6 +1609,14 @@
+ {
+@@ -1591,8 +1609,16 @@
+ 			dput(dentry);
  			return ERR_PTR(error);
  		}
  	}
@@ -238,7 +248,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  	return dentry;
  }
  
-@@ -1608,6 +1633,9 @@
+ /*
+@@ -1607,8 +1633,11 @@
+ {
  	struct dentry *dentry = lookup_dcache(name, base, flags);
  	struct dentry *old;
  	struct inode *dir = base->d_inode;
@@ -248,7 +260,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  
  	if (dentry)
  		return dentry;
-@@ -1617,6 +1645,9 @@
+ 
+@@ -1616,16 +1645,39 @@
+ 	if (unlikely(IS_DEADDIR(dir)))
  		return ERR_PTR(-ENOENT);
  
  	dentry = d_alloc(base, name);
@@ -258,7 +272,8 @@ diff --git a/fs/namei.c b/fs/namei.c
  	if (unlikely(!dentry))
  		return ERR_PTR(-ENOMEM);
  
-@@ -1625,6 +1656,26 @@
+ 	old = dir->i_op->lookup(dir, dentry, flags);
+ 	if (unlikely(old)) {
  		dput(dentry);
  		dentry = old;
  	}
@@ -285,7 +300,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  	return dentry;
  }
  
-@@ -1636,6 +1687,9 @@
+ static int lookup_fast(struct nameidata *nd,
+@@ -1635,8 +1687,11 @@
+ 	struct vfsmount *mnt = nd->path.mnt;
  	struct dentry *dentry, *parent = nd->path.dentry;
  	int status = 1;
  	int err;
@@ -295,7 +312,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  
  	/*
  	 * Rename seqlock is not required here because in the off chance
-@@ -1646,6 +1700,16 @@
+ 	 * of a false negative due to a concurrent rename, the caller is
+@@ -1645,8 +1700,18 @@
+ 	if (nd->flags & LOOKUP_RCU) {
  		unsigned seq;
  		bool negative;
  		dentry = __d_lookup_rcu(parent, &nd->last, &seq);
@@ -312,7 +331,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  		if (unlikely(!dentry)) {
  			if (unlazy_walk(nd))
  				return -ECHILD;
-@@ -1692,6 +1756,16 @@
+ 			return 0;
+@@ -1691,8 +1756,18 @@
+ 			/* we'd been told to redo it in non-rcu mode */
  			status = d_revalidate(dentry, nd->flags);
  	} else {
  		dentry = __d_lookup(parent, &nd->last);
@@ -329,7 +350,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  		if (unlikely(!dentry))
  			return 0;
  		status = d_revalidate(dentry, nd->flags);
-@@ -1723,12 +1797,19 @@
+ 	}
+@@ -1722,14 +1797,21 @@
+ {
  	struct dentry *dentry, *old;
  	struct inode *inode = dir->d_inode;
  	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
@@ -349,7 +372,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  	if (IS_ERR(dentry))
  		return dentry;
  	if (unlikely(!d_in_lookup(dentry))) {
-@@ -1738,6 +1819,12 @@
+ 		if (!(flags & LOOKUP_NO_REVAL)) {
+@@ -1737,8 +1819,14 @@
+ 			if (unlikely(error <= 0)) {
  				if (!error) {
  					d_invalidate(dentry);
  					dput(dentry);
@@ -362,7 +387,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  					goto again;
  				}
  				dput(dentry);
-@@ -1752,6 +1839,19 @@
+ 				dentry = ERR_PTR(error);
+@@ -1751,8 +1839,21 @@
+ 			dput(dentry);
  			dentry = old;
  		}
  	}
@@ -382,7 +409,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  	return dentry;
  }
  
-@@ -1882,6 +1982,11 @@
+ static struct dentry *lookup_slow(const struct qstr *name,
+@@ -1881,8 +1982,13 @@
+ 	err = lookup_fast(nd, &path, &inode, &seq);
  	if (unlikely(err <= 0)) {
  		if (err < 0)
  			return err;
@@ -394,7 +423,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  		path.dentry = lookup_slow(&nd->last, nd->path.dentry,
  					  nd->flags);
  		if (IS_ERR(path.dentry))
-@@ -2155,7 +2260,15 @@
+ 			return PTR_ERR(path.dentry);
+@@ -2154,9 +2260,17 @@
+ 	/* At this point we know we have a real path component. */
  	for(;;) {
  		u64 hash_len;
  		int type;
@@ -410,7 +441,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  		err = may_lookup(nd);
  		if (err)
  			return err;
-@@ -2343,6 +2456,9 @@
+ 
+@@ -2342,8 +2456,11 @@
+ static inline int lookup_last(struct nameidata *nd)
  {
  	if (nd->last_type == LAST_NORM && nd->last.name[nd->last.len])
  		nd->flags |= LOOKUP_FOLLOW | LOOKUP_DIRECTORY;
@@ -420,7 +453,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  
  	nd->flags &= ~LOOKUP_PARENT;
  	return walk_component(nd, 0);
-@@ -3282,15 +3398,38 @@
+ }
+@@ -3281,17 +3398,40 @@
+ 	struct dentry *dentry;
  	int error, create_error = 0;
  	umode_t mode = op->mode;
  	DECLARE_WAIT_QUEUE_HEAD_ONSTACK(wq);
@@ -459,7 +494,24 @@ diff --git a/fs/namei.c b/fs/namei.c
  			if (IS_ERR(dentry))
  				return PTR_ERR(dentry);
  		}
-@@ -3387,6 +3526,13 @@
+ 		if (d_in_lookup(dentry))
+@@ -3344,9 +3484,14 @@
+ 		 */
+ 		goto no_open;
+ 	}
+ 
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++	if (dir_inode->i_op->atomic_open &&
++	    !(nd->dfd != -1 && susfs_open_redirect_should_lookup())) {
++#else
+ 	if (dir_inode->i_op->atomic_open) {
++#endif
+ 		error = atomic_open(nd, dentry, path, file, op, open_flag,
+ 				    mode);
+ 		if (unlikely(error == -ENOENT) && create_error)
+ 			error = create_error;
+@@ -3386,8 +3531,15 @@
+ 		error = create_error;
  		goto out_dput;
  	}
  out_no_open:
@@ -473,7 +525,64 @@ diff --git a/fs/namei.c b/fs/namei.c
  	path->dentry = dentry;
  	path->mnt = nd->path.mnt;
  	return 0;
-@@ -3415,6 +3561,10 @@
+ 
+@@ -3395,9 +3547,44 @@
+ 	dput(dentry);
+ 	return error;
+ }
+ 
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
+ /*
++ * Redirect an already-resolved inode before VFS opens it.
++ * filename_lookup() consumes the returned filename on success and failure.
++ */
++static int susfs_open_redirect_path(struct nameidata *nd, struct path *path,
++				    unsigned int lookup_flags)
++{
++	struct filename *redirected;
++	struct path redirected_path;
++	struct inode *inode = d_backing_inode(path->dentry);
++	int error;
++
++	if (nd->dfd == -1 || !susfs_open_redirect_should_lookup() ||
++	    !inode ||
++	    !SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode))
++		return 0;
++
++	redirected = susfs_open_redirect_spoof_do_sys_openat(inode);
++	if (IS_ERR(redirected))
++		return PTR_ERR(redirected);
++	if (!redirected)
++		return 0;
++
++	error = filename_lookup(nd->dfd, redirected, lookup_flags,
++				&redirected_path, NULL);
++	if (error)
++		return error;
++
++	path_put(path);
++	*path = redirected_path;
++	return 1;
++}
++#endif
++
++/*
+  * Handle the last step of open()
+  */
+ static int do_last(struct nameidata *nd,
+ 		   struct file *file, const struct open_flags *op)
+@@ -3407,15 +3594,22 @@
+ 	umode_t dir_mode = nd->inode->i_mode;
+ 	int open_flag = op->open_flag;
+ 	bool will_truncate = (open_flag & O_TRUNC) != 0;
+ 	bool got_write = false;
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++	bool susfs_redirect_checked = false;
++#endif
+ 	int acc_mode = op->acc_mode;
+ 	unsigned seq;
+ 	struct inode *inode;
+ 	struct path path;
  	int error;
  
  	nd->flags &= ~LOOKUP_PARENT;
@@ -484,7 +593,50 @@ diff --git a/fs/namei.c b/fs/namei.c
  	nd->flags |= op->intent;
  
  	if (nd->last_type != LAST_NORM) {
-@@ -3623,9 +3773,34 @@
+ 		error = handle_dots(nd, nd->last_type);
+@@ -3508,8 +3702,20 @@
+ 	error = follow_managed(&path, nd);
+ 	if (unlikely(error < 0))
+ 		return error;
+ 
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++	/* O_CREAT and ref-walk opens reach here with a referenced path. */
++	error = susfs_open_redirect_path(nd, &path,
++			(op->lookup_flags | nd->flags) &
++			(LOOKUP_FOLLOW | LOOKUP_DIRECTORY | LOOKUP_REVAL));
++	if (error < 0) {
++		path_put(&path);
++		return error;
++	}
++	susfs_redirect_checked = true;
++#endif
++
+ 	if (unlikely(d_is_negative(path.dentry))) {
+ 		path_to_nameidata(&path, nd);
+ 		return -ENOENT;
+ 	}
+@@ -3534,8 +3740,19 @@
+ 	/* Why this, you ask?  _Now_ we might have grown LOOKUP_JUMPED... */
+ 	error = complete_walk(nd);
+ 	if (error)
+ 		return error;
++#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
++	if (!susfs_redirect_checked) {
++		error = susfs_open_redirect_path(nd, &nd->path,
++				(op->lookup_flags | nd->flags) &
++				(LOOKUP_FOLLOW | LOOKUP_DIRECTORY | LOOKUP_REVAL));
++		if (error < 0)
++			goto out;
++		if (error > 0)
++			nd->inode = d_backing_inode(nd->path.dentry);
++	}
++#endif
+ 	audit_inode(nd->name, nd->path.dentry, 0);
+ 	if (open_flag & O_CREAT) {
+ 		error = -EISDIR;
+ 		if (d_is_dir(nd->path.dentry))
+@@ -3622,11 +3839,36 @@
+ static int do_tmpfile(struct nameidata *nd, unsigned flags,
  		const struct open_flags *op,
  		struct file *file)
  {
@@ -496,7 +648,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	struct path path;
  	int error = path_lookupat(nd, flags | LOOKUP_DIRECTORY, &path);
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+	if (!error && old_dfd != -1 &&
++	if (!error && old_dfd != -1 && susfs_open_redirect_should_lookup() &&
 +	    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(path.dentry->d_inode)) {
 +		struct path fake_path;
 +
@@ -519,7 +671,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  	if (unlikely(error))
  		return error;
  	error = mnt_want_write(path.mnt);
-@@ -3653,9 +3828,34 @@
+ 	if (unlikely(error))
+@@ -3652,11 +3894,36 @@
+ }
  
  static int do_o_path(struct nameidata *nd, unsigned flags, struct file *file)
  {
@@ -531,7 +685,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	int error = path_lookupat(nd, flags, &path);
  	if (!error) {
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+		if (old_dfd != -1 &&
++		if (old_dfd != -1 && susfs_open_redirect_should_lookup() &&
 +		    SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(path.dentry->d_inode)) {
 +			struct path fake_path;
 +
@@ -554,7 +708,9 @@ diff --git a/fs/namei.c b/fs/namei.c
  		audit_inode(nd->name, path.dentry, 0);
  		error = vfs_open(&path, file);
  		path_put(&path);
-@@ -4886,6 +5086,11 @@
+ 	}
+@@ -4885,15 +5152,29 @@
+  * Does not touch atime.  That's up to the caller if necessary
   *
   * Does not call security hook.
   */
@@ -566,7 +722,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  int vfs_readlink(struct dentry *dentry, char __user *buffer, int buflen)
  {
  	struct inode *inode = d_inode(dentry);
-@@ -4893,6 +5098,15 @@
+ 	DEFINE_DELAYED_CALL(done);
  	const char *link;
  	int res;
  
@@ -582,6 +738,7 @@ diff --git a/fs/namei.c b/fs/namei.c
  	if (unlikely(!(inode->i_opflags & IOP_DEFAULT_READLINK))) {
  		if (unlikely(inode->i_op->readlink))
  			return inode->i_op->readlink(dentry, buffer, buflen);
+ 
 
 diff --git a/fs/namespace.c b/fs/namespace.c
 index 176bccdf6f3060689213d87b51b190cdbf5bce33..e9ac83befe692ee55a32fb94b5286af1c8fdc503 100644
@@ -1109,7 +1266,8 @@ diff --git a/fs/notify/fdinfo.c b/fs/notify/fdinfo.c
 diff --git a/fs/open.c b/fs/open.c
 --- a/fs/open.c
 +++ b/fs/open.c
-@@ -33,8 +33,27 @@
+@@ -32,10 +32,24 @@
+ #include <linux/ima.h>
  #include <linux/dnotify.h>
  #include <linux/compat.h>
  
@@ -1117,11 +1275,6 @@ diff --git a/fs/open.c b/fs/open.c
 +#include <linux/susfs_def.h>
 +#endif
 +
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+#include <linux/susfs.h>
-+extern struct filename *susfs_open_redirect_spoof_do_sys_openat(struct inode *inode);
-+extern bool susfs_open_redirect_should_lookup(void);
-+#endif
 +
  #include "internal.h"
  
@@ -1137,7 +1290,9 @@ diff --git a/fs/open.c b/fs/open.c
  int do_truncate(struct dentry *dentry, loff_t length, unsigned int time_attrs,
  	struct file *filp)
  {
-@@ -354,6 +373,12 @@
+ 	int ret;
+@@ -353,8 +367,14 @@
+ 	struct inode *inode;
  	int res;
  	unsigned int lookup_flags = LOOKUP_FOLLOW;
  
@@ -1150,7 +1305,9 @@ diff --git a/fs/open.c b/fs/open.c
  	if (mode & ~S_IRWXO)	/* where's F_OK, X_OK, W_OK, R_OK? */
  		return -EINVAL;
  
-@@ -395,7 +420,16 @@
+ 	override_cred = prepare_creds();
+@@ -394,9 +414,18 @@
+ 	override_cred->non_rcu = 1;
  
  	old_cred = override_creds(override_cred);
  retry:
@@ -1167,58 +1324,7 @@ diff --git a/fs/open.c b/fs/open.c
  	if (res)
  		goto out;
  
-@@ -1101,6 +1135,51 @@
- 	if (IS_ERR(tmp))
- 		return PTR_ERR(tmp);
- 
-+#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+	/*
-+	 * Resolve an existing target before opening it.  The lookup is only
-+	 * used to identify a registered inode; the actual open is then performed
-+	 * once, against the redirected name.  Keep O_TMPFILE and O_CREAT|O_EXCL
-+	 * on the normal VFS path.  A non-exclusive O_CREAT may still refer to an
-+	 * existing registered file; a lookup miss simply falls through to the
-+	 * normal create path.
-+	 */
-+	if (!(op.open_flag & __O_TMPFILE) &&
-+	    !(op.open_flag & O_PATH) &&
-+	    !((op.open_flag & O_CREAT) && (op.open_flag & O_EXCL)) &&
-+	    susfs_open_redirect_should_lookup()) {
-+		struct path path;
-+		struct filename *lookup_name, *redirected;
-+		struct inode *inode;
-+		int lookup_err, redirect_err = 0;
-+
-+		lookup_name = getname_kernel(tmp->name);
-+		if (IS_ERR(lookup_name)) {
-+			putname(tmp);
-+			return PTR_ERR(lookup_name);
-+		}
-+		lookup_err = filename_lookup(dfd, lookup_name,
-+					     op.lookup_flags, &path, NULL);
-+		if (!lookup_err) {
-+			inode = d_backing_inode(path.dentry);
-+			if (SUSFS_IS_INODE_OPEN_REDIRECT_WITHOUT_UID_CHECK(inode)) {
-+				redirected = susfs_open_redirect_spoof_do_sys_openat(inode);
-+				if (IS_ERR(redirected)) {
-+					redirect_err = PTR_ERR(redirected);
-+				} else if (redirected) {
-+					putname(tmp);
-+					tmp = redirected;
-+				}
-+			}
-+			path_put(&path);
-+		}
-+		if (redirect_err) {
-+			putname(tmp);
-+			return redirect_err;
-+		}
-+	}
-+#endif
-+
- 	fd = get_unused_fd_flags(flags);
- 	if (fd >= 0) {
- 		struct file *f = do_filp_open(dfd, tmp, &op);
+ 	inode = d_backing_inode(path.dentry);
 
 diff --git a/fs/proc/Makefile b/fs/proc/Makefile
 index ead487e8051087d2d81889673737653567874ee9..11696b17cb5f1bfc013677e3bb92af05d01d91cf 100644
@@ -2466,7 +2572,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2765 @@
+@@ -0,0 +1,2776 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -3988,7 +4094,6 @@ new file mode 100644
 +static DEFINE_MUTEX(susfs_mutex_lock_open_redirect);
 +static DEFINE_HASHTABLE(OPEN_REDIRECT_HLIST, 14);
 +DEFINE_SRCU(susfs_srcu_open_redirect);
-+bool susfs_open_redirect_is_enabled;
 +static unsigned long susfs_open_redirect_uid_scheme_mask;
 +
 +/*
@@ -4003,7 +4108,7 @@ new file mode 100644
 +	bool is_ksu = false;
 +	bool checked_ksu = false;
 +
-+	if (!READ_ONCE(susfs_open_redirect_is_enabled) || !mask)
++	if (!mask)
 +		return false;
 +
 +	if ((mask & (1UL << UID_NON_APP_PROC)) && uid % 100000 < 10000)
@@ -4039,7 +4144,9 @@ new file mode 100644
 +	struct st_susfs_open_redirect_hlist *new_entry_target, *new_entry_redirected;
 +	struct st_susfs_open_redirect_hlist *entry, *old_target = NULL;
 +	struct st_susfs_open_redirect_hlist *old_reverse = NULL;
++	struct st_susfs_open_redirect_hlist *mask_entry;
 +	struct hlist_node *tmp_hlist_node;
++	int mask_bucket;
 +	struct path target_path, redirected_path;
 +	struct inode *target_inode, *redirected_inode;
 +	struct kstatfs target_kstatfs;
@@ -4228,9 +4335,19 @@ new file mode 100644
 +		     new_entry_target->target_ino);
 +	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node,
 +		     new_entry_redirected->target_ino);
++	{
++		unsigned long active_uid_scheme_mask = 0;
++
++		hash_for_each(OPEN_REDIRECT_HLIST, mask_bucket, mask_entry, node) {
++			if (!mask_entry->reversed_lookup_only)
++				active_uid_scheme_mask |=
++					1UL << mask_entry->info.uid_scheme;
++		}
++		WRITE_ONCE(susfs_open_redirect_uid_scheme_mask,
++			   active_uid_scheme_mask);
++	}
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
-+	WRITE_ONCE(susfs_open_redirect_is_enabled, true);
 +	mutex_unlock(&susfs_mutex_lock_open_redirect);
 +
 +	if (old_target || old_reverse) {
@@ -5552,7 +5669,7 @@ diff --git a/include/linux/susfs.h b/include/linux/susfs.h
 new file mode 100644
 --- /dev/null
 +++ b/include/linux/susfs.h
-@@ -0,0 +1,272 @@
+@@ -0,0 +1,271 @@
 +#ifndef KSU_SUSFS_H
 +#define KSU_SUSFS_H
 +
@@ -5791,7 +5908,6 @@ new file mode 100644
 +
 +/* open_redirect */
 +#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-+extern bool susfs_open_redirect_is_enabled;
 +void susfs_add_open_redirect(void __user **user_info);
 +#endif
 +
