@@ -14,7 +14,7 @@
 # path wiring and SRCU rule lifetime; SELinux 5.4 fake-policy SID-table/map
 # lifetime across policy reload; proc bootconfig NULL-safe serialization.
 # Additional non-SUSFS driver changes:
-# defer IPCRTR wake decisions to QRTR; suppress only modem QMI DFS wakeups.
+# defer IPCRTR wake decisions to QRTR; only modem SMS/voice/IMS services may force wake.
 #
 # Validation: generated as a single net diff from the supplied unpatched
 # kernel source subset to the tree after applying the original integration
@@ -8307,21 +8307,31 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 --- a/net/qrtr/qrtr.c
 +++ b/net/qrtr/qrtr.c
-@@ -926,13 +926,26 @@
+@@ -926,13 +934,34 @@
  	}
  
  	qrtr_log_rx_msg(node, skb);
 +	/*
-+	 * Suppress only the periodic QMI DFS indications observed on
-+	 * modem node 0. Keep responses and other services wake-capable.
++	 * Only SMS, voice-call and IMS signaling may force a modem wake.
++	 * Defer routine status/data indications until the next permitted wake.
++	 * Unknown service mappings fail open during modem startup/recovery.
 +	 */
-+	if (node->nid == 0 && cb->type == QRTR_TYPE_DATA && size >= 7) {
-+		const u8 *qmi = (const u8 *)data + hdrlen;
++	if (node->nid == 0 && cb->type == QRTR_TYPE_DATA) {
 +		svc_id = qrtr_get_service_id(cb->src_node, cb->src_port);
-+		if (svc_id == 0x30 && qmi[0] == 0x04 &&
-+		    qmi[4] == 0x00 &&
-+		    (qmi[3] == 0x32 || qmi[3] == 0x34))
++		switch (svc_id) {
++		case 0:
++		case 0x05: /* QMI WMS: SMS. */
++		case 0x09: /* QMI VOICE: call control. */
++		case 0x12: /* QMI IMS. */
++		case 0x1f: /* QMI IMSP. */
++		case 0x20: /* QMI IMS video telephony. */
++		case 0x21: /* QMI IMS application. */
++		case 0x28: /* QMI IMS RTP. */
++			break;
++		default:
 +			wake = false;
++			break;
++		}
 +	}
  	/* All control packets and non-local destined data packets should be
  	 * queued to the worker for forwarding handling.
@@ -8335,7 +8345,7 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
  	} else {
  		ipc = qrtr_port_lookup(cb->dst_port);
  		if (!ipc) {
-@@ -959,8 +972,8 @@
+@@ -959,8 +980,8 @@
  		 * Force wakeup for all packets except for sensors and blacklisted services
  		 * from adsp side
  		 */
