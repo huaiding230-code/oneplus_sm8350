@@ -5,6 +5,8 @@
 # SUSFS extension, AVC spoof, mount-hide and LSM integration are provided by upstream builtin-new.
 # Apply once to a clean SukiSU builtin-new checkout after applying lemonadep.kernel-new.patch.
 
+# SUSFS follow-up merged 2026-11-21: check TIF_KSU_MANAGED before sucompat seccomp fast-deny; duplicate setuid_hook hunk is already present in the base patch.
+
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
@@ -34,7 +36,6 @@ diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_
          struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
  
          if (!p) {
-
 
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 --- a/kernel/feature/selinux_hide.c
@@ -195,7 +196,6 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
  #endif
 
-
 diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
 --- a/kernel/feature/selinux_hide.h
 +++ b/kernel/feature/selinux_hide.h
@@ -215,7 +215,6 @@ diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
  
  static int sepol_expected_argc(u32 cmd);
  
-
 
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 --- a/kernel/feature/sucompat.c
@@ -325,7 +324,25 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
  
  /*
-
+@@ -428,14 +483,14 @@
+ #endif // KSU_CAN_USE_JUMP_LABEL
+ #endif
+ 
+-	// put ret hot on insn pipeline
+-	if (likely(ksu_is_seccomp_enabled()))
+-		return false;
+-
+ 	// pass through tagged task from setuid hook
+ 	if (test_thread_flag(TIF_KSU_MANAGED))
+ 		goto check_ptr;
+ 
++	// Untagged tasks keep the original seccomp restriction.
++	if (likely(ksu_is_seccomp_enabled()))
++		return false;
++
+ #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
+ 	if (!ksu_is_allow_uid_for_current(current_uid().val))
+ 		return false;
 
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 --- a/kernel/hook/setuid_hook.c
@@ -425,7 +442,6 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  	}
  
 
-
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
@@ -456,7 +472,6 @@ diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
  	ksu_load_allow_list();
  
  	// Sanity check for safe mode only needs early-boot input samples.
-
 
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 --- a/kernel/selinux/rules.c
@@ -498,7 +513,6 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
 
-
 diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
 --- a/kernel/selinux/sepolicy.c
 +++ b/kernel/selinux/sepolicy.c
@@ -528,7 +542,6 @@ diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
  		if (invert) {
  			if (perm)
 
-
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
@@ -549,6 +562,7 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
  
+
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 --- a/kernel/selinux/selinux.c
 +++ b/kernel/selinux/selinux.c
@@ -557,4 +571,3 @@ diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 -	return unlikely(susfs_current_sid() == susfs_ksu_sid);
 +	return is_ksu_domain();
  }
-
