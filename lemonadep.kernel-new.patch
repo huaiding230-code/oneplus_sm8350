@@ -13,7 +13,7 @@
 # filtering; Open Redirect declarations, generation checks, VFS readlink/open
 # path wiring and SRCU rule lifetime; SELinux 5.4 fake-policy SID-table/map
 # lifetime across policy reload; proc bootconfig NULL-safe serialization.
-# Additional non-SUSFS driver fixes: track CVP SYNX initialization;
+# Additional non-SUSFS driver changes:
 # defer IPCRTR wake decisions to QRTR; suppress only modem QMI DFS wakeups.
 #
 # Validation: generated as a single net diff from the supplied unpatched
@@ -8121,50 +8121,6 @@ index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..520002f1e73beafd4bd902b988a6a60e
  		input_handle_event(dev, type, code, value);
  		spin_unlock_irqrestore(&dev->event_lock, flags);
  	}
-diff --git a/drivers/media/platform/msm/cvp/msm_cvp.c b/drivers/media/platform/msm/cvp/msm_cvp.c
---- a/drivers/media/platform/msm/cvp/msm_cvp.c
-+++ b/drivers/media/platform/msm/cvp/msm_cvp.c
-@@ -1148,8 +1148,10 @@
- 	params.name = "cvp-kernel-client";
- 	if (synx_initialize(&inst->synx_session_id, &params)) {
- 		dprintk(CVP_ERR, "%s synx_initialize failed\n", __func__);
- 		rc = -EFAULT;
-+	} else {
-+		inst->synx_session_initialized = true;
- 	}
- 
- fail_init:
- 	return rc;
-diff --git a/drivers/media/platform/msm/cvp/msm_cvp_core.c b/drivers/media/platform/msm/cvp/msm_cvp_core.c
---- a/drivers/media/platform/msm/cvp/msm_cvp_core.c
-+++ b/drivers/media/platform/msm/cvp/msm_cvp_core.c
-@@ -366,9 +366,12 @@
- 	msm_cvp_debugfs_deinit_inst(inst);
- 
- 	__deinit_session_queue(inst);
- 	__deinit_fence_queue(inst);
--	synx_uninitialize(inst->synx_session_id);
-+	if (inst->synx_session_initialized) {
-+		synx_uninitialize(inst->synx_session_id);
-+		inst->synx_session_initialized = false;
-+	}
- 
- 	pr_info(CVP_DBG_TAG "Closed cvp instance: %pK session_id = %d\n",
- 		"sess", inst, inst->sess_id);
- 	if (inst->cur_cmd_type)
-diff --git a/drivers/media/platform/msm/cvp/msm_cvp_internal.h b/drivers/media/platform/msm/cvp/msm_cvp_internal.h
---- a/drivers/media/platform/msm/cvp/msm_cvp_internal.h
-+++ b/drivers/media/platform/msm/cvp/msm_cvp_internal.h
-@@ -320,8 +320,9 @@
- 	struct kref kref;
- 	struct cvp_session_prop prop;
- 	u32 cur_cmd_type;
- 	struct synx_session synx_session_id;
-+	bool synx_session_initialized;
- 	struct cvp_fence_queue fence_cmd_queue;
- };
- 
- extern struct msm_cvp_drv *cvp_driver;
 diff --git a/net/core/dev.c b/net/core/dev.c
 --- a/net/core/dev.c
 +++ b/net/core/dev.c
