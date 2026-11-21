@@ -347,10 +347,14 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -1,3 +1,42 @@
+@@ -1,3 +1,46 @@
 +#include <asm/unistd.h>
 +#include <linux/audit.h>
 +#include <linux/seccomp.h>
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++#include <linux/workqueue.h>
++extern struct work_struct susfs_extra_works;
++#endif
 +
 +/*
 + * Called by the Linux seccomp core before evaluating installed filters.
@@ -408,8 +412,11 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +71,6 @@
+@@ -25,10 +71,9 @@
  	ksu_handle_umount(new, old);
++#ifdef CONFIG_KSU_SUSFS_SUS_PATH
++	schedule_work(&susfs_extra_works);
++#endif
  	return;
  
 -install_ksu_fd:
