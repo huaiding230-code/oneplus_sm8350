@@ -1,5 +1,5 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
-# Synced against SukiSU-Ultra builtin-new HEAD 3fd4652a7c0a20d0ee5580b1da90bd16845b608d (2026-11-14); workflow tracks builtin-new.
+# Original baseline: SukiSU-Ultra builtin-new HEAD 3fd4652a7c0a20d0ee5580b1da90bd16845b608d (2026-11-14); revalidated against builtin-new HEAD 5a3ec4145059ed2c4f22c70a16a28a616e104c33 (2026-11-21).
 # SUSFS path UID filter dispatch and package-list refresh are adapted from upstream 6dff25f2b2508f91df309e537771d612dccd201a.
 # Device-specific and Linux 5.4 compatibility changes only.
 # SUSFS extension, AVC spoof, mount-hide and LSM integration are provided by upstream builtin-new.
