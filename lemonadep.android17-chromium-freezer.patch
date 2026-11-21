@@ -1,0 +1,31 @@
+From 6f...? Mon Sep 17 00:00:00 2001
+Subject: [PATCH] cgroup: preserve freezer state when ptrace stop resumes
+
+Backport the ptrace_stop() freezer transition used by the fixed
+LineageOS SM7125 Android 17 kernel.
+
+The SM7125 LineageOS 24.0 tree uses cgroup_leave_frozen(false) after
+freezable_schedule(). The SM8350 5.4 tree already contains the companion
+freezer.c/cgroup.c changes, but still passed true at this callsite.
+Keep the task in the freezer signal path when its cgroup is still
+freezing, instead of unconditionally dropping the frozen state.
+
+Reference:
+  LineageOS/android_kernel_samsung_sm7125
+  lineage-24.0 merge: 9968db0a26919c12d35428cbaa5dcbb187ad19e3
+  kernel/signal.c: ptrace_stop()
+
+This is intentionally a separate patch from lemonadep.kernel-new.patch.
+
+---
+diff --git a/kernel/signal.c b/kernel/signal.c
+--- a/kernel/signal.c
++++ b/kernel/signal.c
+@@ -2219,7 +2219,7 @@
+ 		read_unlock(&tasklist_lock);
+ 		cgroup_enter_frozen();
+ 		preempt_enable_no_resched();
+ 		freezable_schedule();
+-		cgroup_leave_frozen(true);
++		cgroup_leave_frozen(false);
+ 	} else {
