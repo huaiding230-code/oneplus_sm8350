@@ -1,31 +1,33 @@
-From 6f...? Mon Sep 17 00:00:00 2001
-Subject: [PATCH] cgroup: preserve freezer state when ptrace stop resumes
+From 7a05073b02d85f35c35f8305d496ddf6e991f30f Mon Sep 17 00:00:00 2001
+Subject: [PATCH] UPSTREAM: cgroup: prevent spurious transition into non-frozen state
 
-Backport the ptrace_stop() freezer transition used by the fixed
-LineageOS SM7125 Android 17 kernel.
+Backport the missing ptrace_stop() hunk from the upstream cgroup freezer
+race fix. The companion cgroup_leave_frozen() implementation hunk from
+the same upstream commit is already present in this SM8350 tree, so it is
+intentionally not duplicated here.
 
-The SM7125 LineageOS 24.0 tree uses cgroup_leave_frozen(false) after
-freezable_schedule(). The SM8350 5.4 tree already contains the companion
-freezer.c/cgroup.c changes, but still passed true at this callsite.
-Keep the task in the freezer signal path when its cgroup is still
-freezing, instead of unconditionally dropping the frozen state.
+The relevant upstream change reserves cgroup_leave_frozen(true) for
+terminating processes and uses false when ptrace_stop() resumes from the
+freezer wait. This prevents a task that is still meant to remain frozen
+from spuriously decrementing the cgroup frozen-task counter.
 
-Reference:
-  LineageOS/android_kernel_samsung_sm7125
-  lineage-24.0 merge: 9968db0a26919c12d35428cbaa5dcbb187ad19e3
-  kernel/signal.c: ptrace_stop()
+Upstream:
+  LineageOS/android_kernel_qcom_sm8150
+  7a05073b02d85f35c35f8305d496ddf6e991f30f
+  "UPSTREAM: cgroup: prevent spurious transition into non-frozen state"
 
-This is intentionally a separate patch from lemonadep.kernel-new.patch.
+Backported only the missing hunk for the OnePlus SM8350 Linux 5.4 tree.
 
 ---
 diff --git a/kernel/signal.c b/kernel/signal.c
 --- a/kernel/signal.c
 +++ b/kernel/signal.c
 @@ -2219,7 +2219,7 @@
- 		read_unlock(&tasklist_lock);
  		cgroup_enter_frozen();
  		preempt_enable_no_resched();
  		freezable_schedule();
 -		cgroup_leave_frozen(true);
 +		cgroup_leave_frozen(false);
  	} else {
+ 		/*
+ 		 * By the time we got the lock, another tracer may come.
