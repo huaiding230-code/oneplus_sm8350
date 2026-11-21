@@ -1457,7 +1457,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..bb1e5df0b2610776c57569dd6edde91daffd32c1
 --- /dev/null
 +++ b/fs/proc/bootconfig.c
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,151 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * /proc/bootconfig - Extra boot configuration
@@ -1475,6 +1475,7 @@ index 0000000000000000000000000000000000000000..bb1e5df0b2610776c57569dd6edde91d
 +static char *saved_boot_config;
 +
 +#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
++#include <linux/jump_label.h>
 +extern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;
 +extern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);
 +#endif
@@ -1482,7 +1483,7 @@ index 0000000000000000000000000000000000000000..bb1e5df0b2610776c57569dd6edde91d
 +static int boot_config_proc_show(struct seq_file *m, void *v)
 +{
 +#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
-+	if (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {
++	if (static_branch_unlikely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {
 +		susfs_spoof_cmdline_or_bootconfig(m);
 +		return 0;
 +	}
@@ -1517,28 +1518,36 @@ index 0000000000000000000000000000000000000000..bb1e5df0b2610776c57569dd6edde91d
 +	 * pass must not call snprintf(NULL, 0, ...): the kernel formatter's
 +	 * implementation is not a safe place to rely on NULL pointer arithmetic.
 +	 */
-+#define append_data(data, data_len) do { \
-+		size_t append_len = (data_len); \
-+		if (append_len > INT_MAX - total) { \
-+			ret = -EOVERFLOW; \
-+			goto out; \
-+		} \
-+		if (dst && used < size) { \
-+			size_t copy_len = min_t(size_t, append_len, size - used - 1); \
-+			if (copy_len) \
-+				memcpy(dst + used, (data), copy_len); \
-+			used += copy_len; \
-+			dst[used] = '\0'; \
-+		} \
-+		total += append_len; \
-+	} while (0)
++static int __init append_bootconfig_data(char *dst, size_t size,
++					 size_t *used, int *total,
++					 const char *data, size_t data_len)
++{
++	size_t copy_len;
++
++	if (data_len > INT_MAX - *total)
++		return -EOVERFLOW;
++
++	if (dst && *used < size) {
++		copy_len = min_t(size_t, data_len, size - *used - 1);
++		if (copy_len)
++			memcpy(dst + *used, data, copy_len);
++		*used += copy_len;
++		dst[*used] = '\0';
++	}
++	*total += data_len;
++	return 0;
++}
 +
 +	xbc_for_each_key_value(leaf, val) {
 +		ret = xbc_node_compose_key(leaf, key, XBC_KEYLEN_MAX);
 +		if (ret < 0)
 +			break;
-+		append_data(key, strlen(key));
-+		append_data(" = ", 3);
++		ret = append_bootconfig_data(dst, size, &used, &total, key, strlen(key));
++		if (ret)
++			goto out;
++		ret = append_bootconfig_data(dst, size, &used, &total, " = ", 3);
++		if (ret)
++			goto out;
 +
 +		vnode = xbc_node_get_child(leaf);
 +		if (vnode) {
@@ -1547,16 +1556,26 @@ index 0000000000000000000000000000000000000000..bb1e5df0b2610776c57569dd6edde91d
 +					q = '\'';
 +				else
 +					q = '"';
-+				append_data(&q, 1);
-+				append_data(val, strlen(val));
-+				append_data(&q, 1);
++				ret = append_bootconfig_data(dst, size, &used, &total, &q, 1);
++				if (ret)
++					goto out;
++				ret = append_bootconfig_data(dst, size, &used, &total, val, strlen(val));
++				if (ret)
++					goto out;
++				ret = append_bootconfig_data(dst, size, &used, &total, &q, 1);
++				if (ret)
++					goto out;
 +				if (xbc_node_is_array(vnode))
-+					append_data(", ", 2);
++					ret = append_bootconfig_data(dst, size, &used, &total, ", ", 2);
 +				else
-+					append_data("\n", 1);
++					ret = append_bootconfig_data(dst, size, &used, &total, "\n", 1);
++				if (ret)
++					goto out;
 +			}
 +		} else {
-+			append_data("\"\"\n", 3);
++			ret = append_bootconfig_data(dst, size, &used, &total, "\"\"\n", 3);
++			if (ret)
++				goto out;
 +		}
 +	}
 +out:
@@ -2277,7 +2296,7 @@ diff --git a/fs/stat.c b/fs/stat.c
 index 298eb77668a766cf9feafa586bba613a6fe19eeb..732a63803b3dfdbd5da19695b74329d39a16c09e 100644
 --- a/fs/stat.c
 +++ b/fs/stat.c
-@@ -17,9 +17,42 @@
+@@ -17,9 +17,40 @@
  #include <linux/syscalls.h>
  #include <linux/pagemap.h>
  #include <linux/compat.h>
@@ -2309,9 +2328,7 @@ index 298eb77668a766cf9feafa586bba613a6fe19eeb..732a63803b3dfdbd5da19695b74329d3
 + * enabled for builtin/manual and branch-link builds; kprobes and syscall-table
 + * backends provide their own newfstat return hooks.
 + */
-+#if defined(CONFIG_KSU) && \
-+    !defined(CONFIG_KSU_KPROBES_KSUD) && \
-+    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
 +extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);
 +#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
 +extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);
@@ -2390,27 +2407,23 @@ index 298eb77668a766cf9feafa586bba613a6fe19eeb..732a63803b3dfdbd5da19695b74329d3
  	if (error)
  		goto out;
  
-@@ -378,7 +439,12 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
+@@ -378,7 +439,10 @@ SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
  
  	if (!error)
  		error = cp_new_stat(&stat, statbuf);
 -
-+#if defined(CONFIG_KSU) && \
-+    !defined(CONFIG_KSU_KPROBES_KSUD) && \
-+    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
 +	if (!error)
 +		ksu_handle_newfstat_ret(&fd, &statbuf);
 +#endif
  	return error;
  }
  #endif
-@@ -505,6 +571,12 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
+@@ -505,6 +571,10 @@ SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
  
  	if (!error)
  		error = cp_new_stat64(&stat, statbuf);
-+#if defined(CONFIG_KSU) && \
-+    !defined(CONFIG_KSU_KPROBES_KSUD) && \
-+    !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
++#if defined(CONFIG_KSU) && !defined(CONFIG_KSU_KPROBES_KSUD) && !defined(CONFIG_KSU_TAMPER_SYSCALL_TABLE)
 +	if (!error)
 +		ksu_handle_fstat64_ret(&fd, &statbuf);
 +#endif
@@ -2583,7 +2596,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2679 @@
+@@ -0,0 +1,2680 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -4993,6 +5006,7 @@ new file mode 100644
 +	buf_ptr = info->enabled_features + copied_size;
 +#endif
 +
++	info->enabled_features[copied_size] = '\0';
 +	info->err = 0;
 +out_copy_to_user:
 +	if (copy_to_user((struct st_susfs_enabled_features __user*)*user_info, info, sizeof(struct st_susfs_enabled_features))) {
