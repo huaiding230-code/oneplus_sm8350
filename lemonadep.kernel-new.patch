@@ -2490,7 +2490,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2843 @@
+@@ -0,0 +1,2834 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -4084,20 +4084,6 @@ new file mode 100644
 +bool susfs_open_redirect_is_enabled;
 +static unsigned long susfs_open_redirect_uid_scheme_mask;
 +
-+/* Rebuild under susfs_mutex_lock_open_redirect after every rule replacement. */
-+static void susfs_open_redirect_refresh_uid_scheme_mask(void)
-+{
-+	struct st_susfs_open_redirect_hlist *entry;
-+	unsigned int bucket;
-+	unsigned long mask = 0;
-+
-+	hash_for_each(OPEN_REDIRECT_HLIST, bucket, entry, node) {
-+		if (!entry->reversed_lookup_only)
-+			mask |= 1UL << entry->info.uid_scheme;
-+	}
-+	WRITE_ONCE(susfs_open_redirect_uid_scheme_mask, mask);
-+}
-+
 +/*
 + * Avoid filename_lookup() for process classes that cannot match any installed
 + * rule. Keep inode matching for eligible classes to preserve hard-link,
@@ -4325,13 +4311,18 @@ new file mode 100644
 +		new_entry_target->info.target_pathname, new_entry_target->info.redirected_pathname, new_entry_target->target_ino, new_entry_target->redirected_ino, new_entry_target->target_dev, new_entry_target->redirected_dev, new_entry_target->info.uid_scheme, new_entry_target->reversed_lookup_only, new_entry_target->spoofed_mnt_id);
 +	SUSFS_LOGI("target_pathname: '%s', redirected_pathname: '%s', target_i_ino: '%lu', redirected_i_ino: '%lu', target_s_dev: '%lu', redirected_s_dev: '%lu', uid_scheme: '%d', reversed_lookup_only: %d, spoofed_mnt_id: %d, is successfully added to OPEN_REDIRECT_HLIST\n",
 +		new_entry_redirected->info.target_pathname, new_entry_redirected->info.redirected_pathname, new_entry_redirected->target_ino, new_entry_redirected->redirected_ino, new_entry_redirected->target_dev, new_entry_redirected->redirected_dev, new_entry_redirected->info.uid_scheme, new_entry_redirected->reversed_lookup_only, new_entry_redirected->spoofed_mnt_id);
++	/* Publish the filter bit before exposing a new rule; stale bits only
++	 * cause a harmless extra lookup if a rule is later replaced.
++	 */
++	WRITE_ONCE(susfs_open_redirect_uid_scheme_mask,
++		   READ_ONCE(susfs_open_redirect_uid_scheme_mask) |
++		   (1UL << info.uid_scheme));
 +	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_target->node,
 +		     new_entry_target->target_ino);
 +	hash_add_rcu(OPEN_REDIRECT_HLIST, &new_entry_redirected->node,
 +		     new_entry_redirected->target_ino);
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &redirected_inode->i_mapping->flags);
 +	set_bit(AS_FLAGS_OPEN_REDIRECT, &target_inode->i_mapping->flags);
-+	susfs_open_redirect_refresh_uid_scheme_mask();
 +	WRITE_ONCE(susfs_open_redirect_is_enabled, true);
 +	mutex_unlock(&susfs_mutex_lock_open_redirect);
 +
