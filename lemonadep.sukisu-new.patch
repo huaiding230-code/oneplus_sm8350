@@ -286,7 +286,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 +{
 +	struct filename *filename;
 +	char *path;
-+	constexpr char sh[16] = SH_PATH;
++	static const char sh[] = SH_PATH;
 +
 +	if (!filename_ptr || IS_ERR_OR_NULL(*filename_ptr))
 +		return 0;
@@ -304,7 +304,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 +	else if (!strcmp(syscall_name, "sys_newfstatat"))
 +		write_sulog('s');
 +
-+	memcpy_inline(path, sh, sizeof(sh));
++	memcpy(path, sh, sizeof(sh));
 +	pr_info("su_compat: %s su->sh [kernel filename]%s\n", syscall_name,
 +		is_compat_task() ? " [compat]" : "");
 +	return 1;
