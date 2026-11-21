@@ -26,6 +26,8 @@
 
 # OPEN_REDIRECT Linux 5.4 path_openat-equivalent: redirect resolved path in do_last before vfs_open; remove do_sys_open preflight and global enabled latch; recompute live UID scheme mask.
 
+# Open Redirect rule-table parity: remove non-upstream absolute-path restriction and inode-generation extensions; retain bounded NUL validation and Linux 5.4 readlink byte-count semantics.
+
 diff --git a/drivers/Makefile b/drivers/Makefile
 index aaef17c..daaf7f1 100644
 --- a/drivers/Makefile
@@ -2572,7 +2574,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2776 @@
+@@ -0,0 +1,2760 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -4167,12 +4169,6 @@ new file mode 100644
 +		SUSFS_LOGE("invalid open_redirect pathname (%d)\n", info.err);
 +                goto out_copy_to_user;
 +        }
-+	if (info.target_pathname[0] != '/' ||
-+	    info.redirected_pathname[0] != '/') {
-+		info.err = -EINVAL;
-+		SUSFS_LOGE("open_redirect requires absolute pathnames\n");
-+		goto out_copy_to_user;
-+	}
 +
 +	if (info.uid_scheme < UID_NON_APP_PROC || info.uid_scheme > UID_UMOUNTED_PROC) {
 +		info.err = -EINVAL;
@@ -4235,10 +4231,8 @@ new file mode 100644
 +
 +	new_entry_target->target_ino = target_inode->i_ino;
 +	new_entry_target->target_dev = target_inode->i_sb->s_dev;
-+	new_entry_target->target_generation = target_inode->i_generation;
 +	new_entry_target->redirected_ino = redirected_inode->i_ino;
 +	new_entry_target->redirected_dev = redirected_inode->i_sb->s_dev;
-+	new_entry_target->redirected_generation = redirected_inode->i_generation;
 +	new_entry_target->info.uid_scheme = info.uid_scheme;
 +	new_entry_target->reversed_lookup_only = false;
 +	new_entry_target->spoofed_mnt_id = real_mount(target_path.mnt)->mnt_id;
@@ -4249,10 +4243,8 @@ new file mode 100644
 +
 +	new_entry_redirected->target_ino = redirected_inode->i_ino;
 +	new_entry_redirected->target_dev = redirected_inode->i_sb->s_dev;
-+	new_entry_redirected->target_generation = redirected_inode->i_generation;
 +	new_entry_redirected->redirected_ino = target_inode->i_ino;
 +	new_entry_redirected->redirected_dev = target_inode->i_sb->s_dev;
-+	new_entry_redirected->redirected_generation = target_inode->i_generation;
 +	new_entry_redirected->info.uid_scheme = info.uid_scheme;
 +	new_entry_redirected->reversed_lookup_only = true;
 +	new_entry_redirected->spoofed_mnt_id = new_entry_target->spoofed_mnt_id;
@@ -4308,8 +4300,6 @@ new file mode 100644
 +			if (entry->reversed_lookup_only &&
 +			    entry->target_ino == old_target->redirected_ino &&
 +			    entry->target_dev == old_target->redirected_dev &&
-+			    entry->target_generation ==
-+				old_target->redirected_generation &&
 +			    !strcmp(entry->info.target_pathname,
 +				    old_target->info.redirected_pathname) &&
 +			    !strcmp(entry->info.redirected_pathname,
@@ -4376,8 +4366,7 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (!entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev &&
-+		    entry->target_generation == inode->i_generation)
++		    entry->target_dev == inode->i_sb->s_dev  )
 +		{
 +			switch(entry->info.uid_scheme) {
 +				case UID_NON_APP_PROC:
@@ -4428,8 +4417,7 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev &&
-+		    entry->target_generation == inode->i_generation)
++		    entry->target_dev == inode->i_sb->s_dev  )
 +		{
 +			len = strnlen(entry->info.redirected_pathname,
 +				      sizeof(entry->info.redirected_pathname));
@@ -4456,8 +4444,7 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev &&
-+		    entry->target_generation == inode->i_generation)
++		    entry->target_dev == inode->i_sb->s_dev  )
 +		{
 +			SUSFS_LOGI("spoof path '%s' to '%s'\n",
 +					entry->info.target_pathname, entry->info.redirected_pathname);
@@ -4487,8 +4474,7 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev &&
-+		    entry->target_generation == inode->i_generation)
++		    entry->target_dev == inode->i_sb->s_dev  )
 +		{
 +			SUSFS_LOGI("spoof maps ino/dev/name for redirected path: '%s'\n",
 +					entry->info.target_pathname);
@@ -5669,7 +5655,7 @@ diff --git a/include/linux/susfs.h b/include/linux/susfs.h
 new file mode 100644
 --- /dev/null
 +++ b/include/linux/susfs.h
-@@ -0,0 +1,271 @@
+@@ -0,0 +1,269 @@
 +#ifndef KSU_SUSFS_H
 +#define KSU_SUSFS_H
 +
@@ -5817,10 +5803,8 @@ new file mode 100644
 +	struct hlist_node                       node;
 +	unsigned long                           target_ino;
 +	unsigned long                           target_dev;
-+	u32                                     target_generation;
 +	unsigned long                           redirected_ino;
 +	unsigned long                           redirected_dev;
-+	u32                                     redirected_generation;
 +	int                                     spoofed_mnt_id;
 +	struct kstatfs                          spoofed_kstatfs;
 +	struct st_susfs_open_redirect           info;
