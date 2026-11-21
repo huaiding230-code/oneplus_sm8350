@@ -476,31 +476,7 @@ diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -126,6 +126,23 @@
- 	ksu_allow(db, "init", "adb_data_file", "file", ALL);
- 	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
- 
-+	// Android 17 excludes system_file_type from init's generic restorecon grants.
-+	// ZN can leave staged module objects with these fallback labels; permit only
-+	// the traversal and relabel operations needed to move them to adb_data_file.
-+	ksu_allow(db, "init", "system_file", "file", "getattr");
-+	ksu_allow(db, "init", "system_file", "file", "relabelfrom");
-+	ksu_allow(db, "init", "system_file", "dir", "getattr");
-+	ksu_allow(db, "init", "system_file", "dir", "open");
-+	ksu_allow(db, "init", "system_file", "dir", "read");
-+	ksu_allow(db, "init", "system_file", "dir", "search");
-+	ksu_allow(db, "init", "system_file", "dir", "relabelfrom");
-+	ksu_allow(db, "init", "system_file", "lnk_file", "getattr");
-+	ksu_allow(db, "init", "system_file", "lnk_file", "relabelfrom");
-+	ksu_allow(db, "init", "system_lib_file", "file", "getattr");
-+	ksu_allow(db, "init", "system_lib_file", "file", "relabelfrom");
-+	ksu_allow(db, "init", "adb_data_file", "lnk_file", "relabelto");
-+
-+
- 	// copied from Magisk rules
- 	// suRights
- 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
-@@ -180,6 +208,11 @@
+@@ -180,6 +191,11 @@
  void apply_kernelsu_rules()
  {
  	struct policydb *db;
