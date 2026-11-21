@@ -324,7 +324,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
  
  /*
-@@ -428,14 +483,14 @@
+@@ -436,14 +491,14 @@
  #endif // KSU_CAN_USE_JUMP_LABEL
  #endif
  
@@ -545,7 +545,7 @@ diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
-@@ -179,8 +179,15 @@
+@@ -179,11 +179,18 @@
  	void __user *arg4 = (void __user *)*arg;
  
  	if (magic2 == KSU_INSTALL_MAGIC2) {
@@ -561,6 +561,9 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  
  		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
+ 			pr_err("install ksu fd reply err\n");
+ 			ksu_close_fd(fd);
+ 		}
  
 
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
