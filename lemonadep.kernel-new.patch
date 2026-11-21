@@ -7951,17 +7951,14 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
  /* Policy capability names */
  const char *selinux_policycap_names[__POLICYDB_CAPABILITY_MAX] = {
  	"network_peer_controls",
-@@ -1140,6 +1151,10 @@ void security_compute_av(struct selinux_state *state,
- 	}
+@@ -1195,3 +1206,7 @@ void security_compute_av_user(struct selinux_state *state,
  	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd,
- 				  xperms);
+ 				  NULL);
 +#ifdef CONFIG_KSU_SUSFS
 +	susfs_spoof_avd_allowed_rcu(scontext->type, tcontext->type,
 +					tclass, &avd->allowed);
 +#endif
- 	map_decision(&state->ss->map, orig_tclass, avd,
- 		     policydb->allow_unknown);
- out:
+  out:
 @@ -1506,6 +1521,88 @@ static int context_struct_to_sid(struct selinux_state *state,
  	return sidtab_context_to_sid(sidtab, context, sid);
  }
