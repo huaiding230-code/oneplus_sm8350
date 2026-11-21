@@ -5283,7 +5283,7 @@ new file mode 100644
 index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96cafcbe4d752
 --- /dev/null
 +++ b/include/linux/bootconfig.h
-@@ -0,0 +1,283 @@
+@@ -0,0 +1,270 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef _LINUX_XBC_H
 +#define _LINUX_XBC_H
@@ -5463,10 +5463,7 @@ index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96caf
 + * be used with xbc_find_value() and xbc_node_find_value(), so that user can
 + * process each array entry node.
 + */
-+#define xbc_array_for_each_value(anode, value)				\
-+	for (value = xbc_node_get_data(anode); anode != NULL ;		\
-+	     anode = xbc_node_get_child(anode),				\
-+	     value = anode ? xbc_node_get_data(anode) : NULL)
++#define xbc_array_for_each_value(anode, value) for (value = xbc_node_get_data(anode); anode != NULL ; anode = xbc_node_get_child(anode), value = anode ? xbc_node_get_data(anode) : NULL)
 +
 +/**
 + * xbc_node_for_each_child() - Iterate child nodes
@@ -5476,9 +5473,7 @@ index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96caf
 + * Iterate child nodes of @parent. Each child nodes are stored to @child.
 + * The @child can be mixture of a value node and subkey nodes.
 + */
-+#define xbc_node_for_each_child(parent, child)				\
-+	for (child = xbc_node_get_child(parent); child != NULL ;	\
-+	     child = xbc_node_get_next(child))
++#define xbc_node_for_each_child(parent, child) for (child = xbc_node_get_child(parent); child != NULL ; child = xbc_node_get_next(child))
 +
 +/**
 + * xbc_node_for_each_subkey() - Iterate child subkey nodes
@@ -5488,9 +5483,7 @@ index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96caf
 + * Iterate subkey nodes of @parent. Each child nodes are stored to @child.
 + * The @child is only the subkey node.
 + */
-+#define xbc_node_for_each_subkey(parent, child)				\
-+	for (child = xbc_node_get_subkey(parent); child != NULL ;	\
-+	     child = xbc_node_get_next(child))
++#define xbc_node_for_each_subkey(parent, child) for (child = xbc_node_get_subkey(parent); child != NULL ; child = xbc_node_get_next(child))
 +
 +/**
 + * xbc_node_for_each_array_value() - Iterate array entries of geven key
@@ -5507,10 +5500,7 @@ index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96caf
 + * (key-only node), this does nothing. So don't use this for testing the
 + * key-value pair existence.
 + */
-+#define xbc_node_for_each_array_value(node, key, anode, value)		\
-+	for (value = xbc_node_find_value(node, key, &anode); value != NULL; \
-+	     anode = xbc_node_get_child(anode),				\
-+	     value = anode ? xbc_node_get_data(anode) : NULL)
++#define xbc_node_for_each_array_value(node, key, anode, value) for (value = xbc_node_find_value(node, key, &anode); value != NULL; anode = xbc_node_get_child(anode), value = anode ? xbc_node_get_data(anode) : NULL)
 +
 +/**
 + * xbc_node_for_each_key_value() - Iterate key-value pairs under a node
@@ -5521,9 +5511,7 @@ index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96caf
 + * Iterate key-value pairs under @node. Each key node and value string are
 + * stored in @knode and @value respectively.
 + */
-+#define xbc_node_for_each_key_value(node, knode, value)			\
-+	for (knode = NULL, value = xbc_node_find_next_key_value(node, &knode);\
-+	     knode != NULL; value = xbc_node_find_next_key_value(node, &knode))
++#define xbc_node_for_each_key_value(node, knode, value) for (knode = NULL, value = xbc_node_find_next_key_value(node, &knode); knode != NULL; value = xbc_node_find_next_key_value(node, &knode))
 +
 +/**
 + * xbc_for_each_key_value() - Iterate key-value pairs
@@ -5533,8 +5521,7 @@ index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96caf
 + * Iterate key-value pairs in whole XBC tree. Each key node and value string
 + * are stored in @knode and @value respectively.
 + */
-+#define xbc_for_each_key_value(knode, value)				\
-+	xbc_node_for_each_key_value(NULL, knode, value)
++#define xbc_for_each_key_value(knode, value) xbc_node_for_each_key_value(NULL, knode, value)
 +
 +/* Compose partial key */
 +int __init xbc_node_compose_key_after(struct xbc_node *root,
