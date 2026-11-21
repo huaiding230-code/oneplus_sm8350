@@ -8194,25 +8194,6 @@ diff --git a/techpack/display/msm/dsi/dsi_display.c b/techpack/display/msm/dsi/d
  		}
  	}
  #endif /*OPLUS_BUG_STABILITY*/
-@@ -6317,16 +6318,17 @@
- 	display = platform_get_drvdata(pdev);
- 	if (!display || !display->panel_node) {
- 		DSI_ERR("invalid display\n");
- 		return;
- 	}
- 
- #ifdef OPLUS_BUG_STABILITY
--    oplus_display_private_api_exit();
-+    if (display == get_main_display())
-+	oplus_display_private_api_exit();
- #endif
- 	mutex_lock(&display->display_lock);
- 
- 	rc = dsi_display_mipi_host_deinit(display);
- 	if (rc)
- 		DSI_ERR("[%s] failed to deinit mipi hosts, rc=%d\n",
- 		       display->name,
- 		       rc);
 diff --git a/techpack/display/oplus/oplus_display_private_api.c b/techpack/display/oplus/oplus_display_private_api.c
 --- a/techpack/display/oplus/oplus_display_private_api.c
 +++ b/techpack/display/oplus/oplus_display_private_api.c
