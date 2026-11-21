@@ -28,6 +28,8 @@
 
 # Open Redirect rule-table parity: remove non-upstream absolute-path restriction and inode-generation extensions; retain bounded NUL validation and Linux 5.4 readlink byte-count semantics.
 
+# Open Redirect 5.4 alignment: drop non-upstream absolute/generation extensions; keep bounded string checks and 5.4 readlink byte-count contract.
+
 diff --git a/drivers/Makefile b/drivers/Makefile
 index aaef17c..daaf7f1 100644
 --- a/drivers/Makefile
@@ -2574,7 +2576,7 @@ diff --git a/fs/susfs.c b/fs/susfs.c
 new file mode 100644
 --- /dev/null
 +++ b/fs/susfs.c
-@@ -0,0 +1,2760 @@
+@@ -0,0 +1,2761 @@
 +#include <linux/compiler.h>
 +#include <linux/version.h>
 +#include <linux/cred.h>
@@ -4366,7 +4368,7 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (!entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev  )
++		    entry->target_dev == inode->i_sb->s_dev)
 +		{
 +			switch(entry->info.uid_scheme) {
 +				case UID_NON_APP_PROC:
@@ -4417,10 +4419,11 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev  )
++		    entry->target_dev == inode->i_sb->s_dev)
 +		{
 +			len = strnlen(entry->info.redirected_pathname,
 +				      sizeof(entry->info.redirected_pathname));
++			/* Linux 5.4 vfs_readlink() returns the copied byte count. */
 +			len = min_t(size_t, len, buflen);
 +			SUSFS_LOGI("spoof path '%s' to '%s'\n",
 +					entry->info.target_pathname, entry->info.redirected_pathname);
@@ -4444,7 +4447,7 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev  )
++		    entry->target_dev == inode->i_sb->s_dev)
 +		{
 +			SUSFS_LOGI("spoof path '%s' to '%s'\n",
 +					entry->info.target_pathname, entry->info.redirected_pathname);
@@ -4474,7 +4477,7 @@ new file mode 100644
 +	hash_for_each_possible_srcu(OPEN_REDIRECT_HLIST, entry, node,
 +				    inode->i_ino, &susfs_srcu_open_redirect) {
 +		if (entry->reversed_lookup_only &&
-+		    entry->target_dev == inode->i_sb->s_dev  )
++		    entry->target_dev == inode->i_sb->s_dev)
 +		{
 +			SUSFS_LOGI("spoof maps ino/dev/name for redirected path: '%s'\n",
 +					entry->info.target_pathname);
