@@ -7,6 +7,7 @@ on:
     paths:
       - 'lemonadep.kernel-new.patch'
       - 'lemonadep.sukisu-new.patch'
+      - 'lemonadep.android17-chromium-freezer.patch'
       - '.github/workflows/validate-patches.yml'
   workflow_dispatch:
 
@@ -49,6 +50,15 @@ jobs:
           patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
           git -c core.whitespace=cr-at-eol diff --check
           echo "KERNEL_PATCH_PREFLIGHT=PASS"
+
+      - name: Strict dry-run and apply Android 17 Chromium freezer backport
+        run: |
+          set -euo pipefail
+          cd kernel_source
+          patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.android17-chromium-freezer.patch"
+          patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.android17-chromium-freezer.patch"
+          git -c core.whitespace=cr-at-eol diff --check
+          echo "CHROMIUM_FREEZER_PATCH_PREFLIGHT=PASS"
 
       - name: Strict dry-run and apply SukiSU patch with GNU patch
         run: |
