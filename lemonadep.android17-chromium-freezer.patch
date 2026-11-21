@@ -30,4 +30,5 @@ diff --git a/kernel/signal.c b/kernel/signal.c
 +		cgroup_leave_frozen(false);
  	} else {
  		/*
- 		 * By the time we got the lock, another tracer may come.
+ 		 * By the time we got the lock, our tracer went away.
+		 * Don't drop the lock yet, another tracer may come.
