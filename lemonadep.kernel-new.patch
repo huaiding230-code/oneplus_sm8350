@@ -1,6 +1,6 @@
 # Synced SUSFS upstream gki-android12-5.10 commit 6dff25f2b2508f91df309e537771d612dccd201a (2026-11-14); Linux 5.4 port uses the upstream UID/allowlist bitmap directly, without a legacy TIF fallback.
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4
-# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v5
+# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v6
 # This file REPLACES the previous separate kernel integration patch and
 # review-fix patches. Apply this file ONCE to a clean lineage-24.0 kernel tree.
 # Do NOT apply lemonadep-lineage24-android17-kernel-final.patch or any
@@ -8239,7 +8239,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  			ret = channel->ept.cb(channel->ept.rpdev,
  					intent->data,
  					intent->offset,
-@@ -1288,31 +1290,77 @@
+@@ -1288,31 +1290,74 @@
  {
  	struct qcom_glink *glink = data;
  	struct glink_msg msg;
@@ -8257,13 +8257,13 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 -		glink_resume_pkt = true;
 -		pm_system_wakeup();
 -	}
- 	/* To wakeup any blocking writers */
- 	wake_up_all(&glink->tx_avail_notify);
- 
+-	/* To wakeup any blocking writers */
+-	wake_up_all(&glink->tx_avail_notify);
+-
  	for (;;) {
  		avail = qcom_glink_rx_avail(glink);
 +		if (avail < sizeof(msg)) {
-+			/* A partial header is malformed; an empty IRQ has no work. */
++			/* A partial header is a normal wait for more FIFO data. */
 +			if (avail)
 +				ret = -EAGAIN;
 -		if (avail < sizeof(msg))
@@ -8323,16 +8323,27 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  		switch (cmd) {
  		case GLINK_CMD_VERSION:
  		case GLINK_CMD_VERSION_ACK:
-@@ -1368,9 +1416,18 @@
+@@ -1335,7 +1380,8 @@
+ 			break;
+ 		case GLINK_CMD_READ_NOTIF:
+ 			qcom_glink_rx_advance(glink, ALIGN(sizeof(msg), 8));
++			/* TX FIFO space is released by this peer read notification. */
++			wake_up_all(&glink->tx_avail_notify);
+-
+ 			mbox_send_message(glink->mbox_chan, NULL);
+ 			mbox_client_txdone(glink->mbox_chan, 0);
+ 			break;
+@@ -1368,9 +1414,19 @@
  			break;
  	}
  
 +	/*
-+	 * Do not abort suspend for an IRQ with an empty RX FIFO, IPCRTR
-+	 * bookkeeping, or IPCRTR payloads that QRTR will classify. Keep wakeup
-+	 * for real non-IPCRTR messages and malformed/unknown traffic.
++	 * Do not abort suspend for an empty/partial RX FIFO, IPCRTR
++	 * bookkeeping, or IPCRTR payloads that QRTR will classify. -EAGAIN
++	 * means a fragmented packet is incomplete and more FIFO data is due.
++	 * Keep wakeup for real non-IPCRTR messages and other protocol errors.
 +	 */
-+	if (should_wake && (wake_for_other || ret)) {
++	if (should_wake && (wake_for_other || (ret && ret != -EAGAIN))) {
 +		pr_info("%s: %d triggered %s\n", __func__, irq, glink->irqname);
 +		pm_system_wakeup();
 +	}
