@@ -165,14 +165,19 @@ jobs:
               if token not in intr:
                   raise SystemExit(f"Missing GLINK standby guard: {token}")
 
-          read_notif = intr.index("case GLINK_CMD_READ_NOTIF:")
+          read_notif = intr.rindex("case GLINK_CMD_READ_NOTIF:")
           read_notif_end = intr.index("case GLINK_CMD_INTENT:", read_notif)
           if "wake_up_all(&glink->tx_avail_notify);" not in intr[read_notif:read_notif_end]:
               raise SystemExit("GLINK TX waitqueue is not woken by READ_NOTIF")
           if "wake_up_all(&glink->tx_avail_notify);" in intr[:read_notif]:
               raise SystemExit("GLINK TX waitqueue is still woken on every IRQ")
-          if "if (should_wake) {" in intr and "pm_system_wakeup();" in intr:
-              raise SystemExit("Unconditional GLINK interrupt wakeup has returned")
+          lines = intr.splitlines()
+          for index, line in enumerate(lines):
+              if line.strip() == "if (should_wake) {" and any(
+                  "pm_system_wakeup();" in candidate
+                  for candidate in lines[index:index + 6]
+              ):
+                  raise SystemExit("Unconditional GLINK interrupt wakeup has returned")
           print("GLINK_EMPTY_IRQ_IPCRTR_AND_TX_WAITQUEUE_FILTER=PASS")
 
           qstart = qrtr.index("int qrtr_endpoint_post(")
