@@ -176,7 +176,10 @@ jobs:
               if token not in endpoint:
                   raise SystemExit(f"Missing QRTR standby policy: {token}")
           branch_start = endpoint.index("if (cb->type != QRTR_TYPE_DATA || cb->dst_node != qrtr_local_nid)")
-          local_start = endpoint.index("\\n\\t} else {", branch_start)
+          local_marker = "\\t} else {"
+          local_start = endpoint.find(local_marker, branch_start)
+          if local_start < 0:
+              raise SystemExit("QRTR forward/local branch boundary not found")
           forward_branch = endpoint[branch_start:local_start]
           if "\\t\\tif (wake)\\n\\t\\t\\tpm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);" not in forward_branch:
               raise SystemExit("QRTR forwarding path is missing its wake guard")
