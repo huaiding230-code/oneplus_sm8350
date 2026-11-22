@@ -133,7 +133,7 @@ jobs:
 
           python3 - "$KERNEL" <<'PY'
           from pathlib import Path
-          import re
+          sys_path = __import__("sys").path
           import sys
 
           root = Path(sys.argv[1])
@@ -146,11 +146,10 @@ jobs:
 
           required_glink = (
               "if (avail < sizeof(msg))",
-              "if (avail)",
               "ret = -EAGAIN",
-              "if (should_wake)",
+              "qcom_glink_channel_ref_get(glink, true,",
+              "qcom_glink_channel_ref_get(glink, false,",
               'strcmp(channel->name, "IPCRTR")',
-              "if (should_wake && (wake_for_other || ret))",
               "case GLINK_CMD_CLOSE:",
               "case GLINK_CMD_CLOSE_ACK:",
               "case GLINK_CMD_RX_INTENT_REQ:",
@@ -160,15 +159,21 @@ jobs:
               "case GLINK_CMD_RX_INTENT_REQ_ACK:",
               "case GLINK_CMD_SIGNALS:",
               "case GLINK_CMD_READ_NOTIF:",
-              "qcom_glink_channel_ref_get(glink, true,",
-              "qcom_glink_channel_ref_get(glink, false,",
+              "wake_for_other || (ret && ret != -EAGAIN)",
           )
           for token in required_glink:
               if token not in intr:
                   raise SystemExit(f"Missing GLINK standby guard: {token}")
+
+          read_notif = intr.index("case GLINK_CMD_READ_NOTIF:")
+          read_notif_end = intr.index("case GLINK_CMD_INTENT:", read_notif)
+          if "wake_up_all(&glink->tx_avail_notify);" not in intr[read_notif:read_notif_end]:
+              raise SystemExit("GLINK TX waitqueue is not woken by READ_NOTIF")
+          if "wake_up_all(&glink->tx_avail_notify);" in intr[:read_notif]:
+              raise SystemExit("GLINK TX waitqueue is still woken on every IRQ")
           if "if (should_wake) {" in intr and "pm_system_wakeup();" in intr:
               raise SystemExit("Unconditional GLINK interrupt wakeup has returned")
-          print("GLINK_EMPTY_IRQ_AND_IPCRTR_CONTROL_FILTER=PASS")
+          print("GLINK_EMPTY_IRQ_IPCRTR_AND_TX_WAITQUEUE_FILTER=PASS")
 
           qstart = qrtr.index("int qrtr_endpoint_post(")
           qend = qrtr.index("EXPORT_SYMBOL_GPL(qrtr_endpoint_post);", qstart)
