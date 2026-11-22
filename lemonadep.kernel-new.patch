@@ -8256,7 +8256,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  	/* To wakeup any blocking writers */
  	wake_up_all(&glink->tx_avail_notify);
  
-@@ -1313,6 +1313,22 @@
+@@ -1313,6 +1313,23 @@
  		param1 = le16_to_cpu(msg.param1);
  		param2 = le32_to_cpu(msg.param2);
  
@@ -8280,7 +8280,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  		switch (cmd) {
  		case GLINK_CMD_VERSION:
  		case GLINK_CMD_VERSION_ACK:
-@@ -1368,6 +1384,12 @@
+@@ -1368,6 +1385,12 @@
  			break;
  	}
  
@@ -8292,7 +8292,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 +
  	return IRQ_HANDLED;
  }
-
+ 
 diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 --- a/net/qrtr/qrtr.c
 +++ b/net/qrtr/qrtr.c
