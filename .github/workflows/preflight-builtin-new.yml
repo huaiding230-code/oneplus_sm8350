@@ -1,0 +1,222 @@
+name: SukiSU builtin-new Preflight (LineageOS 24.0)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - lineage-24.0
+    paths:
+      - 'lemonadep.kernel-new.patch'
+      - 'lemonadep.sukisu-new.patch'
+      - '.github/workflows/lemonadep.builtin.full.new.yml'
+      - '.github/workflows/preflight-builtin-new.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: builtin-new-preflight-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    name: Strict patch and integration checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout patch repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Checkout LineageOS kernel source
+        uses: actions/checkout@v5
+        with:
+          repository: LineageOS/android_kernel_oneplus_sm8350
+          ref: lineage-24.0
+          path: kernel_source
+          fetch-depth: 1
+
+      - name: Checkout device module manifests
+        uses: actions/checkout@v5
+        with:
+          repository: LineageOS/android_device_oneplus_sm8350-common
+          ref: lineage-24.0
+          path: device_common_source
+          fetch-depth: 1
+
+      - name: Verify build inputs and SukiSU source revision
+        run: |
+          set -euo pipefail
+
+          KERNEL_PATCH="${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          SUKISU_PATCH="${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          BUILD_WORKFLOW="${GITHUB_WORKSPACE}/.github/workflows/lemonadep.builtin.full.new.yml"
+
+          test -s "$KERNEL_PATCH"
+          test -s "$SUKISU_PATCH"
+          test -s "$BUILD_WORKFLOW"
+          test -f "${GITHUB_WORKSPACE}/kernel_source/arch/arm64/configs/vendor/lahaina-qgki_defconfig"
+
+          # Keep this preflight aligned with the module-image inputs consumed by the full workflow.
+          DEVICE="${GITHUB_WORKSPACE}/device_common_source"
+          for manifest in modules.load modules.include.recovery modules.load.recovery; do
+            test -s "$DEVICE/$manifest" || { echo "Missing or empty device manifest: $manifest"; exit 1; }
+          done
+          test -f "$DEVICE/modules.blocklist" || { echo "Missing device manifest: modules.blocklist"; exit 1; }
+
+          # The patch records the exact upstream SukiSU revision it was adapted against.
+          EXPECTED_SUKISU="$(sed -n 's/^# Target SukiSU builtin-new commit: //p' "$SUKISU_PATCH")"
+          if [[ -z "$EXPECTED_SUKISU" || ${#EXPECTED_SUKISU} -ne 40 ]]; then
+            echo "SukiSU patch must contain one full 40-character target commit."
+            exit 1
+          fi
+          if [[ "$(printf '%s\n' "$EXPECTED_SUKISU" | wc -l)" -ne 1 ]]; then
+            echo "SukiSU patch contains more than one target-commit declaration."
+            exit 1
+          fi
+
+          KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
+          git init "$KSU"
+          git -C "$KSU" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git refs/heads/builtin-new
+          git -C "$KSU" checkout --detach FETCH_HEAD
+
+          ACTUAL_SUKISU="$(git -C "$KSU" rev-parse HEAD)"
+          echo "Expected SukiSU commit: $EXPECTED_SUKISU"
+          echo "Fetched SukiSU commit:  $ACTUAL_SUKISU"
+          if [[ "$ACTUAL_SUKISU" != "$EXPECTED_SUKISU" ]]; then
+            echo "::error::builtin-new moved upstream. Update and revalidate lemonadep.sukisu-new.patch before running the full build."
+            exit 1
+          fi
+          echo "SUKISU_SOURCE_REVISION=PASS"
+
+      - name: Strictly dry-run and apply the kernel patch
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+
+          echo "Kernel source commit: $(git rev-parse HEAD)"
+          patch --version | head -n 1
+
+          patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+
+          git -c core.whitespace=cr-at-eol diff --check
+          grep -Fqx 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          echo "KERNEL_PATCH_PREFLIGHT=PASS"
+
+      - name: Wire SukiSU exactly as the full build workflow does
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+
+          test -d KernelSU/kernel
+          test ! -e drivers/kernelsu
+          test ! -L drivers/kernelsu
+          ln -s ../KernelSU/kernel drivers/kernelsu
+
+          # Mirror lemonadep.builtin.full.new.yml; fail if its insertion point is absent or duplicated.
+          grep -q '^endmenu$' drivers/Kconfig
+          sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
+
+          test -f drivers/kernelsu/Kconfig
+          [[ "$(grep -Fxc 'source "drivers/kernelsu/Kconfig"' drivers/Kconfig)" -eq 1 ]]
+          grep -Fqx 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
+          echo "SUKISU_DRIVER_WIRING=PASS"
+
+      - name: Strictly dry-run and apply the SukiSU 5.4 adaptation
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source/KernelSU"
+
+          patch --version | head -n 1
+          patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+          patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
+
+          git diff --check
+          echo "SUKISU_PATCH_PREFLIGHT=PASS"
+
+      - name: Verify cross-tree hooks, SELinux fixes, and KPM gate
+        run: |
+          set -euo pipefail
+          KERNEL="${GITHUB_WORKSPACE}/kernel_source"
+          KSU="${KERNEL}/KernelSU/kernel"
+
+          require_definition() {
+            local pattern="$1"
+            local root="$2"
+            local description="$3"
+            if ! grep -Rqs --include='*.c' -E "$pattern" "$root"; then
+              echo "::error::Missing SukiSU implementation for kernel hook: $description"
+              exit 1
+            fi
+            echo "FOUND: $description"
+          }
+
+          require_definition '^[[:space:]]*bool[[:space:]]+ksu_seccomp_allow_reboot[[:space:]]*\(' "$KSU" "ksu_seccomp_allow_reboot"
+          require_definition '^[[:space:]]*int[[:space:]]+ksu_handle_faccessat_kernel[[:space:]]*\(' "$KSU" "ksu_handle_faccessat_kernel"
+          require_definition '^[[:space:]]*int[[:space:]]+ksu_handle_stat_kernel[[:space:]]*\(' "$KSU" "ksu_handle_stat_kernel"
+          require_definition '^[[:space:]]*bool[[:space:]]+ksu_su_compat_is_enabled[[:space:]]*\(' "$KSU" "ksu_su_compat_is_enabled"
+          require_definition '^[[:space:]]*struct selinux_state[[:space:]]*\*[[:space:]]*ksu_selinux_hide_select_state[[:space:]]*\(' "$KSU" "ksu_selinux_hide_select_state"
+
+          grep -Fq 'src->value == ksu_domain_type->value' "$KSU/selinux/sepolicy.c"
+          grep -Fq 'effect == AVTAB_ALLOWED' "$KSU/selinux/sepolicy.c"
+
+          # cde5ddc already starts the sdcard monitor at EVENT_BOOT_COMPLETED.
+          monitor_calls="$(grep -R --include='*.c' -F 'susfs_start_sdcard_monitor_fn()' "$KSU" | wc -l | tr -d ' ')"
+          [[ "$monitor_calls" -eq 1 ]] || {
+            echo "::error::Expected exactly one sdcard monitor start, found $monitor_calls."
+            exit 1
+          }
+
+          # On Linux 5.4, the KPM backend must remain compile-gated off.
+          python3 - "$KSU/kernel_compat.h" <<'PY'
+          from pathlib import Path
+          import re, sys
+
+          source = Path(sys.argv[1]).read_text()
+          gate = re.search(
+              r"#if\s+LINUX_VERSION_CODE\s*>=\s*KERNEL_VERSION\(5,\s*10,\s*0\)(.*?)#endif",
+              source,
+              re.S,
+          )
+          if not gate or "KSU_CAN_USE_KPM" not in gate.group(1):
+              raise SystemExit("KPM compatibility gate is not restricted to Linux 5.10+")
+          print("KPM_COMPAT_GATE=PASS (Linux 5.4 remains excluded)")
+          PY
+
+          echo "CROSS_TREE_HOOKS_AND_SELINUX_PREFLIGHT=PASS"
+
+      - name: Verify build workflow Kconfig symbols are defined
+        run: |
+          set -euo pipefail
+          ROOT="${GITHUB_WORKSPACE}/kernel_source"
+
+          # These are the options explicitly required by lemonadep.builtin.full.new.yml.
+          symbols=(
+            RPS BOOT_CONFIG SECCOMP_FILTER FANOTIFY
+            KSU KSU_FEATURE_ADBROOT KSU_SUSFS
+            KSU_SUSFS_SUS_PATH KSU_SUSFS_SUS_MAP KSU_SUSFS_SUS_MOUNT
+            KSU_SUSFS_SUS_KSTAT KSU_SUSFS_INLINE_HOOK
+            KSU_SUSFS_PRIORITY_UID_FILTER KSU_SUSFS_OPEN_REDIRECT
+            KSU_SUSFS_SPOOF_UNAME KSU_SUSFS_ENABLE_LOG
+            KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG
+            DEBUG_KERNEL KALLSYMS SECURITY_YAMA NTFS_FS
+            TCP_CONG_ADVANCED TCP_CONG_CUBIC TCP_CONG_BBR DEFAULT_CUBIC
+            NET_SCH_FQ NET_SCH_DEFAULT DEFAULT_PFIFO_FAST
+            NETFILTER_NETLINK CRYPTO_LZ4 MODULES QCA_CLD_WLAN
+          )
+
+          for symbol in "${symbols[@]}"; do
+            if ! grep -Rqs --include='Kconfig*' -E "^[[:space:]]*(menu)?config[[:space:]]+${symbol}([[:space:]]|$)" "$ROOT"; then
+              echo "::error::Build workflow requests CONFIG_${symbol}, but no matching Kconfig declaration was found."
+              exit 1
+            fi
+          done
+
+          grep -Fq '# CONFIG_KPM is not set' "${GITHUB_WORKSPACE}/.github/workflows/lemonadep.builtin.full.new.yml"
+          echo "BUILDSYSTEM_KCONFIG_DECLARATIONS=PASS"
