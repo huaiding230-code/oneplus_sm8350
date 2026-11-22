@@ -1,6 +1,6 @@
 # Synced SUSFS upstream gki-android12-5.10 commit 6dff25f2b2508f91df309e537771d612dccd201a (2026-11-14); Linux 5.4 port uses the upstream UID/allowlist bitmap directly, without a legacy TIF fallback.
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4
-# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v3
+# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v4
 # This file REPLACES the previous separate kernel integration patch and
 # review-fix patches. Apply this file ONCE to a clean lineage-24.0 kernel tree.
 # Do NOT apply lemonadep-lineage24-android17-kernel-final.patch or any
@@ -8239,13 +8239,17 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  			ret = channel->ept.cb(channel->ept.rpdev,
  					intent->data,
  					intent->offset,
-@@ -1292,13 +1294,11 @@
+@@ -1288,24 +1290,26 @@
+ {
+ 	struct qcom_glink *glink = data;
+ 	struct glink_msg msg;
++	struct glink_channel *channel;
+ 	unsigned int param1;
  	unsigned int param2;
  	unsigned int avail;
  	unsigned int cmd;
-+	struct glink_channel *channel;
-+	bool qrtr_data;
-+	bool deferred_qrtr = false;
++	bool packet_is_qrtr;
++	bool wake_for_other = false;
  	int ret = 0;
  
 -	if (should_wake) {
@@ -8256,58 +8260,80 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  	/* To wakeup any blocking writers */
  	wake_up_all(&glink->tx_avail_notify);
  
-@@ -1313,6 +1313,23 @@
+ 	for (;;) {
+ 		avail = qcom_glink_rx_avail(glink);
++		if (avail < sizeof(msg)) {
++			/* A partial header is malformed; an empty IRQ has no work. */
++			if (avail)
++				ret = -EAGAIN;
+-		if (avail < sizeof(msg))
+ 			break;
++		}
+ 
+ 		qcom_glink_rx_peak(glink, &msg, 0, sizeof(msg));
+ 
+@@ -1313,6 +1317,24 @@
  		param1 = le16_to_cpu(msg.param1);
  		param2 = le32_to_cpu(msg.param2);
  
 +		/*
-+		 * Check the whole FIFO batch before deciding to wake. If it
-+		 * contains IPCRTR data, QRTR will decide from its source service.
++		 * IPCRTR data is classified by QRTR, which has the service-level
++		 * wake policy. All other actual GLINK traffic keeps safe wakeup.
 +		 */
++		packet_is_qrtr = false;
 +		if (should_wake &&
 +		    (cmd == GLINK_CMD_TX_DATA ||
 +		     cmd == GLINK_CMD_TX_DATA_CONT)) {
 +			channel = qcom_glink_channel_ref_get(glink, true, param1);
 +			if (channel) {
-+				qrtr_data = channel->name &&
++				packet_is_qrtr = channel->name &&
 +					!strcmp(channel->name, "IPCRTR");
-+				if (qrtr_data)
-+					deferred_qrtr = true;
 +				qcom_glink_channel_ref_put(channel);
 +			}
 +		}
++		if (!packet_is_qrtr)
++			wake_for_other = true;
 +
  		switch (cmd) {
  		case GLINK_CMD_VERSION:
  		case GLINK_CMD_VERSION_ACK:
-@@ -1368,6 +1385,12 @@
+@@ -1368,9 +1390,17 @@
  			break;
  	}
  
-+	/* Unknown/empty IRQs and malformed deferred data retain safe wakeup. */
-+	if (should_wake && (!deferred_qrtr || ret)) {
++	/*
++	 * Do not abort suspend for an IRQ with an empty RX FIFO. Keep wakeup
++	 * for every real non-IPCRTR message and for malformed/unknown traffic.
++	 */
++	if (should_wake && (wake_for_other || ret)) {
 +		pr_info("%s: %d triggered %s\n", __func__, irq, glink->irqname);
 +		pm_system_wakeup();
 +	}
 +
  	return IRQ_HANDLED;
  }
- 
+-
+ /* Locally initiated rpmsg_create_ept */
+ static struct glink_channel *qcom_glink_create_local(struct qcom_glink *glink,
+ 						     const char *name)
 diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 --- a/net/qrtr/qrtr.c
 +++ b/net/qrtr/qrtr.c
-@@ -926,6 +926,33 @@
+@@ -926,13 +926,48 @@
  	}
  
  	qrtr_log_rx_msg(node, skb);
 +	/*
-+	 * Apply service wake policy before local delivery or forwarding.
-+	 * Modem node 0: only SMS and voice-call services may force a wake.
-+	 * Sensor node 9 never wakes; ADSP node 5 keeps its existing no-wake list.
++	 * Apply the wake policy before local delivery or forwarding:
++	 * - Sensor node 9 never wakes, including QRTR control packets.
++	 * - Modem node 0 wakes only for WMS/SMS and VOICE data.
++	 * - ADSP node 5 retains its existing no-wake service list for data.
 +	 */
-+	if (cb->type == QRTR_TYPE_DATA) {
-+		svc_id = qrtr_get_service_id(cb->src_node, cb->src_port);
-+		if (node->nid == 0) {
++	if (node->nid == 9) {
++		wake = false;
++	} else if (node->nid == 0) {
++		if (cb->type == QRTR_TYPE_DATA) {
++			svc_id = qrtr_get_service_id(cb->src_node, cb->src_port);
 +			switch (svc_id) {
 +			case 0x05: /* QMI WMS: SMS. */
 +			case 0x09: /* QMI VOICE: call control. */
@@ -8316,9 +8342,13 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 +				wake = false;
 +				break;
 +			}
-+		} else if (node->nid == 9) {
++		} else {
++			/* Service discovery and other modem control traffic is housekeeping. */
 +			wake = false;
-+		} else if (node->nid == 5 && svc_id > 0) {
++		}
++	} else if (node->nid == 5 && cb->type == QRTR_TYPE_DATA) {
++		svc_id = qrtr_get_service_id(cb->src_node, cb->src_port);
++		if (svc_id > 0) {
 +			for (i = 0; i < node->no_wake_svc.size; i++) {
 +				if (svc_id == node->no_wake_svc.arr[i]) {
 +					wake = false;
@@ -8330,17 +8360,16 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
  	/* All control packets and non-local destined data packets should be
  	 * queued to the worker for forwarding handling.
  	 */
-@@ -932,7 +961,8 @@
  	if (cb->type != QRTR_TYPE_DATA || cb->dst_node != qrtr_local_nid) {
  		skb_queue_tail(&node->rx_queue, skb);
  		kthread_queue_work(&node->kworker, &node->read_data);
--		pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
 +		if (wake)
 +			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
+-		pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
  	} else {
  		ipc = qrtr_port_lookup(cb->dst_port);
  		if (!ipc) {
-@@ -940,17 +970,6 @@
+@@ -940,18 +975,6 @@
  			return -ENODEV;
  		}
  
@@ -8355,17 +8384,18 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 -				}
 -			}
 -		}
- 
+-
  		if (sock_queue_rcv_skb(&ipc->sk, skb))
  			goto err;
-@@ -959,8 +978,8 @@
+ 
+@@ -959,8 +982,8 @@
  		 * Force wakeup for all packets except for sensors and blacklisted services
  		 * from adsp side
  		 */
--		if ((node->nid != 9 && node->nid != 5) ||
--		    (node->nid == 5 && wake))
 +		if ((node->nid != 9 && node->nid != 5 && node->nid != 0) ||
 +		    ((node->nid == 5 || node->nid == 0) && wake))
+-		if ((node->nid != 9 && node->nid != 5) ||
+-		    (node->nid == 5 && wake))
  			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
  
  		qrtr_port_put(ipc);
