@@ -159,6 +159,9 @@ jobs:
               "case GLINK_CMD_RX_INTENT_REQ_ACK:",
               "case GLINK_CMD_SIGNALS:",
               "case GLINK_CMD_READ_NOTIF:",
+              "current_requires_wake = !channel_is_ipcrtr;",
+              "if (ret != -EAGAIN && current_requires_wake)",
+              "if (current_requires_wake)",
               "wake_for_other || (ret && ret != -EAGAIN)",
           )
           for token in required_glink:
