@@ -1,6 +1,6 @@
 # Synced SUSFS upstream gki-android12-5.10 commit 6dff25f2b2508f91df309e537771d612dccd201a (2026-11-14); Linux 5.4 port uses the upstream UID/allowlist bitmap directly, without a legacy TIF fallback.
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4
-# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v4
+# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v5
 # This file REPLACES the previous separate kernel integration patch and
 # review-fix patches. Apply this file ONCE to a clean lineage-24.0 kernel tree.
 # Do NOT apply lemonadep-lineage24-android17-kernel-final.patch or any
@@ -8239,7 +8239,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  			ret = channel->ept.cb(channel->ept.rpdev,
  					intent->data,
  					intent->offset,
-@@ -1288,24 +1290,26 @@
+@@ -1288,31 +1290,77 @@
  {
  	struct qcom_glink *glink = data;
  	struct glink_msg msg;
@@ -8248,7 +8248,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  	unsigned int param2;
  	unsigned int avail;
  	unsigned int cmd;
-+	bool packet_is_qrtr;
++	bool channel_is_ipcrtr;
 +	bool wake_for_other = false;
  	int ret = 0;
  
@@ -8272,38 +8272,65 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  
  		qcom_glink_rx_peak(glink, &msg, 0, sizeof(msg));
  
-@@ -1313,6 +1317,24 @@
+ 		cmd = le16_to_cpu(msg.cmd);
  		param1 = le16_to_cpu(msg.param1);
  		param2 = le32_to_cpu(msg.param2);
++		channel = NULL;
++		channel_is_ipcrtr = false;
  
 +		/*
-+		 * IPCRTR data is classified by QRTR, which has the service-level
-+		 * wake policy. All other actual GLINK traffic keeps safe wakeup.
++		 * IPCRTR packets are filtered by QRTR's service-level policy.
++		 * Classify every GLINK command that carries a channel ID, not
++		 * only TX_DATA, so IPCRTR flow-control/close traffic cannot
++		 * bypass that policy. READ_NOTIF is transport bookkeeping and
++		 * carries no channel or application payload.
 +		 */
-+		packet_is_qrtr = false;
-+		if (should_wake &&
-+		    (cmd == GLINK_CMD_TX_DATA ||
-+		     cmd == GLINK_CMD_TX_DATA_CONT)) {
-+			channel = qcom_glink_channel_ref_get(glink, true, param1);
-+			if (channel) {
-+				packet_is_qrtr = channel->name &&
-+					!strcmp(channel->name, "IPCRTR");
-+				qcom_glink_channel_ref_put(channel);
++		if (should_wake) {
++			switch (cmd) {
++			case GLINK_CMD_TX_DATA:
++			case GLINK_CMD_TX_DATA_CONT:
++			case GLINK_CMD_CLOSE:
++			case GLINK_CMD_RX_INTENT_REQ:
++			case GLINK_CMD_INTENT:
++			case GLINK_CMD_RX_DONE:
++			case GLINK_CMD_RX_DONE_W_REUSE:
++			case GLINK_CMD_RX_INTENT_REQ_ACK:
++			case GLINK_CMD_SIGNALS:
++				channel = qcom_glink_channel_ref_get(glink, true,
++							       param1);
++				break;
++			case GLINK_CMD_CLOSE_ACK:
++			case GLINK_CMD_OPEN_ACK:
++				channel = qcom_glink_channel_ref_get(glink, false,
++							       param1);
++				break;
++			case GLINK_CMD_READ_NOTIF:
++				channel_is_ipcrtr = true;
++				break;
++			default:
++				break;
 +			}
 +		}
-+		if (!packet_is_qrtr)
++
++		if (channel) {
++			channel_is_ipcrtr = channel->name &&
++				!strcmp(channel->name, "IPCRTR");
++			qcom_glink_channel_ref_put(channel);
++		}
++		if (!channel_is_ipcrtr)
 +			wake_for_other = true;
 +
  		switch (cmd) {
  		case GLINK_CMD_VERSION:
  		case GLINK_CMD_VERSION_ACK:
-@@ -1368,9 +1390,17 @@
+@@ -1368,9 +1416,18 @@
  			break;
  	}
  
 +	/*
-+	 * Do not abort suspend for an IRQ with an empty RX FIFO. Keep wakeup
-+	 * for every real non-IPCRTR message and for malformed/unknown traffic.
++	 * Do not abort suspend for an IRQ with an empty RX FIFO, IPCRTR
++	 * bookkeeping, or IPCRTR payloads that QRTR will classify. Keep wakeup
++	 * for real non-IPCRTR messages and malformed/unknown traffic.
 +	 */
 +	if (should_wake && (wake_for_other || ret)) {
 +		pr_info("%s: %d triggered %s\n", __func__, irq, glink->irqname);
