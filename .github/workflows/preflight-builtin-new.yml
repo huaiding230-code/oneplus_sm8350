@@ -104,9 +104,9 @@ jobs:
               data = Path(name).read_bytes()
               if not data:
                   raise SystemExit(f"ERROR: {name} is empty")
-              if not data.endswith(b"\\n"):
+              if not data.endswith(b"\n"):
                   raise SystemExit(f"ERROR: {name} is missing its final LF; patch may be truncated")
-              if b"\\r\\n" in data:
+              if b"\r\n" in data:
                   raise SystemExit(f"ERROR: {name} contains CRLF line endings; expected LF")
               print(f"{name}: final LF present ({len(data)} bytes)")
           PY
