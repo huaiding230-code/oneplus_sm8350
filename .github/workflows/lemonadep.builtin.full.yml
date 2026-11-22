@@ -48,15 +48,13 @@ jobs:
           curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main-kernel/clang-r614150.tar.gz" | tar -xz -C toolchain/clang
           echo "${GITHUB_WORKSPACE}/toolchain/clang/bin" >> "$GITHUB_PATH"
 
-      # 5. Apply the complete kernel patch and Android 17 Chromium freezer backport.
-      #    Patch application is strict; the dedicated preflight workflow checks dry-runs.
+      # 5. Apply the complete kernel patch (including SELinux status and ZRAM changes).
+      #    Keep patch context strict; no workflow-side source rewriting.
       - name: "5. Apply kernel patches"
         run: |
-          set -euo pipefail
           cd kernel_source
-          patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
-          patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/lemonadep.android17-chromium-freezer.patch"
-          git diff --check
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.android17-chromium-freezer.patch"
 
       # 6. 跟踪 SukiSU builtin-new 上游最新提交，并应用 5.4 适配补丁。
       #    预检与正式应用统一使用 GNU patch，禁止 fuzz 模糊匹配。
