@@ -8,7 +8,7 @@
 diff --git a/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java b/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java
 --- a/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java
 +++ b/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java
-@@ -3941,6 +3941,9 @@
+@@ -3940,6 +3940,9 @@
              } else {
                  // client is unbound.
                  Slog.i(TAG, "Client that requested startInputOrWindowGainedFocus is no longer"
