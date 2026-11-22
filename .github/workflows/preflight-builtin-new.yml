@@ -94,6 +94,23 @@ jobs:
           fi
           echo "SUKISU_SOURCE_REVISION=PASS"
 
+      - name: Reject truncated patch files
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          for name in ("lemonadep.kernel-new.patch", "lemonadep.sukisu-new.patch"):
+              data = Path(name).read_bytes()
+              if not data:
+                  raise SystemExit(f"ERROR: {name} is empty")
+              if not data.endswith(b"\\n"):
+                  raise SystemExit(f"ERROR: {name} is missing its final LF; patch may be truncated")
+              if b"\\r\\n" in data:
+                  raise SystemExit(f"ERROR: {name} contains CRLF line endings; expected LF")
+              print(f"{name}: final LF present ({len(data)} bytes)")
+          PY
+
       - name: Strictly dry-run and apply the kernel patch
         run: |
           set -euo pipefail
