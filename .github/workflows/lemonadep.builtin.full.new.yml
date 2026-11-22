@@ -54,6 +54,7 @@ jobs:
         run: |
           cd kernel_source
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.android17-chromium-freezer.patch"
 
       # 6. 跟踪 SukiSU builtin-new 上游最新提交，并应用 5.4 适配补丁。
       #    预检与正式应用统一使用 GNU patch，禁止 fuzz 模糊匹配。
