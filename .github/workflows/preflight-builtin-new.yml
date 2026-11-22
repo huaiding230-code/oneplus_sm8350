@@ -126,6 +126,61 @@ jobs:
           grep -Fqx 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
           echo "KERNEL_PATCH_PREFLIGHT=PASS"
 
+      - name: Verify standby wake filtering coverage
+        run: |
+          set -euo pipefail
+          KERNEL="${GITHUB_WORKSPACE}/kernel_source"
+
+          python3 - "$KERNEL" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          root = Path(sys.argv[1])
+          glink = (root / "drivers/rpmsg/qcom_glink_native.c").read_text()
+          qrtr = (root / "net/qrtr/qrtr.c").read_text()
+
+          start = glink.index("static irqreturn_t qcom_glink_native_intr(")
+          end = glink.index("/* Locally initiated rpmsg_create_ept */", start)
+          intr = glink[start:end]
+
+          required_glink = (
+              "if (avail < sizeof(msg))",
+              "if (avail)",
+              "ret = -EAGAIN",
+              "qcom_glink_channel_ref_get(glink, true, param1)",
+              'strcmp(channel->name, "IPCRTR")',
+              "if (should_wake && (wake_for_other || ret))",
+          )
+          for token in required_glink:
+              if token not in intr:
+                  raise SystemExit(f"Missing GLINK standby guard: {token}")
+          if re.search(r"if\\s*\\(should_wake\\)\\s*\\{[^}]*pm_system_wakeup", intr, re.S):
+              raise SystemExit("Unconditional GLINK interrupt wakeup has returned")
+          print("GLINK_EMPTY_IRQ_AND_IPCRTR_GUARD=PASS")
+
+          qstart = qrtr.index("int qrtr_endpoint_post(")
+          qend = qrtr.index("EXPORT_SYMBOL_GPL(qrtr_endpoint_post);", qstart)
+          endpoint = qrtr[qstart:qend]
+          policy = endpoint.find("Apply the wake policy before local delivery or forwarding")
+          forward = endpoint.find("if (cb->type != QRTR_TYPE_DATA || cb->dst_node != qrtr_local_nid)")
+          if policy < 0 or forward < 0 or policy > forward:
+              raise SystemExit("QRTR service policy is not applied before forwarding")
+          for token in (
+              "if (node->nid == 9)",
+              "else if (node->nid == 0)",
+              "case 0x05:",
+              "case 0x09:",
+              "if (wake)",
+          ):
+              if token not in endpoint:
+                  raise SystemExit(f"Missing QRTR standby policy: {token}")
+          if "pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);\\n\\t\\tpm_wakeup_ws_event" in endpoint:
+              raise SystemExit("Unconditional QRTR forwarding wakeup has returned")
+          print("QRTR_CONTROL_AND_SERVICE_WAKE_FILTER=PASS")
+          PY
+
+
       - name: Wire SukiSU exactly as the full build workflow does
         run: |
           set -euo pipefail
