@@ -14,7 +14,7 @@
 # path wiring and SRCU rule lifetime; SELinux 5.4 fake-policy SID-table/map
 # lifetime across policy reload; proc bootconfig NULL-safe serialization.
 # Additional non-SUSFS driver changes:
-# defer IPCRTR wake decisions to QRTR; only modem SMS/voice/IMS services may force wake.
+# defer IPCRTR wake decisions to QRTR; only modem SMS/voice services may force wake.
 #
 # Validation: generated as a single net diff from the supplied unpatched
 # kernel source subset to the tree after applying the original integration
@@ -8296,12 +8296,12 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 --- a/net/qrtr/qrtr.c
 +++ b/net/qrtr/qrtr.c
-@@ -926,6 +926,24 @@
+@@ -926,6 +926,22 @@
  	}
  
  	qrtr_log_rx_msg(node, skb);
 +	/*
-+	 * Only SMS, voice-call and IMS video/media services may force a modem wake.
++	 * Only SMS and voice-call services may force a modem wake.
 +	 * Routine status, IMS settings/presence/application notices stay queued.
 +	 * Unclassified services fail closed; QRTR control packets retain their path.
 +	 */
@@ -8310,9 +8310,7 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 +		switch (svc_id) {
 +		case 0x05: /* QMI WMS: SMS. */
 +		case 0x09: /* QMI VOICE: call control. */
-+		case 0x20: /* QMI IMSVT: video telephony. */
-+		case 0x28: /* QMI IMSRTP: active IMS media. */
-+			break;
++++			break;
 +		default:
 +			wake = false;
 +			break;
