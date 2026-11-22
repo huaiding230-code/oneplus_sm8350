@@ -1,16 +1,20 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
-# Original baseline: SukiSU-Ultra builtin-new HEAD 3fd4652a7c0a20d0ee5580b1da90bd16845b608d (2026-11-14); revalidated against builtin-new HEAD 5a3ec4145059ed2c4f22c70a16a28a616e104c33 (2026-11-21).
-# SUSFS path UID filter dispatch and package-list refresh are adapted from upstream 6dff25f2b2508f91df309e537771d612dccd201a.
-# Device-specific and Linux 5.4 compatibility changes only.
-# SUSFS extension, AVC spoof, mount-hide and LSM integration are provided by upstream builtin-new.
-# Apply once to a clean SukiSU builtin-new checkout after applying lemonadep.kernel-new.patch.
-
-# SUSFS follow-up merged 2026-11-21: check TIF_KSU_MANAGED before sucompat seccomp fast-deny; duplicate setuid_hook hunk is already present in the base patch.
+# Target SukiSU builtin-new commit: cde5ddcbacea1e60d239068786c630e59a007cee
+# Source: user-supplied SukiSU-builtin-new.zip (archive root matches the commit SHA)
+# Linux 5.4-only compatibility and device-hook adaptations; KPM remains disabled.
+# Apply once to the clean cde5ddc builtin-new source tree after the kernel patch.
+#
+# Compared with the previous SukiSU patch:
+# - Retain the proven 5.4 SELinux policy snapshot adapter and seccomp-safe manager handling.
+# - Keep the SU path, kernel inline-hook, UID observer, SUSFS AVC and FD authorization fixes.
+# - Do NOT add a second sdcard monitor start: cde5ddc already starts it once in EVENT_BOOT_COMPLETED.
+# - Preserve only KSU-owned SELinux allow-rule snapshots so Zygisk Next rules are not rewound.
 
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
+index 50f3c4a..5f53197 100644
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
-@@ -83,7 +83,8 @@
+@@ -83,7 +83,8 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
      struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
      char dirpath[DATA_PATH_LEN];
  
@@ -20,7 +24,7 @@ diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_
          return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
  
      if (d_type == DT_DIR && namelen >= 8 && !strncmp(name, "vmdl", 4) && !strncmp(name + namelen - 4, ".tmp", 4)) {
-@@ -96,13 +97,13 @@
+@@ -96,13 +97,13 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
          return FILLDIR_ACTOR_CONTINUE;
      }
  
@@ -36,11 +40,11 @@ diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_
          struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
  
          if (!p) {
-
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index c8eac6a..e910fc7 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -222,6 +222,96 @@
+@@ -228,6 +228,96 @@ extern struct selinux_state selinux_state;
  #endif
  
  static struct page *ksu_fake_status_page __read_mostly = nullptr;
@@ -137,7 +141,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  static int ksu_prepare_fake_status_page()
  {
  	struct page *real_page = ksu_selinux_kernel_status_page();
-@@ -250,7 +340,12 @@
+@@ -256,6 +346,11 @@ static int ksu_prepare_fake_status_page()
  #endif
  
  	ksu_fake_status_page = new_page;
@@ -149,8 +153,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
      
  	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%d\n", fake_status->sequence);
              
- 	return 0;
-@@ -268,7 +363,9 @@
+@@ -274,7 +369,9 @@ static int ksu_prepare_fake_status_page()
   *   <  4.3 : extern bool fake_status_initialize_key;
   *            test with a plain READ_ONCE().
   */
@@ -160,20 +163,20 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  struct page *fake_status __read_mostly = NULL;
  
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-@@ -402,8 +499,12 @@
+@@ -409,8 +506,12 @@ page_ok:
  	if (fake_status) {
  		if (ksu_fake_status_init_pending())
  			ksu_fake_status_init_stop();
-+		#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +		ksu_legacy_update_running();
-+		#else
++#else
  		if (ksu_selinux_hide_enabled)
  			ksu_selinux_hide_running = true;
-+		#endif
++#endif
  	} else {
  		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
  	}
-@@ -413,7 +514,10 @@
+@@ -423,6 +524,9 @@ page_ok:
  #endif
  
  	// selinux_setprocattr hook init is on lsm.
@@ -183,8 +186,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	
  	// downstream/slow_avc_audit_defs.h
  	ksu_init_slow_avc_audit_hook();
- 
-@@ -441,7 +545,9 @@
+@@ -451,7 +555,9 @@ static int selinux_hide_feature_set(u64 value)
  	else
  		ksu_selinux_hide_enabled = false;
  
@@ -195,8 +197,8 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
  	// kernel-side status/context/access spoof follows this flag
  	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
  #endif
-
 diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
+index a43d579..4810a3f 100644
 --- a/kernel/feature/selinux_hide.h
 +++ b/kernel/feature/selinux_hide.h
 @@ -16,8 +16,15 @@
@@ -215,8 +217,8 @@ diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
  
  static int sepol_expected_argc(u32 cmd);
  
-
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 0a58cf2..e303e0d 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -5,6 +5,7 @@
@@ -227,7 +229,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #define SH_PATH "/system/bin/sh"
  
  #ifdef CONFIG_KSU_SUSFS
-@@ -39,8 +40,14 @@
+@@ -39,8 +40,14 @@ bool ksu_su_compat_enabled __read_mostly = true;
  #endif
  
  static const char su_path[] = SU_PATH;
@@ -242,7 +244,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #else
  static bool ksu_su_compat_enabled __read_mostly = true;
  #endif
-@@ -147,7 +154,8 @@
+@@ -147,7 +154,8 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
  	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
  		return -EINVAL;
  
@@ -252,7 +254,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		return -EINVAL;
  
  	ret = escape_with_root_profile();
-@@ -187,7 +195,8 @@
+@@ -187,7 +195,8 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -262,7 +264,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		return 0;
  
  	pr_info("ksu_handle_faccessat: su->sh!\n");
-@@ -202,7 +211,8 @@
+@@ -202,7 +211,8 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -272,7 +274,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		return 0;
  
  	pr_info("ksu_handle_stat: su->sh!\n");
-@@ -210,6 +220,51 @@
+@@ -210,6 +220,51 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
  	return 0;
  }
  
@@ -324,7 +326,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
  
  /*
-@@ -436,14 +491,14 @@
+@@ -436,14 +491,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
  #endif // KSU_CAN_USE_JUMP_LABEL
  #endif
  
@@ -343,8 +345,8 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
  	if (!ksu_is_allow_uid_for_current(current_uid().val))
  		return false;
-
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index bd55641..c23f960 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
 @@ -1,3 +1,42 @@
@@ -390,10 +392,12 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -15,8 +54,15 @@
+@@ -13,10 +52,15 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
- 	// we dont have those new fancy things upstream has
- 	// lets just do the original thing where we disable seccomp
+-	// we dont have those new fancy things upstream has
+-	// lets just do the original thing where we disable seccomp
 -	if (unlikely(is_uid_manager(new_uid)))
 -		goto install_ksu_fd;
 +	/* Keep the manager's inherited seccomp filter; only the exact reboot
@@ -408,7 +412,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +71,6 @@
+@@ -25,10 +69,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	ksu_handle_umount(new, old);
  	return;
  
@@ -419,7 +423,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  kill_seccomp:
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-@@ -69,9 +111,9 @@
+@@ -69,9 +109,9 @@ static int handle_zygote_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -430,7 +434,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  		return 0;
  	}
  
-@@ -117,9 +159,9 @@
+@@ -117,9 +157,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -441,11 +445,11 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  		return 0;
  	}
  
-
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
+index 679fe9d..7766652 100644
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
-@@ -110,6 +110,10 @@
+@@ -110,6 +110,10 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
  
  	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
  	track_throne(false);
@@ -456,27 +460,11 @@ diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
  #if defined(CONFIG_KSU_SUSFS_SUS_PATH) 
  	// Renew the sus path uid bitmap filter after packages.list changed
  	susfs_parse_sus_path_app_strings();
-
-diff --git a/kernel/runtime/boot_event.c b/kernel/runtime/boot_event.c
---- a/kernel/runtime/boot_event.c
-+++ b/kernel/runtime/boot_event.c
-@@ -11,6 +11,11 @@
- 	done = true;
- 	pr_info("on_post_fs_data!\n");
- 
-+#ifdef CONFIG_KSU_SUSFS
-+	/* /data/media/0 is mounted by this stage; start the SUSFS sdcard watcher. */
-+	susfs_start_sdcard_monitor_fn();
-+#endif
-+
- 	ksu_load_allow_list();
- 
- 	// Sanity check for safe mode only needs early-boot input samples.
-
 diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index 832cf09..86e3fa3 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
-@@ -180,6 +191,11 @@
+@@ -183,6 +183,11 @@ static int apply_kernelsu_rules_fn(void *ptr)
  void apply_kernelsu_rules()
  {
  	struct policydb *db;
@@ -488,11 +476,24 @@ diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
  
  	if (!getenforce()) {
  		pr_info("SELinux permissive or disabled, apply rules!\n");
-
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+index 6acac71..815eb68 100644
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -334,7 +334,7 @@ bool susfs_is_current_zygote_next_domain(void)
+ 
+ bool susfs_is_current_ksu_domain(void)
+ {
+-	return unlikely(susfs_current_sid() == susfs_ksu_sid);
++	return is_ksu_domain();
+ }
+ 
+ bool susfs_is_current_init_domain(void)
 diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index d171463..c4e685c 100644
 --- a/kernel/selinux/sepolicy.c
 +++ b/kernel/selinux/sepolicy.c
-@@ -345,10 +345,20 @@
+@@ -345,10 +345,20 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
  		}
  
  #ifdef CONFIG_KSU_SUSFS
@@ -517,11 +518,11 @@ diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
  
  		if (invert) {
  			if (perm)
-
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
+index a6d606a..2f3ce81 100644
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
-@@ -179,11 +179,18 @@
+@@ -179,7 +179,14 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
  	void __user *arg4 = (void __user *)*arg;
  
  	if (magic2 == KSU_INSTALL_MAGIC2) {
@@ -537,16 +538,3 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  
  		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
- 			pr_err("install ksu fd reply err\n");
- 			ksu_close_fd(fd);
- 		}
- 
-
-diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
---- a/kernel/selinux/selinux.c
-+++ b/kernel/selinux/selinux.c
-@@ -336,3 +336,3 @@ bool susfs_is_current_ksu_domain(void)
- {
--	return unlikely(susfs_current_sid() == susfs_ksu_sid);
-+	return is_ksu_domain();
- }
