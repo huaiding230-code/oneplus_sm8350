@@ -166,7 +166,7 @@ jobs:
           for token in required_glink:
               if token not in intr:
                   raise SystemExit(f"Missing GLINK standby guard: {token}")
-          if re.search(r"if\\s*\\(should_wake\\)\\s*\\{[^}]*pm_system_wakeup", intr, re.S):
+          if "if (should_wake) {" in intr and "pm_system_wakeup();" in intr:
               raise SystemExit("Unconditional GLINK interrupt wakeup has returned")
           print("GLINK_EMPTY_IRQ_AND_IPCRTR_CONTROL_FILTER=PASS")
 
