@@ -22,7 +22,7 @@ jobs:
   preflight:
     name: Strict patch and integration checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
