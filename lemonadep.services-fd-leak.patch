@@ -1,18 +1,16 @@
-# Frameworks/base-only patch; do NOT apply in the kernel source tree.
-# Fix: release the InputBindResult InputChannel when ZeroJankProxy discovers
-# that the requesting client has already been unbound. Successful delivery
-# remains unchanged; IInputMethodClientInvoker owns disposal on that path.
-# Apply only to a frameworks/base source tree whose ZeroJankProxy.java contains
-# sendOnStartInputResult(IInputMethodClient, InputBindResult, int).
-diff --git a/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java b/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java
---- a/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java
-+++ b/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java
-@@ -465,11 +465,14 @@
-             if (cs != null && cs.mClient != null) {
-                 cs.mClient.onStartInputResult(res, startInputSeq);
+# Frameworks/base patch for LineageOS 24.0 / Android 17.
+# When startInput returns an InputBindResult with a duplicated InputChannel,
+# the normal path transfers it to IInputMethodClientInvoker, which disposes
+# the server-side copy in its finally block. If the client was unbound before
+# delivery, no invoker is called and the duplicated channel must be disposed
+# here to avoid leaking socket file descriptors in system_server.
+# This patch is for android_frameworks_base, NOT the kernel source tree.
+diff --git a/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java b/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java
+--- a/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java
++++ b/services/core/java/com/android/server/inputmethod/InputMethodManagerService.java
+@@ -3941,6 +3941,9 @@
              } else {
--                // client is unbound.
-+                // The result will not be delivered, so release its duplicated channel.
+                 // client is unbound.
                  Slog.i(TAG, "Client that requested startInputOrWindowGainedFocus is no longer"
                          + " bound. InputBindResult: " + res + " for startInputSeq: "
                          + startInputSeq);
@@ -20,5 +18,3 @@ diff --git a/services/core/java/com/android/server/inputmethod/ZeroJankProxy.jav
 +                    res.channel.dispose();
 +                }
              }
-         }
-     }
