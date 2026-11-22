@@ -1,0 +1,24 @@
+# Frameworks/base-only patch; do NOT apply in the kernel source tree.
+# Fix: release the InputBindResult InputChannel when ZeroJankProxy discovers
+# that the requesting client has already been unbound. Successful delivery
+# remains unchanged; IInputMethodClientInvoker owns disposal on that path.
+# Apply only to a frameworks/base source tree whose ZeroJankProxy.java contains
+# sendOnStartInputResult(IInputMethodClient, InputBindResult, int).
+diff --git a/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java b/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java
+--- a/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java
++++ b/services/core/java/com/android/server/inputmethod/ZeroJankProxy.java
+@@ -465,11 +465,14 @@
+             if (cs != null && cs.mClient != null) {
+                 cs.mClient.onStartInputResult(res, startInputSeq);
+             } else {
+-                // client is unbound.
++                // The result will not be delivered, so release its duplicated channel.
+                 Slog.i(TAG, "Client that requested startInputOrWindowGainedFocus is no longer"
+                         + " bound. InputBindResult: " + res + " for startInputSeq: "
+                         + startInputSeq);
++                if (res.channel != null) {
++                    res.channel.dispose();
++                }
+             }
+         }
+     }
