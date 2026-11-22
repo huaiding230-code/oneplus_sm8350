@@ -1,6 +1,6 @@
 # Synced SUSFS upstream gki-android12-5.10 commit 6dff25f2b2508f91df309e537771d612dccd201a (2026-11-14); Linux 5.4 port uses the upstream UID/allowlist bitmap directly, without a legacy TIF fallback.
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4
-# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v6
+# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v7
 # This file REPLACES the previous separate kernel integration patch and
 # review-fix patches. Apply this file ONCE to a clean lineage-24.0 kernel tree.
 # Do NOT apply lemonadep-lineage24-android17-kernel-final.patch or any
@@ -8249,6 +8249,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  	unsigned int avail;
  	unsigned int cmd;
 +	bool channel_is_ipcrtr;
++	bool current_requires_wake;
 +	bool wake_for_other = false;
  	int ret = 0;
  
@@ -8317,8 +8318,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 +				!strcmp(channel->name, "IPCRTR");
 +			qcom_glink_channel_ref_put(channel);
 +		}
-+		if (!channel_is_ipcrtr)
-+			wake_for_other = true;
++		current_requires_wake = !channel_is_ipcrtr;
 +
  		switch (cmd) {
  		case GLINK_CMD_VERSION:
@@ -8333,15 +8333,27 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  			mbox_send_message(glink->mbox_chan, NULL);
  			mbox_client_txdone(glink->mbox_chan, 0);
  			break;
-@@ -1368,9 +1414,19 @@
+@@ -1364,13 +1410,30 @@
  			break;
+ 		}
+ 
++		if (ret) {
++			/* -EAGAIN is a normal incomplete FIFO fragment. */
++			if (ret != -EAGAIN && current_requires_wake)
++				wake_for_other = true;
+-		if (ret)
+ 			break;
++		}
++
++		/* Only a fully handled non-IPCRTR message needs a system wake. */
++		if (current_requires_wake)
++			wake_for_other = true;
  	}
  
 +	/*
 +	 * Do not abort suspend for an empty/partial RX FIFO, IPCRTR
-+	 * bookkeeping, or IPCRTR payloads that QRTR will classify. -EAGAIN
-+	 * means a fragmented packet is incomplete and more FIFO data is due.
-+	 * Keep wakeup for real non-IPCRTR messages and other protocol errors.
++	 * bookkeeping, or IPCRTR payloads that QRTR will classify. Keep wakeup
++	 * for complete non-IPCRTR messages and other protocol errors.
 +	 */
 +	if (should_wake && (wake_for_other || (ret && ret != -EAGAIN))) {
 +		pr_info("%s: %d triggered %s\n", __func__, irq, glink->irqname);
