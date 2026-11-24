@@ -1,6 +1,6 @@
 # Synced SUSFS upstream gki-android12-5.10 commit 6dff25f2b2508f91df309e537771d612dccd201a (2026-11-14); Linux 5.4 port uses the upstream UID/allowlist bitmap directly, without a legacy TIF fallback.
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4
-# COMPLETE KERNEL INTEGRATION + CONFIRMED REPAIR PATCH v8
+# COMPLETE KERNEL INTEGRATION + REVIEWED WAKEUP FIX PATCH v9
 # This file REPLACES the previous separate kernel integration patch and
 # review-fix patches. Apply this file ONCE to a clean lineage-24.0 kernel tree.
 # Do NOT apply lemonadep-lineage24-android17-kernel-final.patch or any
@@ -8251,6 +8251,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
  	unsigned int cmd;
 +	bool channel_is_ipcrtr;
 +	bool channel_is_pmic_logs;
++	bool channel_resolved;
 +	bool current_requires_wake;
 +	bool wake_for_other = false;
  	int ret = 0;
@@ -8281,6 +8282,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 +		channel = NULL;
 +		channel_is_ipcrtr = false;
 +		channel_is_pmic_logs = false;
++		channel_resolved = false;
  
 +		/*
 +		 * IPCRTR packets are filtered by QRTR's service-level policy.
@@ -8317,6 +8319,7 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 +		}
 +
 +		if (channel) {
++			channel_resolved = true;
 +			channel_is_ipcrtr = channel->name &&
 +				!strcmp(channel->name, "IPCRTR");
 +			channel_is_pmic_logs = channel->name &&
@@ -8326,18 +8329,15 @@ diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native
 +		current_requires_wake = !channel_is_ipcrtr;
 +
 +		/* Intent completion is bookkeeping; debug-log payloads are non-critical. */
-+		switch (cmd) {
-+		case GLINK_CMD_RX_DONE:
-+		case GLINK_CMD_RX_DONE_W_REUSE:
++		if (channel_resolved &&
++		    (cmd == GLINK_CMD_RX_DONE ||
++		     cmd == GLINK_CMD_RX_DONE_W_REUSE)) {
 +			current_requires_wake = false;
-+			break;
-+		case GLINK_CMD_TX_DATA:
-+		case GLINK_CMD_TX_DATA_CONT:
-+			if (channel_is_pmic_logs)
-+				current_requires_wake = false;
-+			break;
-+		default:
-+			break;
++		} else if (channel_resolved &&
++			   (cmd == GLINK_CMD_TX_DATA ||
++			    cmd == GLINK_CMD_TX_DATA_CONT) &&
++			   channel_is_pmic_logs) {
++			current_requires_wake = false;
 +		}
 +
  		switch (cmd) {
