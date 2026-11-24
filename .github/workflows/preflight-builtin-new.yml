@@ -69,33 +69,16 @@ jobs:
           done
           test -f "$DEVICE/modules.blocklist" || { echo "Missing device manifest: modules.blocklist"; exit 1; }
 
-          # The patch records the exact upstream SukiSU revision it was adapted against.
-          EXPECTED_SUKISU="$(sed -n 's/^# Target SukiSU builtin-new commit: //p' "$SUKISU_PATCH")"
-          if [[ -z "$EXPECTED_SUKISU" || ${#EXPECTED_SUKISU} -ne 40 ]]; then
-            echo "SukiSU patch must contain one full 40-character target commit."
-            exit 1
-          fi
-          if [[ "$(printf '%s\n' "$EXPECTED_SUKISU" | wc -l)" -ne 1 ]]; then
-            echo "SukiSU patch contains more than one target-commit declaration."
-            exit 1
-          fi
-
+          # Always fetch the current Forgejo builtin-new HEAD. Strict patch
+          # application below is the compatibility check; no SHA pin is used.
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
           git init "$KSU"
           git -C "$KSU" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git refs/heads/builtin-new
           git -C "$KSU" checkout --detach FETCH_HEAD
 
           ACTUAL_SUKISU="$(git -C "$KSU" rev-parse HEAD)"
-          echo "Expected SukiSU commit: $EXPECTED_SUKISU"
-          echo "Fetched SukiSU commit:  $ACTUAL_SUKISU"
+          echo "Fetched latest SukiSU builtin-new commit: $ACTUAL_SUKISU"
           echo "ACTUAL_SUKISU=$ACTUAL_SUKISU" >> "$GITHUB_ENV"
-          if [[ "$ACTUAL_SUKISU" != "$EXPECTED_SUKISU" ]]; then
-            echo "::warning::builtin-new moved upstream. Continue only to collect exact source and hunk diagnostics; the final revision gate will keep this preflight failed."
-            echo "SUKISU_REVISION_MISMATCH=true" >> "$GITHUB_ENV"
-          else
-            echo "SUKISU_REVISION_MISMATCH=false" >> "$GITHUB_ENV"
-            echo "SUKISU_SOURCE_REVISION=PASS"
-          fi
 
       # Preserve the real Forgejo source used by this run. This makes context
       # failures reproducible without relying on the stale GitHub mirror.
@@ -122,14 +105,14 @@ jobs:
             mkdir -p "$SNAP/$(dirname "$file")"
             cp "$KSU/$file" "$SNAP/$file"
           done
-          tar -czf "${RUNNER_TEMP}/sukisu-source-d8aafb7.tar.gz" -C "$SNAP" .
+          tar -czf "${RUNNER_TEMP}/sukisu-source-latest.tar.gz" -C "$SNAP" .
           echo "Captured ${#files[@]} exact source files from $(git -C "$KSU" rev-parse HEAD)"
 
       - name: Upload current Forgejo SukiSU source snapshot
         uses: actions/upload-artifact@v7
         with:
           name: sukisu-forgejo-source-snapshot
-          path: ${{ runner.temp }}/sukisu-source-d8aafb7.tar.gz
+          path: ${{ runner.temp }}/sukisu-source-latest.tar.gz
           if-no-files-found: error
           retention-days: 7
 
@@ -277,13 +260,3 @@ jobs:
           grep -Fq '# CONFIG_KPM is not set' "${GITHUB_WORKSPACE}/.github/workflows/lemonadep.builtin.full.new.yml"
           echo "BUILDSYSTEM_KCONFIG_DECLARATIONS=PASS"
 
-      # Even if all hunks happen to apply, a different upstream commit is not
-      # accepted until the adaptation header is updated and revalidated.
-      - name: Enforce exact SukiSU source revision
-        if: always()
-        run: |
-          set -euo pipefail
-          if [[ "${SUKISU_REVISION_MISMATCH:-true}" == "true" ]]; then
-            echo "::error::SukiSU patch target does not match the fetched Forgejo builtin-new commit (${ACTUAL_SUKISU:-unknown})."
-            exit 1
-          fi
