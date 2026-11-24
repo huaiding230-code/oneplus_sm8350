@@ -1,13 +1,13 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
-# Target SukiSU builtin-new commit: cde5ddcbacea1e60d239068786c630e59a007cee
-# Source: user-supplied SukiSU-builtin-new.zip (archive root matches the commit SHA)
-# Linux 5.4-only compatibility and device-hook adaptations; KPM remains disabled.
-# Apply once to the clean cde5ddc builtin-new source tree after the kernel patch.
+# Target: current Forgejo SukiSU builtin-new branch HEAD (fetched at build time).
+# This patch carries Linux 5.4-only compatibility and device-hook adaptations.
+# KPM remains disabled. Apply after the kernel patch; strict --fuzz=0 preflight
+# must pass against the fetched upstream HEAD before using this adaptation.
 #
 # Compared with the previous SukiSU patch:
 # - Retain the proven 5.4 SELinux policy snapshot adapter and seccomp-safe manager handling.
 # - Keep the SU path, kernel inline-hook, UID observer, SUSFS AVC and FD authorization fixes.
-# - Do NOT add a second sdcard monitor start: cde5ddc already starts it once in EVENT_BOOT_COMPLETED.
+# - Do NOT add a second sdcard monitor start: the base source already starts it once in EVENT_BOOT_COMPLETED.
 # - Preserve only KSU-owned SELinux allow-rule snapshots so Zygisk Next rules are not rewound.
 
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
