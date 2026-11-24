@@ -88,11 +88,50 @@ jobs:
           ACTUAL_SUKISU="$(git -C "$KSU" rev-parse HEAD)"
           echo "Expected SukiSU commit: $EXPECTED_SUKISU"
           echo "Fetched SukiSU commit:  $ACTUAL_SUKISU"
+          echo "ACTUAL_SUKISU=$ACTUAL_SUKISU" >> "$GITHUB_ENV"
           if [[ "$ACTUAL_SUKISU" != "$EXPECTED_SUKISU" ]]; then
-            echo "::error::builtin-new moved upstream. Update and revalidate lemonadep.sukisu-new.patch before running the full build."
-            exit 1
+            echo "::warning::builtin-new moved upstream. Continue only to collect exact source and hunk diagnostics; the final revision gate will keep this preflight failed."
+            echo "SUKISU_REVISION_MISMATCH=true" >> "$GITHUB_ENV"
+          else
+            echo "SUKISU_REVISION_MISMATCH=false" >> "$GITHUB_ENV"
+            echo "SUKISU_SOURCE_REVISION=PASS"
           fi
-          echo "SUKISU_SOURCE_REVISION=PASS"
+
+      # Preserve the real Forgejo source used by this run. This makes context
+      # failures reproducible without relying on the stale GitHub mirror.
+      - name: Capture current Forgejo SukiSU source files
+        run: |
+          set -euo pipefail
+          KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
+          SNAP="${RUNNER_TEMP}/sukisu-source"
+          mkdir -p "$SNAP"
+          files=(
+            kernel/extension/dynamic_sig_fallback.c
+            kernel/feature/selinux_hide.c
+            kernel/feature/selinux_hide.h
+            kernel/feature/sucompat.c
+            kernel/hook/setuid_hook.c
+            kernel/manager/pkg_observer.c
+            kernel/selinux/rules.c
+            kernel/selinux/selinux.c
+            kernel/selinux/sepolicy.c
+            kernel/supercall/supercall.c
+          )
+          printf 'commit=%s\\n' "$(git -C "$KSU" rev-parse HEAD)" > "$SNAP/REVISION.txt"
+          for file in "${files[@]}"; do
+            mkdir -p "$SNAP/$(dirname "$file")"
+            cp "$KSU/$file" "$SNAP/$file"
+          done
+          tar -czf "${RUNNER_TEMP}/sukisu-source-d8aafb7.tar.gz" -C "$SNAP" .
+          echo "Captured ${#files[@]} exact source files from $(git -C "$KSU" rev-parse HEAD)"
+
+      - name: Upload current Forgejo SukiSU source snapshot
+        uses: actions/upload-artifact@v7
+        with:
+          name: sukisu-forgejo-source-snapshot
+          path: ${{ runner.temp }}/sukisu-source-d8aafb7.tar.gz
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Reject truncated patch files
         run: |
@@ -237,3 +276,14 @@ jobs:
 
           grep -Fq '# CONFIG_KPM is not set' "${GITHUB_WORKSPACE}/.github/workflows/lemonadep.builtin.full.new.yml"
           echo "BUILDSYSTEM_KCONFIG_DECLARATIONS=PASS"
+
+      # Even if all hunks happen to apply, a different upstream commit is not
+      # accepted until the adaptation header is updated and revalidated.
+      - name: Enforce exact SukiSU source revision
+        if: always()
+        run: |
+          set -euo pipefail
+          if [[ "${SUKISU_REVISION_MISMATCH:-true}" == "true" ]]; then
+            echo "::error::SukiSU patch target does not match the fetched Forgejo builtin-new commit (${ACTUAL_SUKISU:-unknown})."
+            exit 1
+          fi
