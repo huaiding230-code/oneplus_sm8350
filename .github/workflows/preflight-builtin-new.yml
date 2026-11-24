@@ -89,6 +89,8 @@ jobs:
           SNAP="${RUNNER_TEMP}/sukisu-source"
           mkdir -p "$SNAP"
           files=(
+            kernel/ksu.c
+            kernel/selinux/selinux.h
             kernel/kernel_compat.h
             kernel/Makefile
             kernel/Kconfig
@@ -104,6 +106,7 @@ jobs:
             kernel/supercall/supercall.c
           )
           printf 'commit=%s\\n' "$(git -C "$KSU" rev-parse HEAD)" > "$SNAP/REVISION.txt"
+          git -C "$KSU" grep -n 'KSU_COMPAT_USE_SELINUX_STATE' -- kernel > "$SNAP/KSU_COMPAT_USE_SELINUX_STATE.matches.txt" || true
           for file in "${files[@]}"; do
             mkdir -p "$SNAP/$(dirname "$file")"
             cp "$KSU/$file" "$SNAP/$file"
