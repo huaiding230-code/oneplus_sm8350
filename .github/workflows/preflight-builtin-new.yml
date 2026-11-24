@@ -89,6 +89,9 @@ jobs:
           SNAP="${RUNNER_TEMP}/sukisu-source"
           mkdir -p "$SNAP"
           files=(
+            kernel/kernel_compat.h
+            kernel/Makefile
+            kernel/Kconfig
             kernel/extension/dynamic_sig_fallback.c
             kernel/feature/selinux_hide.c
             kernel/feature/selinux_hide.h
