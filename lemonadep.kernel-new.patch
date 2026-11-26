@@ -8215,7 +8215,6 @@ diff --git a/scripts/Makefile.build b/scripts/Makefile.build
  		    > $@.symversions;						\
  	fi;
 
-
 diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
 --- a/drivers/rpmsg/qcom_glink_native.c
 +++ b/drivers/rpmsg/qcom_glink_native.c
