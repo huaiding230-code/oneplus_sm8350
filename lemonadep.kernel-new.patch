@@ -8215,18 +8215,6 @@ diff --git a/scripts/Makefile.build b/scripts/Makefile.build
  		    > $@.symversions;						\
  	fi;
 
-diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h
---- a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h
-+++ b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.h
-@@ -13,7 +13,7 @@
- #define IPA_PM_MAX_EX_CL 64
- #define IPA_PM_THRESHOLD_MAX 5
- #define IPA_PM_EXCEPTION_MAX 5
--#define IPA_PM_DEFERRED_TIMEOUT 100
-+#define IPA_PM_DEFERRED_TIMEOUT 10
- 
- /*
-  * ipa_pm group names
 
 diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
 --- a/drivers/rpmsg/qcom_glink_native.c
