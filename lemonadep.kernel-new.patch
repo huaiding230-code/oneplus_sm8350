@@ -163,7 +163,7 @@ index 910b407d267ec799dcfc3e0f2688657a03e123bc..463376611f06073c7a658f0eacf75c57
  
  static LIST_HEAD(formats);
  static DEFINE_RWLOCK(binfmt_lock);
-@@ -1909,7 +1914,20 @@
+@@ -1912,7 +1917,20 @@
  			      struct user_arg_ptr envp,
  			      int flags)
  {
@@ -7577,7 +7577,7 @@ index 59b91f2a1635e01928ab47d60b74e13c2891c137..ccab8af5e421a3306f5288db761f99bb
  #include <linux/sched/mm.h>
  #include <linux/sched/coredump.h>
  #include <linux/sched/numa_balancing.h>
-@@ -4544,6 +4547,14 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
+@@ -4553,6 +4556,14 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
  		void *maddr;
  		struct page *page = NULL;
  
@@ -8127,7 +8127,7 @@ index 45fdb9bdf08d42c9a6efda70e9422a16a2d1c1a3..520002f1e73beafd4bd902b988a6a60e
 diff --git a/net/core/dev.c b/net/core/dev.c
 --- a/net/core/dev.c
 +++ b/net/core/dev.c
-@@ -4969,2 +4969,2 @@
+@@ -4970,2 +4970,2 @@
 -static int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
 +int (*embms_tm_multicast_recv)(struct sk_buff *skb) __rcu __read_mostly;
  EXPORT_SYMBOL(embms_tm_multicast_recv);

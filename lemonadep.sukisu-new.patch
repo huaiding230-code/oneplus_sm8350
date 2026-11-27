@@ -434,7 +434,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
  	if (!ksu_is_allow_uid_for_current(current_uid().val))
  		return false;
-@@ -604,7 +659,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
+@@ -602,7 +657,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
  	if (likely(!is_compat_task())) 
  		goto ksyscall_exec;
  
@@ -443,7 +443,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  	// now extend the pointers
  	uintptr_t *m_argv = (uintptr_t *)(mmap_page + 1024);
-@@ -646,7 +701,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
+@@ -644,7 +699,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
  	}
  
  	ksu_install_su_fd(); // ksu#3679
@@ -452,7 +452,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: ksyscall(execve, \"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
  
-@@ -660,7 +715,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
+@@ -661,7 +716,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
  	 * put fd install before return but thats kinda too much.
  	 */
  	ksu_install_su_fd(); // ksu#3679
@@ -461,7 +461,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: kernel_execve(\"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
-@@ -696,7 +751,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filename_user, void *restrict argv, void *restrict envp, const char *syscall_name)
+@@ -697,7 +752,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filename_user, void *restrict argv, void *restrict envp, const char *syscall_name)
  		return;
  
  	// failure path
@@ -479,7 +479,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	*filename_user = sh_user_path();
  	return;
  }
-@@ -802,7 +857,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
+@@ -803,7 +858,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
  		return;
  
  	// failure path
@@ -625,7 +625,7 @@ diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 index 6acac71..815eb68 100644
 --- a/kernel/selinux/selinux.c
 +++ b/kernel/selinux/selinux.c
-@@ -334,7 +334,7 @@ bool susfs_is_current_zygote_next_domain(void)
+@@ -337,7 +337,7 @@ bool susfs_is_current_zygote_next_domain(void)
  
  bool susfs_is_current_ksu_domain(void)
  {
