@@ -244,7 +244,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #else
  static bool ksu_su_compat_enabled __read_mostly = true;
  #endif
-@@ -147,7 +154,8 @@
+@@ -147,7 +154,8 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
  	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
  		return -EINVAL;
  
@@ -254,7 +254,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		return -EINVAL;
  
  	ret = escape_with_root_profile();
-@@ -156,7 +164,7 @@
+@@ -156,7 +164,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
  		return -EINVAL;
  	}
  
@@ -263,7 +263,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -187,10 +195,11 @@
+@@ -187,10 +195,11 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, int *__unused_flags)
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -277,7 +277,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
  	return 0;
  }
-@@ -202,14 +211,60 @@
+@@ -202,14 +211,60 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -340,7 +340,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
  
  /*
-@@ -257,7 +312,7 @@
+@@ -257,7 +312,7 @@ static bool ksu_legacy_escape(const char *syscall_name)
  
  static bool ksu_legacy_escape(const char *syscall_name)
  {
@@ -349,7 +349,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -291,10 +346,10 @@
+@@ -291,10 +346,10 @@ int ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *envp)
  		return 0;
  
  	if (ksu_legacy_has_ksud()) {
@@ -362,7 +362,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		*filename_user = sh_user_path();
  	}
  
-@@ -336,11 +391,11 @@
+@@ -336,11 +391,11 @@ int ksu_legacy_execve_sucompat(const char **filename_ptr, void *argv, void *envp)
  	 */
  	if (ksu_legacy_has_ksud()) {
  		constexpr char ksud[16] = KSUD_PATH;
@@ -376,7 +376,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		memcpy_inline((void *)*filename_ptr, sh, sizeof(sh));
  	}
  
-@@ -357,7 +412,7 @@
+@@ -357,7 +412,7 @@ static void ksu_legacy_filename_to_sh(const char __user **filename_user, const char *syscall_name,
  		return;
  
  	write_sulog(sulog_sym);
@@ -385,7 +385,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	*filename_user = sh_user_path();
  }
  
-@@ -436,14 +491,14 @@
+@@ -436,14 +491,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
  #endif // KSU_CAN_USE_JUMP_LABEL
  #endif
  
@@ -404,7 +404,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
  	if (!ksu_is_allow_uid_for_current(current_uid().val))
  		return false;
-@@ -604,7 +659,7 @@
+@@ -604,7 +659,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
  	if (likely(!is_compat_task())) 
  		goto ksyscall_exec;
  
@@ -413,7 +413,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  	// now extend the pointers
  	uintptr_t *m_argv = (uintptr_t *)(mmap_page + 1024);
-@@ -646,7 +701,7 @@
+@@ -646,7 +701,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
  	}
  
  	ksu_install_su_fd(); // ksu#3679
@@ -422,7 +422,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: ksyscall(execve, \"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
  
-@@ -660,7 +715,7 @@
+@@ -660,7 +715,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
  	 * this does NOT return to caller on success, so we install fd before exec
  	 */
  	ksu_install_su_fd(); // ksu#3679
@@ -431,7 +431,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: kernel_execve(\"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
-@@ -696,7 +751,7 @@
+@@ -696,7 +751,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filename_user, void *restrict argv, void *restrict envp, const char *syscall_name)
  		return;
  
  	// failure path
@@ -440,7 +440,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	*filename_user = sh_user_path();
  	return;
  }
-@@ -714,7 +769,7 @@
+@@ -715,7 +770,7 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filename_user, const char *syscall_name)
  	if (!__builtin_strcmp(syscall_name, "sys_newfstatat"))
  		write_sulog('s');
  
@@ -449,7 +449,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	*filename_user = sh_user_path();
  	return;
  }
-@@ -802,7 +857,7 @@
+@@ -802,7 +857,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
  		return;
  
  	// failure path
@@ -504,7 +504,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +52,15 @@
+@@ -13,10 +52,15 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -524,7 +524,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +69,6 @@
+@@ -25,10 +69,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  	ksu_handle_umount(new, old);
  	return;
  
@@ -535,7 +535,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  kill_seccomp:
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-@@ -69,9 +109,9 @@
+@@ -69,9 +109,9 @@ static int handle_zygote_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -547,7 +547,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  		return 0;
  	}
  
-@@ -117,9 +157,9 @@
+@@ -117,9 +157,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -635,7 +635,7 @@ index d171463..c4e685c 100644
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
-@@ -7,7 +7,7 @@
+@@ -7,7 +7,7 @@ static int anon_ksu_release(struct inode *inode, struct file *filp)
  static int anon_ksu_release(struct inode *inode, struct file *filp)
  {
  	kfree(filp->private_data);
@@ -644,7 +644,7 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  	return 0;
  }
  
-@@ -55,7 +55,7 @@
+@@ -55,7 +55,7 @@ int ksu_install_fd(void)
  	}
  
  	fd_install(fd, filp);
@@ -653,7 +653,7 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
  	return fd;
  }
  
-@@ -179,9 +179,16 @@
+@@ -179,9 +179,16 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
  	void __user *arg4 = (void __user *)*arg;
  
  	if (magic2 == KSU_INSTALL_MAGIC2) {
@@ -675,7 +675,7 @@ diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
 diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
 --- a/kernel/policy/app_profile.c
 +++ b/kernel/policy/app_profile.c
-@@ -85,12 +85,12 @@
+@@ -85,12 +85,12 @@ static int escape_to_root(bool is_forced)
  	}
  
  	if (!is_forced && ksu_get_uid_t(cred->euid) == 0) {
