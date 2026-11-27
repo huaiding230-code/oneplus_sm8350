@@ -45,10 +45,10 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 index 067c271..245faa3 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -40,6 +40,127 @@ bool ksu_selinux_hide_enabled __read_mostly = true;
+@@ -40,6 +40,128 @@ bool ksu_selinux_hide_enabled __read_mostly = true;
  /* the page we serve to unprivileged readers of /sys/fs/selinux/status */
  struct page *ksu_fake_status_page __read_mostly = NULL;
-
+ 
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
 +/*
 + * Linux 5.4 keeps the SELinux policy state in selinux_state.ss.  The
@@ -135,93 +135,93 @@ index 067c271..245faa3 100644
 +			ret = -EAGAIN;
 +			continue;
 +		}
-
-		fake_ss.sidtab = live_ss->sidtab;
-		fake_ss.latest_granting = live_ss->latest_granting;
-		fake_ss.map = live_ss->map;
-		fake_ss.status_page = READ_ONCE(ksu_fake_status_page);
-		fake_state = selinux_state;
-		fake_state.ss = &fake_ss;
-		fake_state.initialized = true;
-		smp_store_release(&legacy_snapshot_ready, true);
-		read_unlock(&live_ss->policy_rwlock);
-
-		pr_info("selinux_hide: saved original Linux 5.4 policy snapshot (%zu bytes)\n",
-			len);
-		ret = 0;
-		break;
-	}
-
-out:
-	vfree(data);
-	mutex_unlock(&legacy_snapshot_mutex);
-	ksu_legacy_update_running();
-	return ret;
-}
-
-struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state)
-{
-	if (READ_ONCE(ksu_selinux_hide_running) &&
-	    smp_load_acquire(&legacy_snapshot_ready) &&
-	    READ_ONCE(fake_ss.status_page) &&
-	    from_kuid(&init_user_ns, current_uid()) >= 10000)
-		return &fake_state;
-	return state;
-}
-EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
-#endif /* Linux 5.4 + SUSFS */
-
-struct ksu_sepol_hide_set {
-	struct rcu_head rcu;
-	u32 count;
-@@ -707,6 +828,11 @@ static int ksu_prepare_fake_status_page(void)
++
++		fake_ss.sidtab = live_ss->sidtab;
++		fake_ss.latest_granting = live_ss->latest_granting;
++		fake_ss.map = live_ss->map;
++		fake_ss.status_page = READ_ONCE(ksu_fake_status_page);
++		fake_state = selinux_state;
++		fake_state.ss = &fake_ss;
++		fake_state.initialized = true;
++		smp_store_release(&legacy_snapshot_ready, true);
++		read_unlock(&live_ss->policy_rwlock);
++
++		pr_info("selinux_hide: saved original Linux 5.4 policy snapshot (%zu bytes)\n",
++			len);
++		ret = 0;
++		break;
++	}
++
++out:
++	vfree(data);
++	mutex_unlock(&legacy_snapshot_mutex);
++	ksu_legacy_update_running();
++	return ret;
++}
++
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state)
++{
++	if (READ_ONCE(ksu_selinux_hide_running) &&
++	    smp_load_acquire(&legacy_snapshot_ready) &&
++	    READ_ONCE(fake_ss.status_page) &&
++	    from_kuid(&init_user_ns, current_uid()) >= 10000)
++		return &fake_state;
++	return state;
++}
++EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
++#endif /* Linux 5.4 + SUSFS */
++
+ struct ksu_sepol_hide_set {
+ 	struct rcu_head rcu;
+ 	u32 count;
+@@ -707,6 +829,11 @@ static int ksu_prepare_fake_status_page(void)
  #endif
-
-	ksu_fake_status_page = new_page;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
-	if (smp_load_acquire(&legacy_snapshot_ready))
-		WRITE_ONCE(fake_ss.status_page, new_page);
-	ksu_legacy_update_running();
-#endif
-	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%u\n", fake_status->sequence);
-
-	return 0;
-@@ -724,7 +850,9 @@ static int ksu_prepare_fake_status_page(void)
+ 
+ 	ksu_fake_status_page = new_page;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
++	if (smp_load_acquire(&legacy_snapshot_ready))
++		WRITE_ONCE(fake_ss.status_page, new_page);
++	ksu_legacy_update_running();
++#endif
+ 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%u\n", fake_status->sequence);
+ 
+ 	return 0;
+@@ -724,7 +851,9 @@ static int ksu_prepare_fake_status_page(void)
  *   <  4.3 : extern bool fake_status_initialize_key;
  *            test with a plain READ_ONCE().
  */
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
-bool ksu_selinux_hide_running __read_mostly = false;
-#endif
-struct page *fake_status __read_mostly = NULL;
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-@@ -836,8 +964,12 @@ static int ksu_selinux_hide_init_thread(void *data)
-	if (fake_status) {
-		if (ksu_fake_status_init_pending())
-			ksu_fake_status_init_stop();
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
-		ksu_legacy_update_running();
-#else
-		if (ksu_selinux_hide_enabled)
-			ksu_selinux_hide_running = true;
-#endif
-	} else {
-		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
-	}
-@@ -874,8 +1006,12 @@ static int selinux_hide_feature_set(u64 value)
-	WRITE_ONCE(ksu_selinux_hide_enabled, enable);
-
-#ifdef CONFIG_KSU_SUSFS
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-	ksu_legacy_update_running();
-#else
-	/* kernel-side status/context/access spoof follows this flag */
-	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
-#endif
-#endif
-
-	return 0;
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+ bool ksu_selinux_hide_running __read_mostly = false;
++#endif
+ struct page *fake_status __read_mostly = NULL;
+ 
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+@@ -836,8 +965,12 @@ static int ksu_selinux_hide_init_thread(void *data)
+ 	if (fake_status) {
+ 		if (ksu_fake_status_init_pending())
+ 			ksu_fake_status_init_stop();
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
++		ksu_legacy_update_running();
++#else
+ 		if (ksu_selinux_hide_enabled)
+ 			ksu_selinux_hide_running = true;
++#endif
+ 	} else {
+ 		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
+ 	}
+@@ -874,8 +1007,12 @@ static int selinux_hide_feature_set(u64 value)
+ 	WRITE_ONCE(ksu_selinux_hide_enabled, enable);
+ 
+ #ifdef CONFIG_KSU_SUSFS
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	ksu_legacy_update_running();
++#else
+ 	/* kernel-side status/context/access spoof follows this flag */
+ 	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
++#endif
+ #endif
+ 
+ 	return 0;
 diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
 index f1c7dcb..45b8a70 100644
 --- a/kernel/feature/selinux_hide.h
@@ -229,17 +229,16 @@ index f1c7dcb..45b8a70 100644
 @@ -14,6 +14,8 @@
  #ifndef __KSU_H_SELINUX_HIDE
  #define __KSU_H_SELINUX_HIDE
-
+ 
 +#include <linux/version.h>
 +
  #include <linux/types.h>
-
+ 
  struct inode;
- struct page;
 @@ -31,6 +33,12 @@ struct page;
  void ksu_selinux_hide_init(void);
  void ksu_selinux_hide_exit(void);
-
+ 
 +#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
 +struct selinux_state;
 +int ksu_selinux_hide_snapshot_legacy(void);
@@ -248,7 +247,7 @@ index f1c7dcb..45b8a70 100644
 +
  extern bool ksu_selinux_hide_enabled;
  extern struct page *ksu_fake_status_page;
-
+ 
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
@@ -610,21 +609,18 @@ index 0bf259f..aacd302 100644
 --- a/kernel/selinux/rules.c
 +++ b/kernel/selinux/rules.c
 @@ -243,6 +243,12 @@ static int ksu_replace_policy_legacy(ksu_policydb_mutator mutate, void *arg)
-	/* no policy loaded yet, nothing to patch */
-	if (!READ_ONCE(live->len))
-		return -EAGAIN;
-
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
-	/* Snapshot the untouched policy before the first in-place 5.4 update. */
-	if (ksu_selinux_hide_snapshot_legacy())
-		pr_warn_once("selinux_hide: continuing without the 5.4 compatibility snapshot\n");
-#endif
-
-	next = kzalloc(sizeof(*next), GFP_KERNEL);
-	old = kmalloc(sizeof(*old), GFP_KERNEL);
-	if (!next || !old) {
-		ret = -ENOMEM;
-		goto out;
+ 	if (!READ_ONCE(live->len))
+ 		return -EAGAIN;
+ 
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
++	/* Snapshot the untouched policy before the first in-place 5.4 update. */
++	if (ksu_selinux_hide_snapshot_legacy())
++		pr_warn_once("selinux_hide: continuing without the 5.4 compatibility snapshot\n");
++#endif
++
+ 	next = kzalloc(sizeof(*next), GFP_KERNEL);
+ 	old = kmalloc(sizeof(*old), GFP_KERNEL);
+ 	if (!next || !old) {
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
 index 6acac71..815eb68 100644
 --- a/kernel/selinux/selinux.c
