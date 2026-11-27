@@ -422,7 +422,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: ksyscall(execve, \"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
  
-@@ -661,7 +716,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
+@@ -660,7 +715,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
  	 * put fd install before return but thats kinda too much.
  	 */
  	ksu_install_su_fd(); // ksu#3679
