@@ -45,7 +45,7 @@ diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
 index 067c271..245faa3 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -40,6 +40,126 @@ bool ksu_selinux_hide_enabled __read_mostly = true;
+@@ -40,6 +40,127 @@ bool ksu_selinux_hide_enabled __read_mostly = true;
  /* the page we serve to unprivileged readers of /sys/fs/selinux/status */
  struct page *ksu_fake_status_page __read_mostly = NULL;
 
@@ -112,6 +112,8 @@ index 067c271..245faa3 100644
 +		fp.data = data;
 +		fp.len = len;
 +		ret = policydb_read(&fake_ss.policydb, &fp);
++		if (!ret)
++			fake_ss.policydb.len = len;
 +		vfree(data);
 +		data = NULL;
 +		if (ret) {
@@ -172,7 +174,7 @@ EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
 struct ksu_sepol_hide_set {
 	struct rcu_head rcu;
 	u32 count;
-@@ -707,6 +827,11 @@ static int ksu_prepare_fake_status_page(void)
+@@ -707,6 +828,11 @@ static int ksu_prepare_fake_status_page(void)
  #endif
 
 	ksu_fake_status_page = new_page;
@@ -184,7 +186,7 @@ struct ksu_sepol_hide_set {
 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%u\n", fake_status->sequence);
 
 	return 0;
-@@ -724,7 +849,9 @@ static int ksu_prepare_fake_status_page(void)
+@@ -724,7 +850,9 @@ static int ksu_prepare_fake_status_page(void)
  *   <  4.3 : extern bool fake_status_initialize_key;
  *            test with a plain READ_ONCE().
  */
@@ -194,7 +196,7 @@ bool ksu_selinux_hide_running __read_mostly = false;
 struct page *fake_status __read_mostly = NULL;
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-@@ -836,8 +963,12 @@ static int ksu_selinux_hide_init_thread(void *data)
+@@ -836,8 +964,12 @@ static int ksu_selinux_hide_init_thread(void *data)
 	if (fake_status) {
 		if (ksu_fake_status_init_pending())
 			ksu_fake_status_init_stop();
@@ -207,7 +209,7 @@ struct page *fake_status __read_mostly = NULL;
 	} else {
 		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
 	}
-@@ -874,8 +1005,12 @@ static int selinux_hide_feature_set(u64 value)
+@@ -874,8 +1006,12 @@ static int selinux_hide_feature_set(u64 value)
 	WRITE_ONCE(ksu_selinux_hide_enabled, enable);
 
 #ifdef CONFIG_KSU_SUSFS
