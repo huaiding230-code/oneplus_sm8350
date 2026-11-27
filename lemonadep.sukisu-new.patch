@@ -187,9 +187,9 @@ index 067c271..245faa3 100644
  
  	return 0;
 @@ -724,7 +851,9 @@ static int ksu_prepare_fake_status_page(void)
- *   <  4.3 : extern bool fake_status_initialize_key;
- *            test with a plain READ_ONCE().
- */
+  *   <  4.3 : extern bool fake_status_initialize_key;
+  *            test with a plain READ_ONCE().
+  */
 +#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
  bool ksu_selinux_hide_running __read_mostly = false;
 +#endif
