@@ -9,6 +9,7 @@
 # - Keep the SU path, kernel inline-hook, UID observer, SUSFS AVC and FD authorization fixes.
 # - Do NOT add a second sdcard monitor start: the base source already starts it once in EVENT_BOOT_COMPLETED.
 # - Preserve only KSU-owned SELinux allow-rule snapshots so Zygisk Next rules are not rewound.
+# - Limit repeated successful sucompat, already-root, and FD lifecycle messages to once per callsite.
 
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
 index 50f3c4a..5f53197 100644
@@ -218,7 +219,6 @@ index a43d579..4810a3f 100644
  static int sepol_expected_argc(u32 cmd);
  
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index 0a58cf2..e303e0d 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -5,6 +5,7 @@
@@ -229,7 +229,7 @@ index 0a58cf2..e303e0d 100644
  #define SH_PATH "/system/bin/sh"
  
  #ifdef CONFIG_KSU_SUSFS
-@@ -39,8 +40,14 @@ bool ksu_su_compat_enabled __read_mostly = true;
+@@ -39,8 +40,14 @@
  #endif
  
  static const char su_path[] = SU_PATH;
@@ -244,7 +244,7 @@ index 0a58cf2..e303e0d 100644
  #else
  static bool ksu_su_compat_enabled __read_mostly = true;
  #endif
-@@ -147,7 +154,8 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+@@ -147,7 +154,8 @@
  	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
  		return -EINVAL;
  
@@ -254,7 +254,16 @@ index 0a58cf2..e303e0d 100644
  		return -EINVAL;
  
  	ret = escape_with_root_profile();
-@@ -187,7 +195,8 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
+@@ -156,7 +164,7 @@
+ 		return -EINVAL;
+ 	}
+ 
+-	pr_info("ksu_handle_execveat_sucompat: su->ksud!\n");
++	pr_info_once("ksu_handle_execveat_sucompat: su->ksud!\n");
+ 
+ #ifdef CONFIG_KSU_FEATURE_SULOG
+ 	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
+@@ -187,10 +195,11 @@
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -263,8 +272,12 @@ index 0a58cf2..e303e0d 100644
 +		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
  		return 0;
  
- 	pr_info("ksu_handle_faccessat: su->sh!\n");
-@@ -202,7 +211,8 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
+-	pr_info("ksu_handle_faccessat: su->sh!\n");
++	pr_info_once("ksu_handle_faccessat: su->sh!\n");
+ 	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
+ 	return 0;
+ }
+@@ -202,14 +211,60 @@
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -273,8 +286,9 @@ index 0a58cf2..e303e0d 100644
 +		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
  		return 0;
  
- 	pr_info("ksu_handle_stat: su->sh!\n");
-@@ -210,6 +220,51 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
+-	pr_info("ksu_handle_stat: su->sh!\n");
++	pr_info_once("ksu_handle_stat: su->sh!\n");
+ 	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
  	return 0;
  }
  
@@ -307,7 +321,7 @@ index 0a58cf2..e303e0d 100644
 +		write_sulog('s');
 +
 +	memcpy_inline(path, sh, sizeof(sh));
-+	pr_info("su_compat: %s su->sh [kernel filename]%s\n", syscall_name,
++	pr_info_once("su_compat: %s su->sh [kernel filename]%s\n", syscall_name,
 +		is_compat_task() ? " [compat]" : "");
 +	return 1;
 +}
@@ -326,7 +340,52 @@ index 0a58cf2..e303e0d 100644
  #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
  
  /*
-@@ -436,14 +491,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
+@@ -257,7 +312,7 @@
+ 
+ static bool ksu_legacy_escape(const char *syscall_name)
+ {
+-	pr_info("su_compat: %s su found\n", syscall_name);
++	pr_info_once("su_compat: %s su found\n", syscall_name);
+ 
+ #ifdef CONFIG_KSU_FEATURE_SULOG
+ 	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
+@@ -291,10 +346,10 @@
+ 		return 0;
+ 
+ 	if (ksu_legacy_has_ksud()) {
+-		pr_info("su_compat: sys_execve su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: sys_execve su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
+ 		*filename_user = ksud_user_path();
+ 	} else {
+-		pr_info("su_compat: sys_execve su->sh!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: sys_execve su->sh!%s\n", is_compat_task() ? " [compat]" : "");
+ 		*filename_user = sh_user_path();
+ 	}
+ 
+@@ -336,11 +391,11 @@
+ 	 */
+ 	if (ksu_legacy_has_ksud()) {
+ 		constexpr char ksud[16] = KSUD_PATH;
+-		pr_info("su_compat: do_execve_common su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: do_execve_common su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
+ 		memcpy_inline((void *)*filename_ptr, ksud, sizeof(ksud));
+ 	} else {
+ 		constexpr char sh[16] = SH_PATH;
+-		pr_info("su_compat: do_execve_common su->sh!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: do_execve_common su->sh!%s\n", is_compat_task() ? " [compat]" : "");
+ 		memcpy_inline((void *)*filename_ptr, sh, sizeof(sh));
+ 	}
+ 
+@@ -357,7 +412,7 @@
+ 		return;
+ 
+ 	write_sulog(sulog_sym);
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, is_compat_task() ? " [compat]" : "");
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, is_compat_task() ? " [compat]" : "");
+ 	*filename_user = sh_user_path();
+ }
+ 
+@@ -436,14 +491,14 @@
  #endif // KSU_CAN_USE_JUMP_LABEL
  #endif
  
@@ -345,8 +404,61 @@ index 0a58cf2..e303e0d 100644
  #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
  	if (!ksu_is_allow_uid_for_current(current_uid().val))
  		return false;
+@@ -604,7 +659,7 @@
+ 	if (likely(!is_compat_task())) 
+ 		goto ksyscall_exec;
+ 
+-	pr_info("su_compat: %s su->ksud! [compat]\n", fn_name);
++	pr_info_once("su_compat: %s su->ksud! [compat]\n", fn_name);
+ 
+ 	// now extend the pointers
+ 	uintptr_t *m_argv = (uintptr_t *)(mmap_page + 1024);
+@@ -646,7 +701,7 @@
+ 	}
+ 
+ 	ksu_install_su_fd(); // ksu#3679
+-	pr_info("su_compat: %s su->%s!%s\n", fn_name, fd_path, (is_compat_task()) ? " [compat]" : "");
++	pr_info_once("su_compat: %s su->%s!%s\n", fn_name, fd_path, (is_compat_task()) ? " [compat]" : "");
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("su_compat: ksyscall(execve, \"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
+ 
+@@ -660,7 +715,7 @@
+ 	 * this does NOT return to caller on success, so we install fd before exec
+ 	 */
+ 	ksu_install_su_fd(); // ksu#3679
+-	pr_info("su_compat: %s su->%s!\n", fn_name, fd_path);
++	pr_info_once("su_compat: %s su->%s!\n", fn_name, fd_path);
+ 
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("su_compat: kernel_execve(\"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
+@@ -696,7 +751,7 @@
+ 		return;
+ 
+ 	// failure path
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
+ 	*filename_user = sh_user_path();
+ 	return;
+ }
+@@ -714,7 +769,7 @@
+ 	if (!__builtin_strcmp(syscall_name, "sys_newfstatat"))
+ 		write_sulog('s');
+ 
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
+ 	*filename_user = sh_user_path();
+ 	return;
+ }
+@@ -802,7 +857,7 @@
+ 		return;
+ 
+ 	// failure path
+-	pr_info("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
+ 	constexpr char sh[16] = SH_PATH;
+ 	memcpy_inline(*filename_ptr, sh, sizeof(sh));
+ 	return;
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
-index bd55641..c23f960 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
 @@ -1,3 +1,42 @@
@@ -392,7 +504,7 @@ index bd55641..c23f960 100644
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +52,15 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -13,10 +52,15 @@
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -404,7 +516,7 @@ index bd55641..c23f960 100644
 +	 * based KSU FD request is exempted by ksu_seccomp_allow_reboot().
 +	 */
 +	if (unlikely(is_uid_manager(new_uid))) {
-+		pr_info("install fd for manager: %d\n", new_uid);
++		pr_info_once("install fd for manager: %d\n", new_uid);
 +		ksu_install_fd();
 +		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
 +		return;
@@ -412,7 +524,7 @@ index bd55641..c23f960 100644
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +69,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -25,10 +69,6 @@
  	ksu_handle_umount(new, old);
  	return;
  
@@ -423,23 +535,25 @@ index bd55641..c23f960 100644
  kill_seccomp:
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-@@ -69,9 +109,9 @@ static int handle_zygote_setresuid(uid_t ruid)
+@@ -69,9 +109,9 @@
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
 -		disable_seccomp();
- 		pr_info("install fd for manager: %d\n", ruid);
+-		pr_info("install fd for manager: %d\n", ruid);
++		pr_info_once("install fd for manager: %d\n", ruid);
  		ksu_install_fd();
 +		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
  		return 0;
  	}
  
-@@ -117,9 +157,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
+@@ -117,9 +157,9 @@
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
 -		disable_seccomp();
- 		pr_info("install fd for manager: %d\n", ruid);
+-		pr_info("install fd for manager: %d\n", ruid);
++		pr_info_once("install fd for manager: %d\n", ruid);
  		ksu_install_fd();
 +		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
  		return 0;
@@ -519,10 +633,27 @@ index d171463..c4e685c 100644
  		if (invert) {
  			if (perm)
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
-index a6d606a..2f3ce81 100644
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
-@@ -179,7 +179,14 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
+@@ -7,7 +7,7 @@
+ static int anon_ksu_release(struct inode *inode, struct file *filp)
+ {
+ 	kfree(filp->private_data);
+-	pr_info("ksu fd released\n");
++	pr_info_once("ksu fd released\n");
+ 	return 0;
+ }
+ 
+@@ -55,7 +55,7 @@
+ 	}
+ 
+ 	fd_install(fd, filp);
+-	pr_info("ksu fd installed: %d for pid %d\n", fd, current->pid);
++	pr_info_once("ksu fd installed: %d for pid %d\n", fd, current->pid);
+ 	return fd;
+ }
+ 
+@@ -179,9 +179,16 @@
  	void __user *arg4 = (void __user *)*arg;
  
  	if (magic2 == KSU_INSTALL_MAGIC2) {
@@ -536,5 +667,26 @@ index a6d606a..2f3ce81 100644
 +		}
 +		fd = ksu_install_fd();
  
- 		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
+-		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
++		pr_info_once("[%d] install ksu fd: %d\n", current->pid, fd);
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
+ 			pr_err("install ksu fd reply err\n");
+ 			ksu_close_fd(fd);
+diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
+--- a/kernel/policy/app_profile.c
++++ b/kernel/policy/app_profile.c
+@@ -85,12 +85,12 @@
+ 	}
+ 
+ 	if (!is_forced && ksu_get_uid_t(cred->euid) == 0) {
+-		pr_warn("Already root, don't escape!\n");
++		pr_info_once("Already root, don't escape!\n");
+ 		goto out_abort_creds;
+ 	}
+ 
+ 	if (test_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT)) {
+-		pr_warn("TIF_KSU_DISABLE_ESCAPE_WITH_ROOT found, don't escape!\n");
++		pr_info_once("TIF_KSU_DISABLE_ESCAPE_WITH_ROOT found, don't escape!\n");
+ 		goto out_abort_creds;
+ 	}
+ 
