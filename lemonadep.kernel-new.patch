@@ -8456,3 +8456,242 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
  			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
  
  		qrtr_port_put(ipc);
+
+# Standalone fixes appended 2026-11-28; originally maintained as separate patch files.
+diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
+--- a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
++++ b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
+@@ -444,8 +444,6 @@
+ 	if (client->callback) {
+ 		client->callback(client->callback_params,
+ 			IPA_PM_CLIENT_ACTIVATED);
+-	} else {
+-		IPA_PM_ERR_RL("client has no callback");
+ 	}
+ 	mutex_unlock(&ipa_pm_ctx->client_mutex);
+
+diff --git a/drivers/rpmsg/qcom_glink_native.c b/drivers/rpmsg/qcom_glink_native.c
+--- a/drivers/rpmsg/qcom_glink_native.c
++++ b/drivers/rpmsg/qcom_glink_native.c
+@@ -1291,6 +1291,7 @@
+ 	struct qcom_glink *glink = data;
+ 	struct glink_msg msg;
+ 	struct glink_channel *channel;
++	char channel_name[GLINK_NAME_SIZE];
+ 	unsigned int param1;
+ 	unsigned int param2;
+ 	unsigned int avail;
+@@ -1302,6 +1303,10 @@
+ 	bool wake_for_other = false;
+ 	int ret = 0;
+ 
++	pr_info_ratelimited("[GLINK_IRQ_TRACE] edge=%s irq=%d irqname=%s should_wake=%d rx_avail=%zu\n",
++			     glink->name, irq, glink->irqname, should_wake,
++			     qcom_glink_rx_avail(glink));
++
+ 	for (;;) {
+ 		avail = qcom_glink_rx_avail(glink);
+ 		if (avail < sizeof(msg)) {
+@@ -1317,6 +1322,7 @@
+ 		param1 = le16_to_cpu(msg.param1);
+ 		param2 = le32_to_cpu(msg.param2);
+ 		channel = NULL;
++		strlcpy(channel_name, "unresolved", sizeof(channel_name));
+ 		channel_is_ipcrtr = false;
+ 		channel_is_pmic_logs = false;
+ 		channel_resolved = false;
+@@ -1361,6 +1367,8 @@
+ 				!strcmp(channel->name, "IPCRTR");
+ 			channel_is_pmic_logs = channel->name &&
+ 				!strcmp(channel->name, "PMIC_LOGS_ADSP_APPS");
++			strlcpy(channel_name, channel->name ? channel->name : "unnamed",
++				sizeof(channel_name));
+ 			qcom_glink_channel_ref_put(channel);
+ 		}
+ 		current_requires_wake = !channel_is_ipcrtr;
+@@ -1377,6 +1385,13 @@
+ 			current_requires_wake = false;
+ 		}
+ 
++		if (should_wake)
++			pr_info_ratelimited("[GLINK_RX_TRACE] edge=%s irq=%d cmd=0x%x "
++				"param1=0x%x param2=0x%x channel=%s resolved=%d "
++				"require_wake=%d avail=%u\n", glink->name, irq, cmd,
++				param1, param2, channel_name, channel_resolved,
++				current_requires_wake, avail);
++
+ 		switch (cmd) {
+ 		case GLINK_CMD_VERSION:
+ 		case GLINK_CMD_VERSION_ACK:
+@@ -1448,7 +1463,8 @@
+ 	 */
+ 	if (should_wake && (wake_for_other || (ret && ret != -EAGAIN))) {
+ 		pr_info("%s: %d triggered %s\n", __func__, irq, glink->irqname);
++		pm_record_wakeup_irq(irq);
+ 		pm_system_wakeup();
+ 	}
+ 
+ 	return IRQ_HANDLED;
+diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
+--- a/net/qrtr/qrtr.c
++++ b/net/qrtr/qrtr.c
+@@ -844,7 +844,7 @@
+ 	size_t hdrlen;
+ 	int errcode, i;
+ 	bool wake = true;
+-	int svc_id;
++	int svc_id = 0;
+ 
+ 	if (len == 0 || len & 3)
+ 		return -EINVAL;
+@@ -966,8 +966,13 @@
+ 	if (cb->type != QRTR_TYPE_DATA || cb->dst_node != qrtr_local_nid) {
+ 		skb_queue_tail(&node->rx_queue, skb);
+ 		kthread_queue_work(&node->kworker, &node->read_data);
+-		if (wake)
++		if (wake) {
++			pr_info_ratelimited("[QRTR_WAKE_TRACE] path=forward node=%u type=0x%x "
++				"src=%u:%u dst=%u:%u service=0x%x\n", node->nid,
++				cb->type, cb->src_node, cb->src_port, cb->dst_node,
++				cb->dst_port, (unsigned int)svc_id);
+ 			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
++		}
+ 	} else {
+ 		ipc = qrtr_port_lookup(cb->dst_port);
+ 		if (!ipc) {
+@@ -983,8 +988,13 @@
+ 		 * from adsp side
+ 		 */
+ 		if ((node->nid != 9 && node->nid != 5 && node->nid != 0) ||
+-		    ((node->nid == 5 || node->nid == 0) && wake))
++		    ((node->nid == 5 || node->nid == 0) && wake)) {
++			pr_info_ratelimited("[QRTR_WAKE_TRACE] path=local node=%u type=0x%x "
++				"src=%u:%u dst=%u:%u service=0x%x policy_wake=%d\n",
++				node->nid, cb->type, cb->src_node, cb->src_port,
++				cb->dst_node, cb->dst_port, (unsigned int)svc_id, wake);
+ 			pm_wakeup_ws_event(node->ws, qrtr_wakeup_ms, true);
++		}
+ 
+ 		qrtr_port_put(ipc);
+ 	}
+diff --git a/drivers/base/power/wakeup.c b/drivers/base/power/wakeup.c
+--- a/drivers/base/power/wakeup.c
++++ b/drivers/base/power/wakeup.c
+@@ -945,7 +945,7 @@
+ 		atomic_set(&pm_abort_suspend, 0);
+ }
+ 
+-void pm_system_irq_wakeup(unsigned int irq_number)
++static bool __pm_record_wakeup_irq(unsigned int irq_number)
+ {
+ 	unsigned long flags;
+ 
+@@ -960,24 +960,35 @@
+ 
+ 	raw_spin_unlock_irqrestore(&wakeup_irq_lock, flags);
+ 
+-	if (irq_number) {
++	if (irq_number && msm_show_resume_irq_mask) {
+ 		struct irq_desc *desc;
+ 		const char *name = "null";
+ 
+-		if (msm_show_resume_irq_mask) {
+-			desc = irq_to_desc(irq_number);
+-			if (desc == NULL)
+-				name = "stray irq";
+-			else if (desc->action && desc->action->name)
+-				name = desc->action->name;
++		desc = irq_to_desc(irq_number);
++		if (desc == NULL)
++			name = "stray irq";
++		else if (desc->action && desc->action->name)
++			name = desc->action->name;
+ 
+-			log_irq_wakeup_reason(irq_number);
+-			pr_warn("%s: %d triggered %s\n", __func__,
+-					irq_number, name);
++		log_irq_wakeup_reason(irq_number);
++		pr_warn("pm_system_irq_wakeup: %d triggered %s\n",
++			irq_number, name);
+ 
+-		}
+-		pm_system_wakeup();
+ 	}
++
++	return irq_number != 0;
++}
++
++void pm_record_wakeup_irq(unsigned int irq_number)
++{
++	__pm_record_wakeup_irq(irq_number);
++}
++EXPORT_SYMBOL_GPL(pm_record_wakeup_irq);
++
++void pm_system_irq_wakeup(unsigned int irq_number)
++{
++	if (__pm_record_wakeup_irq(irq_number))
++		pm_system_wakeup();
+ }
+ 
+ unsigned int pm_wakeup_irq(void)
+diff --git a/include/linux/suspend.h b/include/linux/suspend.h
+--- a/include/linux/suspend.h
++++ b/include/linux/suspend.h
+@@ -489,6 +489,7 @@
+ extern void pm_system_cancel_wakeup(void);
+ extern void pm_wakeup_clear(unsigned int irq_number);
+ extern void pm_system_irq_wakeup(unsigned int irq_number);
++extern void pm_record_wakeup_irq(unsigned int irq_number);
+ extern unsigned int pm_wakeup_irq(void);
+ extern bool pm_get_wakeup_count(unsigned int *count, bool block);
+ extern bool pm_save_wakeup_count(unsigned int count);
+@@ -519,6 +520,7 @@
+ static inline void pm_system_wakeup(void) {}
+ static inline void pm_wakeup_clear(bool reset) {}
+ static inline void pm_system_irq_wakeup(unsigned int irq_number) {}
++static inline void pm_record_wakeup_irq(unsigned int irq_number) {}
+ 
+ static inline void lock_system_sleep(void) {}
+ static inline void unlock_system_sleep(void) {}
+diff --git a/kernel/power/wakeup_reason.c b/kernel/power/wakeup_reason.c
+--- a/kernel/power/wakeup_reason.c
++++ b/kernel/power/wakeup_reason.c
+@@ -270,6 +270,16 @@
+ 	spin_unlock_irqrestore(&wakeup_reason_lock, flags);
+ }
+ 
++static const char *pm_wakeup_irq_name(unsigned int irq)
++{
++	struct irq_desc *desc = irq_to_desc(irq);
++
++	if (desc && desc->action && desc->action->name)
++		return desc->action->name;
++
++	return default_irq_name;
++}
++
+ static void print_wakeup_sources(void)
+ {
+ 	struct wakeup_irq_node *n;
+@@ -291,6 +301,9 @@
+ 				n->irq_name);
+ 	else if (wakeup_reason == RESUME_ABNORMAL)
+ 		pr_info("Resume caused by %s\n", non_irq_wake_reason);
++	else if (pm_wakeup_irq())
++		pr_info("Resume cause unknown; PM wake IRQ %u, %s\n",
++			pm_wakeup_irq(), pm_wakeup_irq_name(pm_wakeup_irq()));
+ 	else
+ 		pr_info("Resume cause unknown\n");
+ 
+@@ -321,7 +334,11 @@
+ 	else if (wakeup_reason == RESUME_ABNORMAL)
+ 		buf_offset = scnprintf(buf, PAGE_SIZE, "-1 %s",
+ 				       non_irq_wake_reason);
++	else if (pm_wakeup_irq())
++		buf_offset = scnprintf(buf, PAGE_SIZE, "%u %s\n",
++				       pm_wakeup_irq(),
++				       pm_wakeup_irq_name(pm_wakeup_irq()));
+ 
+ 	spin_unlock_irqrestore(&wakeup_reason_lock, flags);
+ 
+ 	return buf_offset;
