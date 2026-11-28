@@ -75,4 +75,491 @@ index eeabb73..2d9de88 100644
 +    void *data = NULL;
 +    size_t len = 0;
 +    u32 generation;
-+    int attempt
++    int attempt;
++    int ret = -EAGAIN;
++
++    mutex_lock(&legacy_snapshot_mutex);
++    if (smp_load_acquire(&legacy_snapshot_ready)) {
++        ret = 0;
++        goto out;
++    }
++
++    live_ss = READ_ONCE(selinux_state.ss);
++    if (!live_ss || !selinux_initialized(&selinux_state))
++        goto out;
++
++    for (attempt = 0; attempt < 4; attempt++) {
++        read_lock(&live_ss->policy_rwlock);
++        generation = READ_ONCE(live_ss->latest_granting);
++        read_unlock(&live_ss->policy_rwlock);
++
++        /* Use SELinux's serializer so the snapshot retains the full policy ABI. */
++        ret = security_read_policy(&selinux_state, &data, &len);
++        if (ret)
++            goto out;
++        if (!data || !len) {
++            ret = -EINVAL;
++            goto out;
++        }
++
++        fp.data = data;
++        fp.len = len;
++        ret = policydb_read(&fake_ss.policydb, &fp);
++        if (!ret)
++            fake_ss.policydb.len = len;
++        vfree(data);
++        data = NULL;
++        if (ret) {
++            memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
++            goto out;
++        }
++
++        rwlock_init(&fake_ss.policy_rwlock);
++        mutex_init(&fake_ss.status_lock);
++        read_lock(&live_ss->policy_rwlock);
++        if (generation != READ_ONCE(live_ss->latest_granting)) {
++            read_unlock(&live_ss->policy_rwlock);
++            policydb_destroy(&fake_ss.policydb);
++            memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
++            ret = -EAGAIN;
++            continue;
++        }
++
++        fake_ss.sidtab = live_ss->sidtab;
++        fake_ss.latest_granting = live_ss->latest_granting;
++        fake_ss.map = live_ss->map;
++        fake_ss.status_page = READ_ONCE(ksu_fake_status_page);
++        fake_state = selinux_state;
++        fake_state.ss = &fake_ss;
++        fake_state.initialized = true;
++        smp_store_release(&legacy_snapshot_ready, true);
++        read_unlock(&live_ss->policy_rwlock);
++
++        pr_info("selinux_hide: saved original Linux 5.4 policy snapshot (%zu bytes)\n",
++            len);
++        ret = 0;
++        break;
++    }
++
++out:
++    vfree(data);
++    mutex_unlock(&legacy_snapshot_mutex);
++    ksu_legacy_update_running();
++    return ret;
++}
++
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state)
++{
++    if (READ_ONCE(ksu_selinux_hide_running) &&
++        smp_load_acquire(&legacy_snapshot_ready) &&
++        READ_ONCE(fake_ss.status_page) &&
++        from_kuid(&init_user_ns, current_uid()) >= 10000)
++        return &fake_state;
++    return state;
++}
++EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
++#endif /* Linux 5.4 */
++#endif /* CONFIG_KSU_SUSFS */
++
+ static int ksu_prepare_fake_status_page()
+ {
+ 	struct page *real_page = ksu_selinux_kernel_status_page();
+@@ -360,7 +483,12 @@ static int ksu_prepare_fake_status_page()
+ #endif
+ 
+ 	ksu_fake_status_page = new_page;
+-    
++#if defined(CONFIG_KSU_SUSFS) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	if (smp_load_acquire(&legacy_snapshot_ready))
++		WRITE_ONCE(fake_ss.status_page, new_page);
++	ksu_legacy_update_running();
++#endif
++
+ 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%d\n", fake_status->sequence);
+             
+ 	return 0;
+@@ -379,9 +507,6 @@ static int ksu_prepare_fake_status_page()
+  *   <  4.3 : extern bool fake_status_initialize_key;
+  *            test with a plain READ_ONCE().
+  */
+-bool ksu_selinux_hide_running __read_mostly = false;
+-struct page *fake_status __read_mostly = NULL;
+-
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
+ DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
+ #define ksu_fake_status_init_pending()	static_key_enabled(&fake_status_initialize_key.key)
+@@ -511,8 +636,12 @@ page_ok:
+ 	if (fake_status) {
+ 		if (ksu_fake_status_init_pending())
+ 			ksu_fake_status_init_stop();
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++		ksu_legacy_update_running();
++#else
+ 		if (ksu_selinux_hide_enabled)
+ 			ksu_selinux_hide_running = true;
++#endif
+ 	} else {
+ 		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
+ 	}
+@@ -559,8 +688,12 @@ static int selinux_hide_feature_set(u64 value)
+ 		ksu_selinux_hide_enabled = false;
+ 
+ #ifdef CONFIG_KSU_SUSFS
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	ksu_legacy_update_running();
++#else
+ 	// kernel-side status/context/access spoof follows this flag
+ 	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
++#endif
+ #endif
+ 
+ 	return ret;
+diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
+index d3e244d..462bd5b 100644
+--- a/kernel/feature/selinux_hide.h
++++ b/kernel/feature/selinux_hide.h
+@@ -16,8 +16,15 @@
+ #ifndef __KSU_H_SELINUX_HIDE
+ #define __KSU_H_SELINUX_HIDE
+ 
++#include <linux/version.h>
++
+ void ksu_selinux_hide_init();
+ void ksu_selinux_hide_exit();
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
++struct selinux_state;
++int ksu_selinux_hide_snapshot_legacy(void);
++struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state);
++#endif
+ #ifdef CONFIG_KSU_SUSFS
+ void ksu_susfs_selinux_hide_init(void);
+ #endif
+diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 0a58cf2..9ee992f 100644
+--- a/kernel/feature/sucompat.c
++++ b/kernel/feature/sucompat.c
+@@ -5,6 +5,7 @@
+ #endif
+ 
+ #define SU_PATH "/system/bin/su"
++#define SU_PATH_ALT "/system/xbin/su"
+ #define SH_PATH "/system/bin/sh"
+ 
+ #ifdef CONFIG_KSU_SUSFS
+@@ -39,8 +40,14 @@ bool ksu_su_compat_enabled __read_mostly = true;
+ #endif
+ 
+ static const char su_path[] = SU_PATH;
++static const char su_path_alt[] = SU_PATH_ALT;
+ static const char sh_path[] = SH_PATH;
+ static const char ksud_path[] = KSUD_PATH;
++
++bool ksu_su_compat_is_enabled(void)
++{
++	return ksu_su_compat_active();
++}
+ #else
+ static bool ksu_su_compat_enabled __read_mostly = true;
+ #endif
+@@ -147,7 +154,8 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+ 	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
+ 		return -EINVAL;
+ 
+-	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
++	if (likely(memcmp(filename->name, su_path, sizeof(su_path)) &&
++		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
+ 		return -EINVAL;
+ 
+ 	ret = escape_with_root_profile();
+@@ -156,7 +164,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+ 		return -EINVAL;
+ 	}
+ 
+-	pr_info("ksu_handle_execveat_sucompat: su->ksud!\n");
++	pr_info_once("ksu_handle_execveat_sucompat: su->ksud!\n");
+ 
+ #ifdef CONFIG_KSU_FEATURE_SULOG
+ 	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
+@@ -187,10 +195,11 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
+ 	if (unlikely(IS_ERR(filename) || filename->name == NULL))
+ 		return 0;
+ 
+-	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
++	if (likely(memcmp(filename->name, su_path, sizeof(su_path)) &&
++		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
+ 		return 0;
+ 
+-	pr_info("ksu_handle_faccessat: su->sh!\n");
++	pr_info_once("ksu_handle_faccessat: su->sh!\n");
+ 	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
+ 	return 0;
+ }
+@@ -202,14 +211,56 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
+ 	if (unlikely(IS_ERR(filename) || filename->name == NULL))
+ 		return 0;
+ 
+-	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
++	if (likely(memcmp(filename->name, su_path, sizeof(su_path)) &&
++		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
+ 		return 0;
+ 
+-	pr_info("ksu_handle_stat: su->sh!\n");
++	pr_info_once("ksu_handle_stat: su->sh!\n");
+ 	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
+ 	return 0;
+ }
+ 
++/* Kernel-side counterparts for the OnePlus 5.4 SUSFS inline hooks. */
++static __always_inline int ksu_sucompat_kernel_path_common(
++		struct filename **filename_ptr, const char *syscall_name)
++{
++	struct filename *filename;
++	char *path;
++	constexpr char sh[16] = SH_PATH;
++
++	if (!filename_ptr || IS_ERR_OR_NULL(*filename_ptr))
++		return 0;
++	filename = *filename_ptr;
++	if (!filename->name)
++		return 0;
++
++	path = (char *)filename->name;
++	if (strncmp(path, SU_PATH, sizeof(SU_PATH)) &&
++	    strncmp(path, SU_PATH_ALT, sizeof(SU_PATH_ALT)))
++		return 0;
++
++	if (!strcmp(syscall_name, "sys_faccessat"))
++		write_sulog('a');
++	else if (!strcmp(syscall_name, "sys_newfstatat"))
++		write_sulog('s');
++
++	memcpy_inline(path, sh, sizeof(sh));
++	pr_info_once("su_compat: %s su->sh [kernel filename]%s\n", syscall_name,
++		is_compat_task() ? " [compat]" : "");
++	return 1;
++}
++
++int ksu_handle_faccessat_kernel(int *dfd, struct filename **filename_ptr,
++				int *mode, int *flags)
++{
++	return ksu_sucompat_kernel_path_common(filename_ptr, "sys_faccessat");
++}
++
++int ksu_handle_stat_kernel(int *dfd, struct filename **filename_ptr, int *flags)
++{
++	return ksu_sucompat_kernel_path_common(filename_ptr, "sys_newfstatat");
++}
++
+ #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
+ 
+ /*
+@@ -257,7 +308,7 @@ static bool ksu_legacy_has_ksud(void)
+ 
+ static bool ksu_legacy_escape(const char *syscall_name)
+ {
+-	pr_info("su_compat: %s su found\n", syscall_name);
++	pr_info_once("su_compat: %s su found\n", syscall_name);
+ 
+ #ifdef CONFIG_KSU_FEATURE_SULOG
+ 	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
+@@ -291,10 +342,10 @@ int ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *e
+ 		return 0;
+ 
+ 	if (ksu_legacy_has_ksud()) {
+-		pr_info("su_compat: sys_execve su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: sys_execve su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
+ 		*filename_user = ksud_user_path();
+ 	} else {
+-		pr_info("su_compat: sys_execve su->sh!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: sys_execve su->sh!%s\n", is_compat_task() ? " [compat]" : "");
+ 		*filename_user = sh_user_path();
+ 	}
+ 
+@@ -336,11 +387,11 @@ int ksu_legacy_execve_sucompat(const char **filename_ptr, void *argv, void *envp
+ 	 */
+ 	if (ksu_legacy_has_ksud()) {
+ 		constexpr char ksud[16] = KSUD_PATH;
+-		pr_info("su_compat: do_execve_common su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: do_execve_common su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
+ 		memcpy_inline((void *)*filename_ptr, ksud, sizeof(ksud));
+ 	} else {
+ 		constexpr char sh[16] = SH_PATH;
+-		pr_info("su_compat: do_execve_common su->sh!%s\n", is_compat_task() ? " [compat]" : "");
++		pr_info_once("su_compat: do_execve_common su->sh!%s\n", is_compat_task() ? " [compat]" : "");
+ 		memcpy_inline((void *)*filename_ptr, sh, sizeof(sh));
+ 	}
+ 
+@@ -357,7 +408,7 @@ static void ksu_legacy_filename_to_sh(const char __user **filename_user, const c
+ 		return;
+ 
+ 	write_sulog(sulog_sym);
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, is_compat_task() ? " [compat]" : "");
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, is_compat_task() ? " [compat]" : "");
+ 	*filename_user = sh_user_path();
+ }
+ 
+@@ -436,14 +487,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
+ #endif // KSU_CAN_USE_JUMP_LABEL
+ #endif
+ 
+-	// put ret hot on insn pipeline
+-	if (likely(ksu_is_seccomp_enabled()))
+-		return false;
+-
+-	// pass through tagged task from setuid hook
++	// pass through tagged task from setuid hook before checking its inherited seccomp filter
+ 	if (test_thread_flag(TIF_KSU_MANAGED))
+ 		goto check_ptr;
+ 
++	// Untagged tasks keep the original seccomp restriction.
++	if (likely(ksu_is_seccomp_enabled()))
++		return false;
++
+ #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
+ 	if (!ksu_is_allow_uid_for_current(current_uid().val))
+ 		return false;
+@@ -602,7 +653,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, vo
+ 	if (likely(!is_compat_task())) 
+ 		goto ksyscall_exec;
+ 
+-	pr_info("su_compat: %s su->ksud! [compat]\n", fn_name);
++	pr_info_once("su_compat: %s su->ksud! [compat]\n", fn_name);
+ 
+ 	// now extend the pointers
+ 	uintptr_t *m_argv = (uintptr_t *)(mmap_page + 1024);
+ 
+@@ -644,7 +695,7 @@ ksyscall_exec:;
+ 	}
+ 
+ 	ksu_install_su_fd(); // ksu#3679
+-	pr_info("su_compat: %s su->%s!%s\n", fn_name, fd_path, (is_compat_task()) ? " [compat]" : "");
++	pr_info_once("su_compat: %s su->%s!%s\n", fn_name, fd_path, (is_compat_task()) ? " [compat]" : "");
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("su_compat: ksyscall(execve, \"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
+ 
+@@ -661,7 +712,7 @@ ksyscall_exec:;
+ 	 * put fd install before return but thats kinda too much.
+ 	 */
+ 	ksu_install_su_fd(); // ksu#3679
+-	pr_info("su_compat: %s su->%s!\n", fn_name, fd_path);
++	pr_info_once("su_compat: %s su->%s!\n", fn_name, fd_path);
+ 
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("su_compat: kernel_execve(\"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
+@@ -697,7 +748,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filenam
+ 		return;
+ 
+ 	// failure path
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
+ 	*filename_user = sh_user_path();
+ 	return;
+ }
+@@ -715,7 +766,7 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filenam
+ 	if (!__builtin_strcmp(syscall_name, "sys_newfstatat"))
+ 		write_sulog('s');
+ 
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
+ 	*filename_user = sh_user_path();
+ 	return;
+ }
+@@ -803,7 +854,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **
+ 		return;
+ 
+ 	// failure path
+-	pr_info("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
+ 	constexpr char sh[16] = SH_PATH;
+ 	memcpy_inline(*filename_ptr, sh, sizeof(sh));
+ 	return;
+diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index bd55641..0e2211b 100644
+--- a/kernel/hook/setuid_hook.c
++++ b/kernel/hook/setuid_hook.c
+@@ -1,3 +1,32 @@
++#include <asm/unistd.h>
++#include <linux/audit.h>
++#include <linux/seccomp.h>
++
++bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
++{
++	if (!sd || sd->nr != __NR_reboot ||
++	    (__u32)sd->args[0] != KSU_INSTALL_MAGIC1)
++		return false;
++
++#if defined(CONFIG_ARM64)
++	/* Do not exempt compat AArch32 syscall number 142 (_newselect). */
++	if (sd->arch != AUDIT_ARCH_AARCH64)
++		return false;
++#elif defined(CONFIG_ARM)
++	if (sd->arch != AUDIT_ARCH_ARM)
++		return false;
++#endif
++
++	if ((__u32)sd->args[1] == KSU_INSTALL_MAGIC2)
++		return current_uid().val == 0 || is_uid_manager(current_uid().val);
++
++#ifdef CONFIG_KSU_SUSFS
++	if ((__u32)sd->args[1] == SUSFS_MAGIC)
++		return current_uid().val == 0;
++#endif
++	return false;
++}
++
+ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
+ {
+ 	if (!new || !old)
+@@ -13,10 +42,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+ 	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+ 		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
+ 
+-	// we dont have those new fancy things upstream has
+-	// lets just do the original thing where we disable seccomp
+-	if (unlikely(is_uid_manager(new_uid)))
+-		goto install_ksu_fd;
++	/* Manager keeps its inherited seccomp filter; only the exact reboot-FD
++	 * handshake is exempted by ksu_seccomp_allow_reboot(). */
++	if (unlikely(is_uid_manager(new_uid))) {
++		pr_info_once("install fd for manager: %d\n", new_uid);
++		ksu_install_fd();
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
++		return;
++	}
+ 
+ 	if (ksu_is_allow_uid_for_current(new_uid))
+ 		goto kill_seccomp;
+@@ -25,10 +58,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+ 	ksu_handle_umount(new, old);
+ 	return;
+ 
+-install_ksu_fd:
+-	pr_info("install fd for manager: %d\n", new_uid);
+-	ksu_install_fd();
+-
+ kill_seccomp:
+ 	disable_seccomp();
+ 	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
+@@ -69,9 +98,9 @@ static int handle_zygote_setresuid(uid_t ruid)
+ 	//   ksu manager.
+ 	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
+ 	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
+-		disable_seccomp();
+-		pr_info("install fd for manager: %d\n", ruid);
++		pr_info_once("install fd for manager: %d\n", ruid);
+ 		ksu_install_fd();
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
+ 		return 0;
+ 	}
+ 
+@@ -117,9 +146,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
+ 	//   ksu manager.
+ 	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
+ 	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
+-		disable_seccomp();
+-		pr_info("install fd for manager: %d\n", ruid);
++		pr_info_once("install fd for manager: %d\n", ruid);
+ 		ksu_install_fd();
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
+ 		return 0;
+ 	}
