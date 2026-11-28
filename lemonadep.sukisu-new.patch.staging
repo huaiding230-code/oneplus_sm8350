@@ -427,7 +427,6 @@ index 0a58cf2..9ee992f 100644
  
  	// now extend the pointers
  	uintptr_t *m_argv = (uintptr_t *)(mmap_page + 1024);
- 
 @@ -644,7 +695,7 @@ ksyscall_exec:;
  	}
  
@@ -563,6 +562,7 @@ index bd55641..0e2211b 100644
 +		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
  		return 0;
  	}
+ 
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 index 679fe9d..7766652 100644
 --- a/kernel/manager/pkg_observer.c
