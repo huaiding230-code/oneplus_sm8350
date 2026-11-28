@@ -52,8 +52,7 @@ index 0a58cf2..9ee992f 100644
  	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
  		return -EINVAL;
  
--	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
-+	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
+ 	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
  		return -EINVAL;
  
  	ret = escape_with_root_profile();
@@ -70,8 +69,7 @@ index 0a58cf2..9ee992f 100644
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
--	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
-+	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
+ 	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
  		return 0;
  
 -	pr_info("ksu_handle_faccessat: su->sh!\n");
@@ -83,8 +81,7 @@ index 0a58cf2..9ee992f 100644
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
--	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
-+	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
+ 	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
  		return 0;
  
 -	pr_info("ksu_handle_stat: su->sh!\n");
