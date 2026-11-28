@@ -93,7 +93,8 @@ jobs:
           SNAP="${RUNNER_TEMP}/sukisu-source"
           mkdir -p "$SNAP"
           files=(
-            kernel/ksu.c
+            kernel/core/init.c
+            kernel/core/unity.h
             kernel/selinux/selinux.h
             kernel/kernel_compat.h
             kernel/Makefile
