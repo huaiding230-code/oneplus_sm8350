@@ -1,23 +1,19 @@
-# OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
-# Adapted from the existing SukiSU 5.4 patch for builtin commit 844782fef3d4502e1c4712720bcc44ca18237043.
-# The obsolete fake-state policy snapshot was replaced by the 5.4 state-selector ABI shim.
-# All other applicable existing compatibility and log-suppression changes are retained.
-# Apply with patch -p1 --fuzz=0 after the kernel patch.
-
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
-index 6c673a8b6117a6a56d66fc84032ce3ae3ba44eef..3a663847f212260334fd604bfb6fd666fd6bc229 100644
+index 6c673a8..30af204 100644
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
-@@ -73,7 +73,8 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
+@@ -73,8 +73,9 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
      struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
      char dirpath[DATA_PATH_LEN];
  
 -    if (!strncmp(name, "..", namelen) || !strncmp(name, ".", namelen))
+-        return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
 +    if ((namelen == 1 && name[0] == '.') ||
 +        (namelen == 2 && name[0] == '.' && name[1] == '.'))
-         return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
++        return FILLDIR_ACTOR_CONTINUE; // Skip exactly "." and ".."
  
      if (d_type == DT_DIR && namelen >= 8 && !strncmp(name, "vmdl", 4) && !strncmp(name + namelen - 4, ".tmp", 4)) {
+         pr_info("sig_fallback: skipping staging dir: %.*s\n", namelen, name);
 @@ -86,13 +87,13 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
          return FILLDIR_ACTOR_CONTINUE;
      }
@@ -65,101 +61,101 @@ index eeabb73..2d9de88 100644
 +
 +static void ksu_legacy_update_running(void)
 +{
-+	bool ready = smp_load_acquire(&legacy_snapshot_ready) &&
-+		READ_ONCE(fake_ss.status_page);
++    bool ready = smp_load_acquire(&legacy_snapshot_ready) &&
++        READ_ONCE(fake_ss.status_page);
 +
-+	WRITE_ONCE(ksu_selinux_hide_running,
-+		ready && READ_ONCE(ksu_selinux_hide_enabled));
++    WRITE_ONCE(ksu_selinux_hide_running,
++        ready && READ_ONCE(ksu_selinux_hide_enabled));
 +}
 +
 +int ksu_selinux_hide_snapshot_legacy(void)
 +{
-+	struct selinux_ss *live_ss;
-+	struct policy_file fp;
-+	void *data = NULL;
-+	size_t len = 0;
-+	u32 generation;
-+	int attempt;
-+	int ret = -EAGAIN;
++    struct selinux_ss *live_ss;
++    struct policy_file fp;
++    void *data = NULL;
++    size_t len = 0;
++    u32 generation;
++    int attempt;
++    int ret = -EAGAIN;
 +
-+	mutex_lock(&legacy_snapshot_mutex);
-+	if (smp_load_acquire(&legacy_snapshot_ready)) {
-+		ret = 0;
-+		goto out;
-+	}
++    mutex_lock(&legacy_snapshot_mutex);
++    if (smp_load_acquire(&legacy_snapshot_ready)) {
++        ret = 0;
++        goto out;
++    }
 +
-+	live_ss = READ_ONCE(selinux_state.ss);
-+	if (!live_ss || !selinux_initialized(&selinux_state))
-+		goto out;
++    live_ss = READ_ONCE(selinux_state.ss);
++    if (!live_ss || !selinux_initialized(&selinux_state))
++        goto out;
 +
-+	for (attempt = 0; attempt < 4; attempt++) {
-+		read_lock(&live_ss->policy_rwlock);
-+		generation = READ_ONCE(live_ss->latest_granting);
-+		read_unlock(&live_ss->policy_rwlock);
++    for (attempt = 0; attempt < 4; attempt++) {
++        read_lock(&live_ss->policy_rwlock);
++        generation = READ_ONCE(live_ss->latest_granting);
++        read_unlock(&live_ss->policy_rwlock);
 +
-+		/* Use SELinux's serializer so the snapshot retains the full policy ABI. */
-+		ret = security_read_policy(&selinux_state, &data, &len);
-+		if (ret)
-+			goto out;
-+		if (!data || !len) {
-+			ret = -EINVAL;
-+			goto out;
-+		}
++        /* Use SELinux's serializer so the snapshot retains the full policy ABI. */
++        ret = security_read_policy(&selinux_state, &data, &len);
++        if (ret)
++            goto out;
++        if (!data || !len) {
++            ret = -EINVAL;
++            goto out;
++        }
 +
-+		fp.data = data;
-+		fp.len = len;
-+		ret = policydb_read(&fake_ss.policydb, &fp);
-+		if (!ret)
-+			fake_ss.policydb.len = len;
-+		vfree(data);
-+		data = NULL;
-+		if (ret) {
-+			memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
-+			goto out;
-+		}
++        fp.data = data;
++        fp.len = len;
++        ret = policydb_read(&fake_ss.policydb, &fp);
++        if (!ret)
++            fake_ss.policydb.len = len;
++        vfree(data);
++        data = NULL;
++        if (ret) {
++            memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
++            goto out;
++        }
 +
-+		rwlock_init(&fake_ss.policy_rwlock);
-+		mutex_init(&fake_ss.status_lock);
-+		read_lock(&live_ss->policy_rwlock);
-+		if (generation != READ_ONCE(live_ss->latest_granting)) {
-+			read_unlock(&live_ss->policy_rwlock);
-+			policydb_destroy(&fake_ss.policydb);
-+			memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
-+			ret = -EAGAIN;
-+			continue;
-+		}
++        rwlock_init(&fake_ss.policy_rwlock);
++        mutex_init(&fake_ss.status_lock);
++        read_lock(&live_ss->policy_rwlock);
++        if (generation != READ_ONCE(live_ss->latest_granting)) {
++            read_unlock(&live_ss->policy_rwlock);
++            policydb_destroy(&fake_ss.policydb);
++            memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
++            ret = -EAGAIN;
++            continue;
++        }
 +
-+		fake_ss.sidtab = live_ss->sidtab;
-+		fake_ss.latest_granting = live_ss->latest_granting;
-+		fake_ss.map = live_ss->map;
-+		fake_ss.status_page = READ_ONCE(ksu_fake_status_page);
-+		fake_state = selinux_state;
-+		fake_state.ss = &fake_ss;
-+		fake_state.initialized = true;
-+		smp_store_release(&legacy_snapshot_ready, true);
-+		read_unlock(&live_ss->policy_rwlock);
++        fake_ss.sidtab = live_ss->sidtab;
++        fake_ss.latest_granting = live_ss->latest_granting;
++        fake_ss.map = live_ss->map;
++        fake_ss.status_page = READ_ONCE(ksu_fake_status_page);
++        fake_state = selinux_state;
++        fake_state.ss = &fake_ss;
++        fake_state.initialized = true;
++        smp_store_release(&legacy_snapshot_ready, true);
++        read_unlock(&live_ss->policy_rwlock);
 +
-+		pr_info("selinux_hide: saved original Linux 5.4 policy snapshot (%zu bytes)\n",
-+			len);
-+		ret = 0;
-+		break;
-+	}
++        pr_info("selinux_hide: saved original Linux 5.4 policy snapshot (%zu bytes)\n",
++            len);
++        ret = 0;
++        break;
++    }
 +
 +out:
-+	vfree(data);
-+	mutex_unlock(&legacy_snapshot_mutex);
-+	ksu_legacy_update_running();
-+	return ret;
++    vfree(data);
++    mutex_unlock(&legacy_snapshot_mutex);
++    ksu_legacy_update_running();
++    return ret;
 +}
 +
 +struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state)
 +{
-+	if (READ_ONCE(ksu_selinux_hide_running) &&
-+	    smp_load_acquire(&legacy_snapshot_ready) &&
-+	    READ_ONCE(fake_ss.status_page) &&
-+	    from_kuid(&init_user_ns, current_uid()) >= 10000)
-+		return &fake_state;
-+	return state;
++    if (READ_ONCE(ksu_selinux_hide_running) &&
++        smp_load_acquire(&legacy_snapshot_ready) &&
++        READ_ONCE(fake_ss.status_page) &&
++        from_kuid(&init_user_ns, current_uid()) >= 10000)
++        return &fake_state;
++    return state;
 +}
 +EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
 +#endif /* Linux 5.4 */
@@ -192,6 +188,8 @@ index eeabb73..2d9de88 100644
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
  DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
  #define ksu_fake_status_init_pending()	static_key_enabled(&fake_status_initialize_key.key)
+#define ksu_fake_status_init_start()	static_key_enable(&fake_status_initialize_key.key)
+#define ksu_fake_status_init_stop()	static_branch_disable(&fake_status_initialize_key)
 @@ -511,8 +636,12 @@ page_ok:
  	if (fake_status) {
  		if (ksu_fake_status_init_pending())
@@ -239,7 +237,7 @@ index d3e244d..462bd5b 100644
  void ksu_susfs_selinux_hide_init(void);
  #endif
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
-index 0a58cf219f6270617977cac0cf5b4c58558876ab..f660c9181632a008be061e0757382f25542f46e7 100644
+index 0a58cf2..9ee992f 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -5,6 +5,7 @@
@@ -313,9 +311,9 @@ index 0a58cf219f6270617977cac0cf5b4c58558876ab..f660c9181632a008be061e0757382f25
  	return 0;
  }
  
-+/* Kernel filename entry points used by the OnePlus 5.4 SUSFS inline hooks. */
-+static __always_inline int ksu_sucompat_kernel_path_common(struct filename **filename_ptr,
-+						 const char *syscall_name)
++/* Kernel-side counterparts for the OnePlus 5.4 SUSFS inline hooks. */
++static __always_inline int ksu_sucompat_kernel_path_common(
++		struct filename **filename_ptr, const char *syscall_name)
 +{
 +	struct filename *filename;
 +	char *path;
@@ -385,12 +383,12 @@ index 0a58cf219f6270617977cac0cf5b4c58558876ab..f660c9181632a008be061e0757382f25
  		constexpr char ksud[16] = KSUD_PATH;
 -		pr_info("su_compat: do_execve_common su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
 +		pr_info_once("su_compat: do_execve_common su->ksud!%s\n", is_compat_task() ? " [compat]" : "");
- 		memcpy_inline((void *)*filename_ptr, ksud, sizeof(ksud));
+ 		memcpy_inline((void **)*filename_ptr, ksud, sizeof(ksud));
  	} else {
  		constexpr char sh[16] = SH_PATH;
 -		pr_info("su_compat: do_execve_common su->sh!%s\n", is_compat_task() ? " [compat]" : "");
 +		pr_info_once("su_compat: do_execve_common su->sh!%s\n", is_compat_task() ? " [compat]" : "");
- 		memcpy_inline((void *)*filename_ptr, sh, sizeof(sh));
+ 		memcpy_inline((void **)*filename_ptr, sh, sizeof(sh));
  	}
  
 @@ -357,7 +408,7 @@ static void ksu_legacy_filename_to_sh(const char __user **filename_user, const c
@@ -410,7 +408,8 @@ index 0a58cf219f6270617977cac0cf5b4c58558876ab..f660c9181632a008be061e0757382f25
 -	if (likely(ksu_is_seccomp_enabled()))
 -		return false;
 -
- 	// pass through tagged task from setuid hook
+-	// pass through tagged task from setuid hook
++	// pass through tagged task from setuid hook before checking its inherited seccomp filter
  	if (test_thread_flag(TIF_KSU_MANAGED))
  		goto check_ptr;
  
@@ -448,6 +447,24 @@ index 0a58cf219f6270617977cac0cf5b4c58558876ab..f660c9181632a008be061e0757382f25
  
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: kernel_execve(\"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
+@@ -697,7 +748,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filenam
+ 		return;
+ 
+ 	// failure path
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
+ 	*filename_user = sh_user_path();
+ 	return;
+ }
+@@ -715,7 +766,7 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filenam
+ 	if (!__builtin_strcmp(syscall_name, "sys_newfstatat"))
+ 		write_sulog('s');
+ 
+-	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
++	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
+ 	*filename_user = sh_user_path();
+ 	return;
+ }
 @@ -803,7 +854,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **
  		return;
  
@@ -456,17 +473,15 @@ index 0a58cf219f6270617977cac0cf5b4c58558876ab..f660c9181632a008be061e0757382f25
 +	pr_info_once("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
  	constexpr char sh[16] = SH_PATH;
  	memcpy_inline(*filename_ptr, sh, sizeof(sh));
- 	return;
-diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
-index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015ba30c3600 100644
+ 	return;diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index bd55641..0e2211b 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -1,3 +1,33 @@
+@@ -1,3 +1,32 @@
 +#include <asm/unistd.h>
 +#include <linux/audit.h>
 +#include <linux/seccomp.h>
 +
-+/* Exact reboot transport exemption used by the paired kernel seccomp hook. */
 +bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
 +{
 +	if (!sd || sd->nr != __NR_reboot ||
@@ -474,6 +489,7 @@ index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015b
 +		return false;
 +
 +#if defined(CONFIG_ARM64)
++	/* Do not exempt compat AArch32 syscall number 142 (_newselect). */
 +	if (sd->arch != AUDIT_ARCH_AARCH64)
 +		return false;
 +#elif defined(CONFIG_ARM)
@@ -488,14 +504,13 @@ index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015b
 +	if ((__u32)sd->args[1] == SUSFS_MAGIC)
 +		return current_uid().val == 0;
 +#endif
-+
 +	return false;
 +}
 +
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +43,15 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -13,10 +42,14 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -503,19 +518,18 @@ index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015b
 -	// lets just do the original thing where we disable seccomp
 -	if (unlikely(is_uid_manager(new_uid)))
 -		goto install_ksu_fd;
-+	/* Keep the manager's inherited seccomp filter; the exact KSU FD
-+	 * handshake is exempted by ksu_seccomp_allow_reboot().
-+	 */
++	/* Manager keeps its inherited seccomp filter; only the exact reboot-FD
++	 * handshake is exempted by ksu_seccomp_allow_reboot(). */
 +	if (unlikely(is_uid_manager(new_uid))) {
 +		pr_info_once("install fd for manager: %d\n", new_uid);
 +		ksu_install_fd();
-+		set_thread_flag(TIF_KSU_MANAGED);
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
 +		return;
 +	}
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +60,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
+@@ -25,10 +58,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	ksu_handle_umount(new, old);
  	return;
  
@@ -526,7 +540,7 @@ index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015b
  kill_seccomp:
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-@@ -69,9 +100,9 @@ static int handle_zygote_setresuid(uid_t ruid)
+@@ -69,9 +98,9 @@ static int handle_zygote_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -534,11 +548,11 @@ index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015b
 -		pr_info("install fd for manager: %d\n", ruid);
 +		pr_info_once("install fd for manager: %d\n", ruid);
  		ksu_install_fd();
-+		set_thread_flag(TIF_KSU_MANAGED);
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
  		return 0;
  	}
  
-@@ -117,9 +148,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
+@@ -117,9 +146,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -546,26 +560,26 @@ index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015b
 -		pr_info("install fd for manager: %d\n", ruid);
 +		pr_info_once("install fd for manager: %d\n", ruid);
  		ksu_install_fd();
-+		set_thread_flag(TIF_KSU_MANAGED);
++		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
  		return 0;
  	}
- 
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
-index 679fe9d3e0e9682961aa04c17772843040f0ca49..c926f922a270fe67a93304eed824c02330a77658 100644
+index 679fe9d..7766652 100644
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
-@@ -110,6 +110,9 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
+@@ -110,6 +110,10 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
  
  	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
  	track_throne(false);
 +#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
++	/* Refresh the priority UID bitmap after packages.list changes. */
 +	susfs_parse_priority_app_strings();
 +#endif
  #if defined(CONFIG_KSU_SUSFS_SUS_PATH) 
  	// Renew the sus path uid bitmap filter after packages.list changed
  	susfs_parse_sus_path_app_strings();
 diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
-index 4c44cc88121ab6922e38fa495a9353392c69d155..a2e18d383c0c8c79fbc795e381f961e102d1ee6a 100644
+index 4c44cc8..a2e18d3 100644
 --- a/kernel/policy/app_profile.c
 +++ b/kernel/policy/app_profile.c
 @@ -85,12 +85,12 @@ static int escape_to_root(bool is_forced)
@@ -583,8 +597,23 @@ index 4c44cc88121ab6922e38fa495a9353392c69d155..a2e18d383c0c8c79fbc795e381f961e1
  		goto out_abort_creds;
  	}
  
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index e625226..0b81510 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -288,6 +288,10 @@ static int ksu_policy_read_live(struct policydb **db_out, size_t *len_out,
+ 	struct policydb *db;
+ 	int ret;
+ 
++#if defined(CONFIG_KSU_SUSFS) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	if (ksu_selinux_hide_snapshot_legacy())
++		pr_warn_once("selinux_hide: continuing without the 5.4 compatibility snapshot\n");
++#endif
+ 	ksu_resolve_policy_api();
+ 	if (!ksu_read_policy_fn || !ksu_policydb_read_fn ||
+ 	    !ksu_policydb_write_fn || !ksu_policydb_destroy_fn)
 diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
-index 6acac7158444e21ef795c2ca4579ed5e5ac2fe9e..815eb68b42e965ca71f8b34cc88ef795e2a3c518 100644
+index 6acac71..815eb68 100644
 --- a/kernel/selinux/selinux.c
 +++ b/kernel/selinux/selinux.c
 @@ -334,7 +334,7 @@ bool susfs_is_current_zygote_next_domain(void)
@@ -597,7 +626,7 @@ index 6acac7158444e21ef795c2ca4579ed5e5ac2fe9e..815eb68b42e965ca71f8b34cc88ef795
  
  bool susfs_is_current_init_domain(void)
 diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
-index d171463335ae1823a93588fd05d14ce0f1969899..e26a060cf4977ed43a3216248f40827f33841808 100644
+index d171463..e401e60 100644
 --- a/kernel/selinux/sepolicy.c
 +++ b/kernel/selinux/sepolicy.c
 @@ -345,9 +345,15 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
@@ -610,7 +639,7 @@ index d171463335ae1823a93588fd05d14ce0f1969899..e26a060cf4977ed43a3216248f40827f
 +		{
 +			struct type_datum *ksu_domain_type =
 +				symtab_search(&db->p_types, "ksu");
-+			/* Record only KSU's own grants; do not rewind Zygisk Next rules. */
++			/* Record KSU's allow rules only; do not rewind third-party rules. */
 +			if (effect == AVTAB_ALLOWED && ksu_domain_type &&
 +			    src->value == ksu_domain_type->value)
 +				susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
@@ -620,7 +649,7 @@ index d171463335ae1823a93588fd05d14ce0f1969899..e26a060cf4977ed43a3216248f40827f
  
  		if (invert) {
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
-index a6d606a9b2896373c8658ae66f1f6b2315a8a6cd..fabf279c587feb11fc7283c42e5411b78990795d 100644
+index a6d606a..0cc4695 100644
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
 @@ -7,7 +7,7 @@ struct ksu_driver_context {
@@ -641,36 +670,23 @@ index a6d606a9b2896373c8658ae66f1f6b2315a8a6cd..fabf279c587feb11fc7283c42e5411b7
  	return fd;
  }
  
-@@ -179,9 +179,15 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
+@@ -179,9 +179,17 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
  	void __user *arg4 = (void __user *)*arg;
  
  	if (magic2 == KSU_INSTALL_MAGIC2) {
 -		int fd = ksu_install_fd();
 +		int fd;
+ 
+-		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
++		/* ksud starts as root; later requests must come from a manager UID. */
 +		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
 +			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
 +					    current_uid().val);
 +			return -EPERM;
 +		}
 +		fd = ksu_install_fd();
- 
--		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
++
 +		pr_info_once("[%d] install ksu fd: %d\n", current->pid, fd);
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
  			pr_err("install ksu fd reply err\n");
  			ksu_close_fd(fd);
-diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index e625226..0b81510 100644
---- a/kernel/selinux/rules.c
-+++ b/kernel/selinux/rules.c
-@@ -288,6 +288,10 @@ static int ksu_policy_read_live(struct policydb **db_out, size_t *len_out,
- 	struct policydb *db;
- 	int ret;
- 
-+#if defined(CONFIG_KSU_SUSFS) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+	if (ksu_selinux_hide_snapshot_legacy())
-+		pr_warn_once("selinux_hide: continuing without the 5.4 compatibility snapshot\n");
-+#endif
- 	ksu_resolve_policy_api();
- 	if (!ksu_read_policy_fn || !ksu_policydb_read_fn ||
- 	    !ksu_policydb_write_fn || !ksu_policydb_destroy_fn)
