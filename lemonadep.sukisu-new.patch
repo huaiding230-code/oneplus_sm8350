@@ -562,6 +562,7 @@ index bd55641..0e2211b 100644
 +		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
  		return 0;
  	}
+ 
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
 index 679fe9d..7766652 100644
 --- a/kernel/manager/pkg_observer.c
