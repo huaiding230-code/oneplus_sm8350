@@ -48,14 +48,6 @@ index 0a58cf2..9ee992f 100644
  static bool ksu_su_compat_enabled __read_mostly = true;
  #endif
  
-@@ -147,7 +152,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
- 	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
- 		return -EINVAL;
- 
- 	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
- 		return -EINVAL;
- 
- 	ret = escape_with_root_profile();
 @@ -156,7 +161,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
  		return -EINVAL;
  	}
