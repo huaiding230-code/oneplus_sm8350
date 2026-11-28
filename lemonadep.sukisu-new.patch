@@ -57,7 +57,10 @@ index 0a58cf2..9ee992f 100644
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -213,1 +218,41 @@
+@@ -210,6 +215,46 @@
+ 	return 0;
+ }
+ 
 +/* Kernel-side counterparts for the OnePlus 5.4 SUSFS inline hooks. */
 +static __always_inline int ksu_sucompat_kernel_path_common(
 +		struct filename **filename_ptr, const char *syscall_name)
@@ -98,7 +101,10 @@ index 0a58cf2..9ee992f 100644
 +	return ksu_sucompat_kernel_path_common(filename_ptr, "sys_newfstatat");
 +}
 +
- #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */@@ -257,7 +302,7 @@ static bool ksu_legacy_has_ksud(void)
+ #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
+ 
+ /*
+@@ -257,7 +302,7 @@ static bool ksu_legacy_has_ksud(void)
  
  static bool ksu_legacy_escape(const char *syscall_name)
  {
