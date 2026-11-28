@@ -19,7 +19,7 @@ index 6c673a8..30af204 100644
      }
  
 -    if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
-+    if (namelen == 8 && !memcmp(name, "base.apk", 8)) {
++    if ((d_type == DT_REG || d_type == DT_UNKNOWN) && namelen == 8 && !memcmp(name, "base.apk", 8)) {
          if (!c->matched && is_manager_apk(dirpath))
              c->matched = true;
          return FILLDIR_ACTOR_CONTINUE;
@@ -34,19 +34,17 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 index 0a58cf2..9ee992f 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
-@@ -5,6 +5,7 @@
+@@ -5,6 +5,6 @@
  #endif
  
  #define SU_PATH "/system/bin/su"
-+#define SU_PATH_ALT "/system/xbin/su"
  #define SH_PATH "/system/bin/sh"
  
  #ifdef CONFIG_KSU_SUSFS
-@@ -39,8 +40,14 @@ bool ksu_su_compat_enabled __read_mostly = true;
+@@ -39,8 +40,13 @@ bool ksu_su_compat_enabled __read_mostly = true;
  #endif
  
  static const char su_path[] = SU_PATH;
-+static const char su_path_alt[] = SU_PATH_ALT;
  static const char sh_path[] = SH_PATH;
  static const char ksud_path[] = KSUD_PATH;
 +
@@ -57,13 +55,12 @@ index 0a58cf2..9ee992f 100644
  #else
  static bool ksu_su_compat_enabled __read_mostly = true;
  #endif
-@@ -147,7 +154,8 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+@@ -147,7 +154,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
  	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
  		return -EINVAL;
  
 -	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
-+	if (likely(memcmp(filename->name, su_path, sizeof(su_path)) &&
-+		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
++	if (likely(memcmp(filename->name, su_path, sizeof(su_path)))
  		return -EINVAL;
  
  	ret = escape_with_root_profile();
@@ -76,13 +73,12 @@ index 0a58cf2..9ee992f 100644
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -187,10 +195,11 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
+@@ -187,10 +195,10 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
 -	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
-+	if (likely(memcmp(filename->name, su_path, sizeof(su_path)) &&
-+		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
++	if (likely(memcmp(filename->name, su_path, sizeof(su_path)))
  		return 0;
  
 -	pr_info("ksu_handle_faccessat: su->sh!\n");
@@ -90,13 +86,12 @@ index 0a58cf2..9ee992f 100644
  	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
  	return 0;
  }
-@@ -202,14 +211,56 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
+@@ -202,14 +211,54 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
 -	if (likely(memcmp(filename->name, su_path, sizeof(su_path))))
-+	if (likely(memcmp(filename->name, su_path, sizeof(su_path)) &&
-+		   memcmp(filename->name, su_path_alt, sizeof(su_path_alt))))
++	if (likely(memcmp(filename->name, su_path, sizeof(su_path)))
  		return 0;
  
 -	pr_info("ksu_handle_stat: su->sh!\n");
@@ -120,8 +115,7 @@ index 0a58cf2..9ee992f 100644
 +		return 0;
 +
 +	path = (char *)filename->name;
-+	if (strncmp(path, SU_PATH, sizeof(SU_PATH)) &&
-+	    strncmp(path, SU_PATH_ALT, sizeof(SU_PATH_ALT)))
++	if (strncmp(path, SU_PATH, sizeof(SU_PATH)))
 +		return 0;
 +
 +	if (!strcmp(syscall_name, "sys_faccessat"))

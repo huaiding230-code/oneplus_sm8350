@@ -7838,7 +7838,7 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
 +#endif
   out:
  	read_unlock(&state->ss->policy_rwlock);
-@@ -1506,6 +1516,88 @@ static int context_struct_to_sid(struct selinux_state *state,
+@@ -1506,6 +1516,72 @@ static int context_struct_to_sid(struct selinux_state *state,
  	return sidtab_context_to_sid(sidtab, context, sid);
  }
  
@@ -7850,9 +7850,8 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
 +{
 +	struct policydb *policydb;
 +	struct sidtab *sidtab;
-+	struct type_datum *typdatum;
 +	struct context context;
-+	char *scontext2, *p, *type_name, *type_end;
++	char *scontext2;
 +	int rc;
 +
 +	if (!scontext_len)
@@ -7881,34 +7880,19 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
 +	policydb = &state->ss->policydb;
 +	sidtab = state->ss->sidtab;
 +
-+	/* Context syntax is user:role:type[:level]. */
-+	p = strchr(scontext2, ':');
-+	if (!p)
-+		goto invalid_context;
-+	p = strchr(p + 1, ':');
-+	if (!p)
-+		goto invalid_context;
-+	type_name = p + 1;
-+	type_end = strchr(type_name, ':');
-+	if (type_end)
-+		*type_end = '\0';
-+	typdatum = hashtab_search(policydb->p_types.table, type_name);
-+	if (type_end)
-+		*type_end = ':';
-+	if (typdatum && !typdatum->attribute &&
-+	    susfs_is_sus_type_rcu(typdatum->value))
-+		goto invalid_context;
-+
 +	rc = string_to_context_struct(policydb, sidtab, scontext2,
 +				      &context, SECSID_NULL);
 +	if (rc)
 +		goto out_unlock;
++	if (susfs_is_sus_type_rcu(context.type)) {
++		context_destroy(&context);
++		rc = -EINVAL;
++		goto out_unlock;
++	}
 +	rc = context_struct_to_sid(state, &context, sid);
 +	context_destroy(&context);
 +	goto out_unlock;
 +
-+invalid_context:
-+	rc = -EINVAL;
 +out_unlock:
 +	read_unlock(&state->ss->policy_rwlock);
 +out_free:
