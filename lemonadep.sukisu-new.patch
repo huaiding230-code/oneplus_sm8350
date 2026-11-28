@@ -34,14 +34,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
 index 0a58cf2..9ee992f 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
-@@ -5,6 +5,6 @@
- #endif
- 
- #define SU_PATH "/system/bin/su"
- #define SH_PATH "/system/bin/sh"
- 
- #ifdef CONFIG_KSU_SUSFS
-@@ -39,8 +40,13 @@ bool ksu_su_compat_enabled __read_mostly = true;
+@@ -39,8 +39,13 @@ bool ksu_su_compat_enabled __read_mostly = true;
  #endif
  
  static const char su_path[] = SU_PATH;
@@ -55,7 +48,7 @@ index 0a58cf2..9ee992f 100644
  #else
  static bool ksu_su_compat_enabled __read_mostly = true;
  #endif
-@@ -147,7 +154,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+@@ -147,7 +152,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
  	if (likely(!__ksu_is_allow_uid_for_current(current_uid().val)))
  		return -EINVAL;
  
@@ -64,7 +57,7 @@ index 0a58cf2..9ee992f 100644
  		return -EINVAL;
  
  	ret = escape_with_root_profile();
-@@ -156,7 +164,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
+@@ -156,7 +161,7 @@ int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,
  		return -EINVAL;
  	}
  
@@ -73,7 +66,7 @@ index 0a58cf2..9ee992f 100644
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -187,10 +195,10 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
+@@ -187,10 +192,10 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -86,7 +79,7 @@ index 0a58cf2..9ee992f 100644
  	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
  	return 0;
  }
-@@ -202,14 +211,54 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
+@@ -202,14 +207,54 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -143,7 +136,7 @@ index 0a58cf2..9ee992f 100644
  #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
  
  /*
-@@ -257,7 +308,7 @@ static bool ksu_legacy_has_ksud(void)
+@@ -257,7 +302,7 @@ static bool ksu_legacy_has_ksud(void)
  
  static bool ksu_legacy_escape(const char *syscall_name)
  {
@@ -152,7 +145,7 @@ index 0a58cf2..9ee992f 100644
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -291,10 +342,10 @@ int ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *e
+@@ -291,10 +336,10 @@ int ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *e
  		return 0;
  
  	if (ksu_legacy_has_ksud()) {
@@ -165,7 +158,7 @@ index 0a58cf2..9ee992f 100644
  		*filename_user = sh_user_path();
  	}
  
-@@ -336,11 +387,11 @@ int ksu_legacy_execve_sucompat(const char **filename_ptr, void *argv, void *envp
+@@ -336,11 +381,11 @@ int ksu_legacy_execve_sucompat(const char **filename_ptr, void *argv, void *envp
  	 */
  	if (ksu_legacy_has_ksud()) {
  		constexpr char ksud[16] = KSUD_PATH;
@@ -179,7 +172,7 @@ index 0a58cf2..9ee992f 100644
  		memcpy_inline((void *)*filename_ptr, sh, sizeof(sh));
  	}
  
-@@ -357,7 +408,7 @@ static void ksu_legacy_filename_to_sh(const char __user **filename_user, const c
+@@ -357,7 +402,7 @@ static void ksu_legacy_filename_to_sh(const char __user **filename_user, const c
  		return;
  
  	write_sulog(sulog_sym);
@@ -188,7 +181,7 @@ index 0a58cf2..9ee992f 100644
  	*filename_user = sh_user_path();
  }
  
-@@ -436,14 +487,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
+@@ -436,14 +481,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
  #endif // KSU_CAN_USE_JUMP_LABEL
  #endif
  
@@ -208,7 +201,7 @@ index 0a58cf2..9ee992f 100644
  #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
  	if (!ksu_is_allow_uid_for_current(current_uid().val))
  		return false;
-@@ -602,7 +653,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, vo
+@@ -602,7 +647,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, vo
  	if (likely(!is_compat_task())) 
  		goto ksyscall_exec;
  
@@ -217,7 +210,7 @@ index 0a58cf2..9ee992f 100644
  
  	// now extend the pointers
  	uintptr_t *m_argv = (uintptr_t *)(mmap_page + 1024);
-@@ -644,7 +695,7 @@ ksyscall_exec:;
+@@ -644,7 +689,7 @@ ksyscall_exec:;
  	}
  
  	ksu_install_su_fd(); // ksu#3679
@@ -226,7 +219,7 @@ index 0a58cf2..9ee992f 100644
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: ksyscall(execve, \"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
  
-@@ -661,7 +712,7 @@ ksyscall_exec:;
+@@ -661,7 +706,7 @@ ksyscall_exec:;
  	 * put fd install before return but thats kinda too much.
  	 */
  	ksu_install_su_fd(); // ksu#3679
@@ -235,7 +228,7 @@ index 0a58cf2..9ee992f 100644
  
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: kernel_execve(\"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
-@@ -697,7 +748,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filenam
+@@ -697,7 +742,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filenam
  		return;
  
  	// failure path
@@ -244,7 +237,7 @@ index 0a58cf2..9ee992f 100644
  	*filename_user = sh_user_path();
  	return;
  }
-@@ -715,7 +766,7 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filenam
+@@ -715,7 +760,7 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filenam
  	if (!__builtin_strcmp(syscall_name, "sys_newfstatat"))
  		write_sulog('s');
  
@@ -253,7 +246,7 @@ index 0a58cf2..9ee992f 100644
  	*filename_user = sh_user_path();
  	return;
  }
-@@ -803,7 +854,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **
+@@ -803,7 +848,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **
  		return;
  
  	// failure path
