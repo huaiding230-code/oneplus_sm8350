@@ -188,8 +188,6 @@ index eeabb73..2d9de88 100644
  #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
  DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
  #define ksu_fake_status_init_pending()	static_key_enabled(&fake_status_initialize_key.key)
-#define ksu_fake_status_init_start()	static_key_enable(&fake_status_initialize_key.key)
-#define ksu_fake_status_init_stop()	static_branch_disable(&fake_status_initialize_key)
 @@ -511,8 +636,12 @@ page_ok:
  	if (fake_status) {
  		if (ksu_fake_status_init_pending())
