@@ -55,6 +55,27 @@ jobs:
           cd kernel_source
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
 
+      # 5a. Apply the two separately reviewed follow-up patches after the complete kernel patch.
+      #     Keep them independent and strict: no fuzz, no source rewriting.
+      - name: "5a. Apply IPA PM and GLINK QRTR patches"
+        run: |
+          set -euo pipefail
+          cd "${GITHUB_WORKSPACE}/kernel_source"
+
+          for patch_file in \
+            lemonadep-ipa-pm-optional-callback.patch \
+            lemonadep-glink-qrtr-wake-diagnostic.patch; do
+            test -s "${GITHUB_WORKSPACE}/${patch_file}"
+            echo "Strict dry-run: ${patch_file}"
+            patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/${patch_file}"
+            echo "Apply: ${patch_file}"
+            patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/${patch_file}"
+          done
+
+          git diff --check
+          echo "IPA_PM_PATCH_APPLY=PASS"
+          echo "GLINK_QRTR_DIAGNOSTIC_PATCH_APPLY=PASS"
+
       # 6. 跟踪 SukiSU builtin-new 上游最新提交，并应用 5.4 适配补丁。
       #    预检与正式应用统一使用 GNU patch，禁止 fuzz 模糊匹配。
       - name: "6. Integrate SukiSU"
