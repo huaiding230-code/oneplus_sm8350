@@ -229,7 +229,7 @@ diff --git a/kernel/power/wakeup_reason.c b/kernel/power/wakeup_reason.c
  	else
  		pr_info("Resume cause unknown\n");
  
-@@ -321,6 +334,10 @@
+@@ -321,7 +334,11 @@
  	else if (wakeup_reason == RESUME_ABNORMAL)
  		buf_offset = scnprintf(buf, PAGE_SIZE, "-1 %s",
  				       non_irq_wake_reason);
@@ -239,4 +239,5 @@ diff --git a/kernel/power/wakeup_reason.c b/kernel/power/wakeup_reason.c
 +				       pm_wakeup_irq_name(pm_wakeup_irq()));
  
  	spin_unlock_irqrestore(&wakeup_reason_lock, flags);
+ 
  	return buf_offset;
