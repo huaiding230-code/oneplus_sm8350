@@ -8457,7 +8457,6 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
  
  		qrtr_port_put(ipc);
 
-# Standalone fixes appended 2026-11-28; originally maintained as separate patch files.
 diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
 --- a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
 +++ b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
