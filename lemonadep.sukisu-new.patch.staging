@@ -612,3 +612,81 @@ index e625226..0b81510 100644
  	ksu_resolve_policy_api();
  	if (!ksu_read_policy_fn || !ksu_policydb_read_fn ||
  	    !ksu_policydb_write_fn || !ksu_policydb_destroy_fn)
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+index 6acac71..815eb68 100644
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -334,7 +334,7 @@ bool susfs_is_current_zygote_next_domain(void)
+ 
+ bool susfs_is_current_ksu_domain(void)
+ {
+-	return unlikely(susfs_current_sid() == susfs_ksu_sid);
++	return is_ksu_domain();
+ }
+ 
+ bool susfs_is_current_init_domain(void)
+diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index d171463..e401e60 100644
+--- a/kernel/selinux/sepolicy.c
++++ b/kernel/selinux/sepolicy.c
+@@ -345,9 +345,15 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
+ 		}
+ 
+ #ifdef CONFIG_KSU_SUSFS
+-		// track the allowed bits before inversion, SUSFS evades avc log
+-		// spoofing based on this per type/class bitmap
+-		susfs_add_sus_avd_allowed_by_type(src->value, tgt->value, cls->value, node->datum.u.data);
++		{
++			struct type_datum *ksu_domain_type =
++				symtab_search(&db->p_types, "ksu");
++			/* Record KSU's allow rules only; do not rewind third-party rules. */
++			if (effect == AVTAB_ALLOWED && ksu_domain_type &&
++			    src->value == ksu_domain_type->value)
++				susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
++							  cls->value, node->datum.u.data);
++		}
+ #endif // CONFIG_KSU_SUSFS
+ 
+ 		if (invert) {
+diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
+index a6d606a..0cc4695 100644
+--- a/kernel/supercall/supercall.c
++++ b/kernel/supercall/supercall.c
+@@ -7,7 +7,7 @@ struct ksu_driver_context {
+ static int anon_ksu_release(struct inode *inode, struct file *filp)
+ {
+ 	kfree(filp->private_data);
+-	pr_info("ksu fd released\n");
++	pr_info_once("ksu fd released\n");
+ 	return 0;
+ }
+ 
+@@ -55,7 +55,7 @@ static int ksu_install_fd_with_permissions(unsigned int fd_flags, unsigned long
+ 	}
+ 
+ 	fd_install(fd, filp);
+-	pr_info("ksu fd installed: %d for pid %d\n", fd, current->pid);
++	pr_info_once("ksu fd installed: %d for pid %d\n", fd, current->pid);
+ 	return fd;
+ }
+ 
+@@ -179,9 +179,17 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
+ 	void __user *arg4 = (void __user *)*arg;
+ 
+ 	if (magic2 == KSU_INSTALL_MAGIC2) {
+-		int fd = ksu_install_fd();
++		int fd;
+ 
+-		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
++		/* ksud starts as root; later requests must come from a manager UID. */
++		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
++			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
++					    current_uid().val);
++			return -EPERM;
++		}
++		fd = ksu_install_fd();
++
++		pr_info_once("[%d] install ksu fd: %d\n", current->pid, fd);
+ 		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
+ 			pr_err("install ksu fd reply err\n");
+ 			ksu_close_fd(fd);
