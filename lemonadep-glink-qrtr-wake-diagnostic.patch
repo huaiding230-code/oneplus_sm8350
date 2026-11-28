@@ -216,7 +216,7 @@ diff --git a/kernel/power/wakeup_reason.c b/kernel/power/wakeup_reason.c
 +	return default_irq_name;
 +}
 +
-+static void print_wakeup_sources(void)
+ static void print_wakeup_sources(void)
  {
  	struct wakeup_irq_node *n;
 @@ -291,6 +301,9 @@
