@@ -1,4 +1,4 @@
-name: SukiSU builtin-new Preflight (LineageOS 24.0)
+name: SukiSU builtin pinned 844782f Preflight (LineageOS 24.0)
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: builtin-new-preflight-${{ github.ref }}
+  group: builtin-pinned-preflight-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -69,15 +69,19 @@ jobs:
           done
           test -f "$DEVICE/modules.blocklist" || { echo "Missing device manifest: modules.blocklist"; exit 1; }
 
-          # Always fetch the current Forgejo builtin-new HEAD. Strict patch
-          # application below is the compatibility check; no SHA pin is used.
+          # Match the full build workflow: use the same immutable SukiSU builtin commit.
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
+          SUKISU_COMMIT="844782fef3d4502e1c4712720bcc44ca18237043"
           git init "$KSU"
-          git -C "$KSU" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git refs/heads/builtin-new
+          git -C "$KSU" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git "$SUKISU_COMMIT"
           git -C "$KSU" checkout --detach FETCH_HEAD
 
           ACTUAL_SUKISU="$(git -C "$KSU" rev-parse HEAD)"
-          echo "Fetched latest SukiSU builtin-new commit: $ACTUAL_SUKISU"
+          [[ "$ACTUAL_SUKISU" == "$SUKISU_COMMIT" ]] || {
+            echo "::error::Expected SukiSU $SUKISU_COMMIT but fetched $ACTUAL_SUKISU"
+            exit 1
+          }
+          echo "Fetched pinned SukiSU builtin commit: $ACTUAL_SUKISU"
           echo "ACTUAL_SUKISU=$ACTUAL_SUKISU" >> "$GITHUB_ENV"
 
       # Preserve the real Forgejo source used by this run. This makes context
