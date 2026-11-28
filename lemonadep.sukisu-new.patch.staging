@@ -563,3 +563,52 @@ index bd55641..0e2211b 100644
 +		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
  		return 0;
  	}
+diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
+index 679fe9d..7766652 100644
+--- a/kernel/manager/pkg_observer.c
++++ b/kernel/manager/pkg_observer.c
+@@ -110,6 +110,10 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
+ 
+ 	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
+ 	track_throne(false);
++#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
++	/* Refresh the priority UID bitmap after packages.list changes. */
++	susfs_parse_priority_app_strings();
++#endif
+ #if defined(CONFIG_KSU_SUSFS_SUS_PATH) 
+ 	// Renew the sus path uid bitmap filter after packages.list changed
+ 	susfs_parse_sus_path_app_strings();
+diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
+index 4c44cc8..a2e18d3 100644
+--- a/kernel/policy/app_profile.c
++++ b/kernel/policy/app_profile.c
+@@ -85,12 +85,12 @@ static int escape_to_root(bool is_forced)
+ 	}
+ 
+ 	if (!is_forced && ksu_get_uid_t(cred->euid) == 0) {
+-		pr_warn("Already root, don't escape!\n");
++		pr_info_once("Already root, don't escape!\n");
+ 		goto out_abort_creds;
+ 	}
+ 
+ 	if (test_thread_flag(TIF_KSU_DISABLE_ESCAPE_WITH_ROOT)) {
+-		pr_warn("TIF_KSU_DISABLE_ESCAPE_WITH_ROOT found, don't escape!\n");
++		pr_info_once("TIF_KSU_DISABLE_ESCAPE_WITH_ROOT found, don't escape!\n");
+ 		goto out_abort_creds;
+ 	}
+ 
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+index e625226..0b81510 100644
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -288,6 +288,10 @@ static int ksu_policy_read_live(struct policydb **db_out, size_t *len_out,
+ 	struct policydb *db;
+ 	int ret;
+ 
++#if defined(CONFIG_KSU_SUSFS) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++	if (ksu_selinux_hide_snapshot_legacy())
++		pr_warn_once("selinux_hide: continuing without the 5.4 compatibility snapshot\n");
++#endif
+ 	ksu_resolve_policy_api();
+ 	if (!ksu_read_policy_fn || !ksu_policydb_read_fn ||
+ 	    !ksu_policydb_write_fn || !ksu_policydb_destroy_fn)
