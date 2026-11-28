@@ -51,9 +51,7 @@ jobs:
           echo "Kernel source commit: $(git rev-parse HEAD)"
 
           for patch_file in \
-            lemonadep.kernel-new.patch \
-            lemonadep-ipa-pm-optional-callback.patch \
-            lemonadep-glink-qrtr-wake-diagnostic.patch; do
+            lemonadep.kernel-new.patch; do
             patch_path="${GITHUB_WORKSPACE}/${patch_file}"
             test -s "$patch_path"
             echo "Strict dry-run: $patch_file"
