@@ -67,6 +67,30 @@ jobs:
           cd "$KSU"
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
 
+          # Verify the pinned SukiSU source still provides the Linux 5.4 fake_state
+          # adapter consumed by lemonadep.kernel-new.patch. Do not duplicate these
+          # upstream-owned hunks in the SukiSU patch; fail early if the API drifts.
+          require_text() {
+            grep -Fq -- "$2" "$1" || {
+              echo "SELinux fake_state compatibility check failed: $1 lacks: $2"
+              exit 1
+            }
+          }
+          require_text "$KSU/kernel/feature/selinux_hide.c" "struct selinux_state fake_state;"
+          require_text "$KSU/kernel/feature/selinux_hide.c" "ksu_selinux_hide_snapshot_legacy"
+          require_text "$KSU/kernel/feature/selinux_hide.c" "ksu_selinux_hide_select_state"
+          require_text "$KSU/kernel/feature/selinux_hide.h" "ksu_selinux_hide_snapshot_legacy"
+          require_text "$KSU/kernel/feature/selinux_hide.h" "ksu_selinux_hide_select_state"
+          require_text "$KSU/kernel/selinux/rules.c" "ksu_selinux_hide_snapshot_legacy"
+
+          # Verify the restored kernel-side consumers are present as well.
+          require_text "${GITHUB_WORKSPACE}/kernel_source/include/linux/ksu_selinux_hide.h" "ksu_selinux_hide_select_state"
+          require_text "${GITHUB_WORKSPACE}/kernel_source/security/selinux/hooks.c" "security_context_to_sid(&fake_state"
+          require_text "${GITHUB_WORKSPACE}/kernel_source/security/selinux/selinuxfs.c" "ksu_selinux_hide_select_state(fsi->state)"
+          require_text "${GITHUB_WORKSPACE}/kernel_source/security/selinux/ss/services.c" "fake_state.ss->sidtab == oldsidtab"
+          require_text "${GITHUB_WORKSPACE}/kernel_source/security/selinux/ss/services.c" "fake_state.ss->map.mapping != oldmapping"
+          echo "SELinux fake_state 5.4 provider/consumer checks passed."
+
           cd "${GITHUB_WORKSPACE}/kernel_source"
           ln -s ../KernelSU/kernel drivers/kernelsu
           sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' drivers/Kconfig
