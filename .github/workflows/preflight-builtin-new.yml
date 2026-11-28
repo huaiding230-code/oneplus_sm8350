@@ -72,7 +72,7 @@ jobs:
         run: |
           set -euo pipefail
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
-          SUKISU_COMMIT="caa5113efbdc4aa56eb65bdde2aeabd83cd43a52"
+          SUKISU_COMMIT="a73ac1b49ba8cb8847342bac395a8bf786513d3a"
 
           git init "$KSU"
           git -C "$KSU" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git "$SUKISU_COMMIT"
