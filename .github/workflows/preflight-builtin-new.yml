@@ -1,4 +1,4 @@
-name: SukiSU builtin pinned 844782f Preflight (LineageOS 24.0)
+name: SukiSU builtin-new Preflight (LineageOS 24.0)
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: builtin-pinned-preflight-${{ github.ref }}
+  group: builtin-new-preflight-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
