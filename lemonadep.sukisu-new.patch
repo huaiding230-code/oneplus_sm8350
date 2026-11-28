@@ -473,7 +473,8 @@ index 0a58cf2..9ee992f 100644
 +	pr_info_once("su_compat: %s su->sh!%s\n", function_name, (is_compat_task()) ? " [compat]" : "" );
  	constexpr char sh[16] = SH_PATH;
  	memcpy_inline(*filename_ptr, sh, sizeof(sh));
- 	return;diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+ 	return;
+diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 index bd55641..0e2211b 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
