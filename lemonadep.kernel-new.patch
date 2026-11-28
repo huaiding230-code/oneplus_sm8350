@@ -8313,7 +8313,7 @@ diff --git a/net/qrtr/qrtr.c b/net/qrtr/qrtr.c
 diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
 --- a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
 +++ b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
-@@ -444,8 +444,6 @@
+@@ -444,7 +444,5 @@
  	if (client->callback) {
  		client->callback(client->callback_params,
  			IPA_PM_CLIENT_ACTIVATED);
