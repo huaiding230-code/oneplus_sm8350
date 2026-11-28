@@ -1,21 +1,14 @@
 # OnePlus 9 Pro / LineageOS 24.0 / Android 17 / Linux 5.4.302 QGKI
-# Target: current Forgejo SukiSU builtin-new branch HEAD (fetched at build time).
-# This patch carries Linux 5.4-only compatibility and device-hook adaptations.
-# KPM remains disabled. Apply after the kernel patch; strict --fuzz=0 preflight
-# must pass against the fetched upstream HEAD before using this adaptation.
-#
-# Compared with the previous SukiSU patch:
-# - Retain the proven 5.4 SELinux policy snapshot adapter and seccomp-safe manager handling.
-# - Keep the SU path, kernel inline-hook, UID observer, SUSFS AVC and FD authorization fixes.
-# - Do NOT add a second sdcard monitor start: the base source already starts it once in EVENT_BOOT_COMPLETED.
-# - Preserve only KSU-owned SELinux allow-rule snapshots so Zygisk Next rules are not rewound.
-# - Limit repeated successful sucompat, already-root, and FD lifecycle messages to once per callsite.
+# Adapted from the existing SukiSU 5.4 patch for builtin commit 844782fef3d4502e1c4712720bcc44ca18237043.
+# The obsolete fake-state policy snapshot was replaced by the 5.4 state-selector ABI shim.
+# All other applicable existing compatibility and log-suppression changes are retained.
+# Apply with patch -p1 --fuzz=0 after the kernel patch.
 
 diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
-index 50f3c4a..5f53197 100644
+index 6c673a8b6117a6a56d66fc84032ce3ae3ba44eef..3a663847f212260334fd604bfb6fd666fd6bc229 100644
 --- a/kernel/extension/dynamic_sig_fallback.c
 +++ b/kernel/extension/dynamic_sig_fallback.c
-@@ -83,7 +83,8 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
+@@ -73,7 +73,8 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
      struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
      char dirpath[DATA_PATH_LEN];
  
@@ -25,7 +18,7 @@ index 50f3c4a..5f53197 100644
          return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
  
      if (d_type == DT_DIR && namelen >= 8 && !strncmp(name, "vmdl", 4) && !strncmp(name + namelen - 4, ".tmp", 4)) {
-@@ -96,13 +97,13 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
+@@ -86,13 +87,13 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
          return FILLDIR_ACTOR_CONTINUE;
      }
  
@@ -42,213 +35,47 @@ index 50f3c4a..5f53197 100644
  
          if (!p) {
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index 067c271..245faa3 100644
+index eeabb73b9a30bf39873c4bfc914a90e97b24a6d2..9cb9f71de67314405bd298420de404b7ddb38549 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
-@@ -40,6 +40,128 @@ bool ksu_selinux_hide_enabled __read_mostly = true;
- /* the page we serve to unprivileged readers of /sys/fs/selinux/status */
- struct page *ksu_fake_status_page __read_mostly = NULL;
+@@ -332,6 +332,16 @@ extern struct selinux_state selinux_state;
+ #endif
  
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
-+/*
-+ * Linux 5.4 keeps the SELinux policy state in selinux_state.ss.  The
-+ * SUSFS kernel hooks select this private view for unprivileged readers,
-+ * while all policy updates continue to use the upstream live state.
-+ */
-+#include <linux/user_namespace.h>
-+#include <linux/vmalloc.h>
-+#include <ss/policydb.h>
-+#include <ss/services.h>
-+
-+struct selinux_state fake_state;
-+bool ksu_selinux_hide_running __read_mostly = false;
-+static struct selinux_ss fake_ss;
-+static bool legacy_snapshot_ready;
-+static DEFINE_MUTEX(legacy_snapshot_mutex);
-+
-+static void ksu_legacy_update_running(void)
-+{
-+	bool ready = smp_load_acquire(&legacy_snapshot_ready) &&
-+		READ_ONCE(fake_ss.status_page);
-+
-+	WRITE_ONCE(ksu_selinux_hide_running,
-+		ready && READ_ONCE(ksu_selinux_hide_enabled));
-+}
-+
-+int ksu_selinux_hide_snapshot_legacy(void)
-+{
-+	struct selinux_ss *live_ss;
-+	struct policy_file fp;
-+	void *data = NULL;
-+	size_t len = 0;
-+	u32 generation;
-+	int attempt;
-+	int ret = -EAGAIN;
-+
-+	mutex_lock(&legacy_snapshot_mutex);
-+	if (smp_load_acquire(&legacy_snapshot_ready)) {
-+		ret = 0;
-+		goto out;
-+	}
-+
-+	live_ss = READ_ONCE(selinux_state.ss);
-+	if (!live_ss || !selinux_initialized(&selinux_state))
-+		goto out;
-+
-+	for (attempt = 0; attempt < 4; attempt++) {
-+		read_lock(&live_ss->policy_rwlock);
-+		generation = READ_ONCE(live_ss->latest_granting);
-+		read_unlock(&live_ss->policy_rwlock);
-+
-+		/* Use SELinux's own serializer to preserve the complete policy ABI. */
-+		ret = security_read_policy(&selinux_state, &data, &len);
-+		if (ret)
-+			goto out;
-+		if (!data || !len) {
-+			ret = -EINVAL;
-+			goto out;
-+		}
-+
-+		fp.data = data;
-+		fp.len = len;
-+		ret = policydb_read(&fake_ss.policydb, &fp);
-+		if (!ret)
-+			fake_ss.policydb.len = len;
-+		vfree(data);
-+		data = NULL;
-+		if (ret) {
-+			/* policydb_read() owns cleanup of an initialized partial policy. */
-+			memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
-+			goto out;
-+		}
-+
-+		/* The generation check and pointer publication must be atomic
-+		 * against security_load_policy() replacing the sidtab or map.
-+		 */
-+		rwlock_init(&fake_ss.policy_rwlock);
-+		mutex_init(&fake_ss.status_lock);
-+		read_lock(&live_ss->policy_rwlock);
-+		if (generation != READ_ONCE(live_ss->latest_granting)) {
-+			read_unlock(&live_ss->policy_rwlock);
-+			policydb_destroy(&fake_ss.policydb);
-+			memset(&fake_ss.policydb, 0, sizeof(fake_ss.policydb));
-+			ret = -EAGAIN;
-+			continue;
-+		}
-+
-+		fake_ss.sidtab = live_ss->sidtab;
-+		fake_ss.latest_granting = live_ss->latest_granting;
-+		fake_ss.map = live_ss->map;
-+		fake_ss.status_page = READ_ONCE(ksu_fake_status_page);
-+		fake_state = selinux_state;
-+		fake_state.ss = &fake_ss;
-+		fake_state.initialized = true;
-+		smp_store_release(&legacy_snapshot_ready, true);
-+		read_unlock(&live_ss->policy_rwlock);
-+
-+		pr_info("selinux_hide: saved original Linux 5.4 policy snapshot (%zu bytes)\n",
-+			len);
-+		ret = 0;
-+		break;
-+	}
-+
-+out:
-+	vfree(data);
-+	mutex_unlock(&legacy_snapshot_mutex);
-+	ksu_legacy_update_running();
-+	return ret;
-+}
-+
+ static struct page *ksu_fake_status_page __read_mostly = nullptr;
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++/* The builtin branch uses runtime SELinux hooks; retain the 5.4 kernel ABI. */
++struct selinux_state;
 +struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state)
 +{
-+	if (READ_ONCE(ksu_selinux_hide_running) &&
-+	    smp_load_acquire(&legacy_snapshot_ready) &&
-+	    READ_ONCE(fake_ss.status_page) &&
-+	    from_kuid(&init_user_ns, current_uid()) >= 10000)
-+		return &fake_state;
 +	return state;
 +}
 +EXPORT_SYMBOL_GPL(ksu_selinux_hide_select_state);
-+#endif /* Linux 5.4 + SUSFS */
++#endif /* Linux < 5.10 */
 +
- struct ksu_sepol_hide_set {
- 	struct rcu_head rcu;
- 	u32 count;
-@@ -707,6 +829,11 @@ static int ksu_prepare_fake_status_page(void)
- #endif
- 
- 	ksu_fake_status_page = new_page;
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
-+	if (smp_load_acquire(&legacy_snapshot_ready))
-+		WRITE_ONCE(fake_ss.status_page, new_page);
-+	ksu_legacy_update_running();
-+#endif
- 	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%u\n", fake_status->sequence);
- 
- 	return 0;
-@@ -724,7 +851,9 @@ static int ksu_prepare_fake_status_page(void)
-  *   <  4.3 : extern bool fake_status_initialize_key;
-  *            test with a plain READ_ONCE().
-  */
-+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
- bool ksu_selinux_hide_running __read_mostly = false;
-+#endif
- struct page *fake_status __read_mostly = NULL;
- 
- #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 3, 0)
-@@ -836,8 +965,12 @@ static int ksu_selinux_hide_init_thread(void *data)
- 	if (fake_status) {
- 		if (ksu_fake_status_init_pending())
- 			ksu_fake_status_init_stop();
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
-+		ksu_legacy_update_running();
-+#else
- 		if (ksu_selinux_hide_enabled)
- 			ksu_selinux_hide_running = true;
-+#endif
- 	} else {
- 		pr_warn("selinux_hide: fake status not ready, SUSFS status spoof disabled\n");
- 	}
-@@ -874,8 +1007,12 @@ static int selinux_hide_feature_set(u64 value)
- 	WRITE_ONCE(ksu_selinux_hide_enabled, enable);
- 
- #ifdef CONFIG_KSU_SUSFS
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+	ksu_legacy_update_running();
-+#else
- 	/* kernel-side status/context/access spoof follows this flag */
- 	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
-+#endif
- #endif
- 
- 	return 0;
+ static int ksu_prepare_fake_status_page()
+ {
+ 	struct page *real_page = ksu_selinux_kernel_status_page();
 diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
-index f1c7dcb..45b8a70 100644
+index d3e244d9b07ebc1fb87a60515493fcca4fb33aca..765eeffd3c3cde8ec73d44fb543cc2fb0d7fb13e 100644
 --- a/kernel/feature/selinux_hide.h
 +++ b/kernel/feature/selinux_hide.h
-@@ -14,6 +14,8 @@
+@@ -16,8 +16,14 @@
  #ifndef __KSU_H_SELINUX_HIDE
  #define __KSU_H_SELINUX_HIDE
  
 +#include <linux/version.h>
 +
- #include <linux/types.h>
- 
- struct inode;
-@@ -31,6 +33,12 @@ struct page;
- void ksu_selinux_hide_init(void);
- void ksu_selinux_hide_exit(void);
- 
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
+ void ksu_selinux_hide_init();
+ void ksu_selinux_hide_exit();
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
 +struct selinux_state;
-+int ksu_selinux_hide_snapshot_legacy(void);
 +struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state);
 +#endif
-+
- extern bool ksu_selinux_hide_enabled;
- extern struct page *ksu_fake_status_page;
- 
+ #ifdef CONFIG_KSU_SUSFS
+ void ksu_susfs_selinux_hide_init(void);
+ #endif
 diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
+index 0a58cf219f6270617977cac0cf5b4c58558876ab..f660c9181632a008be061e0757382f25542f46e7 100644
 --- a/kernel/feature/sucompat.c
 +++ b/kernel/feature/sucompat.c
 @@ -5,6 +5,7 @@
@@ -259,7 +86,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #define SH_PATH "/system/bin/sh"
  
  #ifdef CONFIG_KSU_SUSFS
-@@ -39,8 +40,14 @@
+@@ -39,8 +40,14 @@ bool ksu_su_compat_enabled __read_mostly = true;
  #endif
  
  static const char su_path[] = SU_PATH;
@@ -293,7 +120,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -187,10 +195,11 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, int *__unused_flags)
+@@ -187,10 +195,11 @@ int ksu_handle_faccessat(int *dfd, struct filename **filename_ptr, int *mode, in
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -307,7 +134,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	memcpy_inline(filename->name, sh_path, sizeof(sh_path));
  	return 0;
  }
-@@ -202,14 +211,60 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
+@@ -202,14 +211,56 @@ int ksu_handle_stat(int *dfd, struct filename **filename_ptr, int *flags)
  	if (unlikely(IS_ERR(filename) || filename->name == NULL))
  		return 0;
  
@@ -322,11 +149,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	return 0;
  }
  
-+/*
-+ * Kernel-side counterparts for the OnePlus 5.4 SUSFS inline hooks.
-+ * Unlike the userspace hooks, these receive a kernel struct filename.
-+ * Return 1 only when the su path was actually rewritten to /system/bin/sh.
-+ */
++/* Kernel filename entry points used by the OnePlus 5.4 SUSFS inline hooks. */
 +static __always_inline int ksu_sucompat_kernel_path_common(struct filename **filename_ptr,
 +						 const char *syscall_name)
 +{
@@ -370,7 +193,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #else /* LINUX_VERSION_CODE < KERNEL_VERSION(3, 14, 0) */
  
  /*
-@@ -257,7 +312,7 @@ static bool ksu_legacy_escape(const char *syscall_name)
+@@ -257,7 +308,7 @@ static bool ksu_legacy_has_ksud(void)
  
  static bool ksu_legacy_escape(const char *syscall_name)
  {
@@ -379,7 +202,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  #ifdef CONFIG_KSU_FEATURE_SULOG
  	ksu_sulog_emit(KSU_SULOG_EVENT_SUCOMPAT, NULL, 0, GFP_KERNEL);
-@@ -291,10 +346,10 @@ int ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *envp)
+@@ -291,10 +342,10 @@ int ksu_handle_sys_execve(const char __user **filename_user, void *argv, void *e
  		return 0;
  
  	if (ksu_legacy_has_ksud()) {
@@ -392,7 +215,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		*filename_user = sh_user_path();
  	}
  
-@@ -336,11 +391,11 @@ int ksu_legacy_execve_sucompat(const char **filename_ptr, void *argv, void *envp)
+@@ -336,11 +387,11 @@ int ksu_legacy_execve_sucompat(const char **filename_ptr, void *argv, void *envp
  	 */
  	if (ksu_legacy_has_ksud()) {
  		constexpr char ksud[16] = KSUD_PATH;
@@ -406,7 +229,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  		memcpy_inline((void *)*filename_ptr, sh, sizeof(sh));
  	}
  
-@@ -357,7 +412,7 @@ static void ksu_legacy_filename_to_sh(const char __user **filename_user, const char *syscall_name,
+@@ -357,7 +408,7 @@ static void ksu_legacy_filename_to_sh(const char __user **filename_user, const c
  		return;
  
  	write_sulog(sulog_sym);
@@ -415,7 +238,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	*filename_user = sh_user_path();
  }
  
-@@ -436,14 +491,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
+@@ -436,14 +487,14 @@ static __always_inline bool is_su_allowed(const void **ptr_to_check)
  #endif // KSU_CAN_USE_JUMP_LABEL
  #endif
  
@@ -434,7 +257,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  #ifdef CONFIG_KSU_ENABLE_FULL_UID_CHECKS
  	if (!ksu_is_allow_uid_for_current(current_uid().val))
  		return false;
-@@ -602,7 +657,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
+@@ -602,7 +653,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, vo
  	if (likely(!is_compat_task())) 
  		goto ksyscall_exec;
  
@@ -443,7 +266,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  	// now extend the pointers
  	uintptr_t *m_argv = (uintptr_t *)(mmap_page + 1024);
-@@ -644,7 +699,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
+@@ -644,7 +695,7 @@ ksyscall_exec:;
  	}
  
  	ksu_install_su_fd(); // ksu#3679
@@ -452,7 +275,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: ksyscall(execve, \"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
  
-@@ -661,7 +716,7 @@ static noinline int ksyscall_execve_ksud(const char *fn_name, void ***u_argv, void ***u_envp)
+@@ -661,7 +712,7 @@ ksyscall_exec:;
  	 * put fd install before return but thats kinda too much.
  	 */
  	ksu_install_su_fd(); // ksu#3679
@@ -461,25 +284,7 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("su_compat: kernel_execve(\"%s\", 0x%lx, 0x%lx);\n", fd_path, (uintptr_t)argv, (uintptr_t)envp);
-@@ -697,7 +752,7 @@ static __always_inline void ksu_sucompat_user_execve(const char __user **filename_user, void *restrict argv, void *restrict envp, const char *syscall_name)
- 		return;
- 
- 	// failure path
--	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
-+	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
- 	*filename_user = sh_user_path();
- 	return;
- }
-@@ -715,7 +770,7 @@ static __always_inline void ksu_sucompat_user_common(const char __user **filename_user, const char *syscall_name)
- 	if (!__builtin_strcmp(syscall_name, "sys_newfstatat"))
- 		write_sulog('s');
- 
--	pr_info("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
-+	pr_info_once("su_compat: %s su->sh!%s\n", syscall_name, (is_compat_task()) ? " [compat]" : "" );
- 	*filename_user = sh_user_path();
- 	return;
- }
-@@ -803,7 +858,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **restrict filename_ptr, void *restrict argv, void *restrict envp, int *restrict flags, const char *function_name)
+@@ -803,7 +854,7 @@ static __always_inline void ksu_sucompat_kernel_execve(int *restrict fd, void **
  		return;
  
  	// failure path
@@ -489,19 +294,15 @@ diff --git a/kernel/feature/sucompat.c b/kernel/feature/sucompat.c
  	memcpy_inline(*filename_ptr, sh, sizeof(sh));
  	return;
 diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
+index bd55641801950eb45bdbb238f390c04c002a12a0..0b4c9a7808438fd89d5648deeb0a015ba30c3600 100644
 --- a/kernel/hook/setuid_hook.c
 +++ b/kernel/hook/setuid_hook.c
-@@ -1,3 +1,42 @@
+@@ -1,3 +1,33 @@
 +#include <asm/unistd.h>
 +#include <linux/audit.h>
 +#include <linux/seccomp.h>
 +
-+/*
-+ * Called by the Linux seccomp core before evaluating installed filters.
-+ * Allow only the two reboot-syscall transports that the kernel intercepts:
-+ * the manager's exact KernelSU FD handshake, and root-only SUSFS commands.
-+ * Normal reboot requests and every other syscall remain filtered.
-+ */
++/* Exact reboot transport exemption used by the paired kernel seccomp hook. */
 +bool ksu_seccomp_allow_reboot(const struct seccomp_data *sd)
 +{
 +	if (!sd || sd->nr != __NR_reboot ||
@@ -509,7 +310,6 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 +		return false;
 +
 +#if defined(CONFIG_ARM64)
-+	/* Do not exempt compat AArch32 syscall number 142 (_newselect). */
 +	if (sd->arch != AUDIT_ARCH_AARCH64)
 +		return false;
 +#elif defined(CONFIG_ARM)
@@ -518,9 +318,6 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 +#endif
 +
 +	if ((__u32)sd->args[1] == KSU_INSTALL_MAGIC2)
-+		/* ksud also obtains its initial driver FD while running as root.
-+		 * is_uid_manager() already covers both static and dynamic managers.
-+		 */
 +		return current_uid().val == 0 || is_uid_manager(current_uid().val);
 +
 +#ifdef CONFIG_KSU_SUSFS
@@ -534,7 +331,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
  {
  	if (!new || !old)
-@@ -13,10 +52,15 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
+@@ -13,10 +43,15 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	if (IS_ENABLED(CONFIG_KSU_DEBUG))
  		pr_info("handle_setresuid from %d to %d\n", old_uid, new_uid);
  
@@ -542,19 +339,19 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 -	// lets just do the original thing where we disable seccomp
 -	if (unlikely(is_uid_manager(new_uid)))
 -		goto install_ksu_fd;
-+	/* Keep the manager's inherited seccomp filter; only the exact reboot
-+	 * based KSU FD request is exempted by ksu_seccomp_allow_reboot().
++	/* Keep the manager's inherited seccomp filter; the exact KSU FD
++	 * handshake is exempted by ksu_seccomp_allow_reboot().
 +	 */
 +	if (unlikely(is_uid_manager(new_uid))) {
 +		pr_info_once("install fd for manager: %d\n", new_uid);
 +		ksu_install_fd();
-+		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
++		set_thread_flag(TIF_KSU_MANAGED);
 +		return;
 +	}
  
  	if (ksu_is_allow_uid_for_current(new_uid))
  		goto kill_seccomp;
-@@ -25,10 +69,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const struct cred *old)
+@@ -25,10 +60,6 @@ static __always_inline void ksu_handle_setresuid_cred(struct cred *new, const st
  	ksu_handle_umount(new, old);
  	return;
  
@@ -565,7 +362,7 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
  kill_seccomp:
  	disable_seccomp();
  	set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
-@@ -69,9 +109,9 @@ static int handle_zygote_setresuid(uid_t ruid)
+@@ -69,9 +100,9 @@ static int handle_zygote_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -573,11 +370,11 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 -		pr_info("install fd for manager: %d\n", ruid);
 +		pr_info_once("install fd for manager: %d\n", ruid);
  		ksu_install_fd();
-+		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
++		set_thread_flag(TIF_KSU_MANAGED);
  		return 0;
  	}
  
-@@ -117,9 +157,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
+@@ -117,9 +148,9 @@ static int handle_zygote_next_setresuid(uid_t ruid)
  	//   ksu manager.
  	// - Disable seccomp restriction for KSU manager since running with "su" will disable seccomp anyway
  	if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {
@@ -585,125 +382,26 @@ diff --git a/kernel/hook/setuid_hook.c b/kernel/hook/setuid_hook.c
 -		pr_info("install fd for manager: %d\n", ruid);
 +		pr_info_once("install fd for manager: %d\n", ruid);
  		ksu_install_fd();
-+		set_thread_flag(TIF_KSU_MANAGED); // sucompat fast-path
++		set_thread_flag(TIF_KSU_MANAGED);
  		return 0;
  	}
  
 diff --git a/kernel/manager/pkg_observer.c b/kernel/manager/pkg_observer.c
-index 679fe9d..7766652 100644
+index 679fe9d3e0e9682961aa04c17772843040f0ca49..c926f922a270fe67a93304eed824c02330a77658 100644
 --- a/kernel/manager/pkg_observer.c
 +++ b/kernel/manager/pkg_observer.c
-@@ -110,6 +110,10 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
+@@ -110,6 +110,9 @@ static inline void ksu_rename_observer(struct dentry *old_dentry, struct dentry
  
  	pr_info("renameat: %s -> %s, /data/system d_inode: 0x%lx \n", old_dentry->d_iname, new_dentry->d_iname, system_dir_inode_ptr);
  	track_throne(false);
 +#ifdef CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER
-+	/* Refresh the priority UID bitmap after packages.list changes. */
 +	susfs_parse_priority_app_strings();
 +#endif
  #if defined(CONFIG_KSU_SUSFS_SUS_PATH) 
  	// Renew the sus path uid bitmap filter after packages.list changed
  	susfs_parse_sus_path_app_strings();
-diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
-index 0bf259f..aacd302 100644
---- a/kernel/selinux/rules.c
-+++ b/kernel/selinux/rules.c
-@@ -243,6 +243,12 @@ static int ksu_replace_policy_legacy(ksu_policydb_mutator mutate, void *arg)
- 	if (!READ_ONCE(live->len))
- 		return -EAGAIN;
- 
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0) && defined(CONFIG_KSU_SUSFS)
-+	/* Snapshot the untouched policy before the first in-place 5.4 update. */
-+	if (ksu_selinux_hide_snapshot_legacy())
-+		pr_warn_once("selinux_hide: continuing without the 5.4 compatibility snapshot\n");
-+#endif
-+
- 	next = kzalloc(sizeof(*next), GFP_KERNEL);
- 	old = kmalloc(sizeof(*old), GFP_KERNEL);
- 	if (!next || !old) {
-diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
-index 6acac71..815eb68 100644
---- a/kernel/selinux/selinux.c
-+++ b/kernel/selinux/selinux.c
-@@ -337,7 +337,7 @@ bool susfs_is_current_zygote_next_domain(void)
- 
- bool susfs_is_current_ksu_domain(void)
- {
--	return unlikely(susfs_current_sid() == susfs_ksu_sid);
-+	return is_ksu_domain();
- }
- 
- bool susfs_is_current_init_domain(void)
-diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
-index d171463..c4e685c 100644
---- a/kernel/selinux/sepolicy.c
-+++ b/kernel/selinux/sepolicy.c
-@@ -345,10 +345,20 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
- 		}
- 
- #ifdef CONFIG_KSU_SUSFS
--		// track the allowed bits before inversion, SUSFS evades avc log
--		// spoofing based on this per type/class bitmap
--		susfs_add_sus_avd_allowed_by_type(src->value, tgt->value, cls->value, node->datum.u.data);
--#endif // CONFIG_KSU_SUSFS
-+		{
-+			struct type_datum *ksu_domain_type =
-+				symtab_search(&db->p_types, "ksu");
-+			/*
-+			 * Snapshot only KSU's own allow-rule updates. Do not record
-+			 * third-party module changes (for example Zygisk Next rules),
-+			 * or security_compute_av() would rewind their live permissions.
-+			 */
-+			if (effect == AVTAB_ALLOWED && ksu_domain_type &&
-+			    src->value == ksu_domain_type->value)
-+				susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
-+								  cls->value, node->datum.u.data);
-+		}
-+#endif
- 
- 		if (invert) {
- 			if (perm)
-diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
---- a/kernel/supercall/supercall.c
-+++ b/kernel/supercall/supercall.c
-@@ -7,7 +7,7 @@ static int anon_ksu_release(struct inode *inode, struct file *filp)
- static int anon_ksu_release(struct inode *inode, struct file *filp)
- {
- 	kfree(filp->private_data);
--	pr_info("ksu fd released\n");
-+	pr_info_once("ksu fd released\n");
- 	return 0;
- }
- 
-@@ -55,7 +55,7 @@ int ksu_install_fd(void)
- 	}
- 
- 	fd_install(fd, filp);
--	pr_info("ksu fd installed: %d for pid %d\n", fd, current->pid);
-+	pr_info_once("ksu fd installed: %d for pid %d\n", fd, current->pid);
- 	return fd;
- }
- 
-@@ -179,9 +179,16 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
- 	void __user *arg4 = (void __user *)*arg;
- 
- 	if (magic2 == KSU_INSTALL_MAGIC2) {
--		int fd = ksu_install_fd();
-+		int fd;
-+		/* ksud starts as root; later requests must come from a manager UID. */
-+		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
-+			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
-+					    current_uid().val);
-+			return -EPERM;
-+		}
-+		fd = ksu_install_fd();
- 
--		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
-+		pr_info_once("[%d] install ksu fd: %d\n", current->pid, fd);
- 		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
- 			pr_err("install ksu fd reply err\n");
- 			ksu_close_fd(fd);
 diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
+index 4c44cc88121ab6922e38fa495a9353392c69d155..a2e18d383c0c8c79fbc795e381f961e102d1ee6a 100644
 --- a/kernel/policy/app_profile.c
 +++ b/kernel/policy/app_profile.c
 @@ -85,12 +85,12 @@ static int escape_to_root(bool is_forced)
@@ -721,3 +419,79 @@ diff --git a/kernel/policy/app_profile.c b/kernel/policy/app_profile.c
  		goto out_abort_creds;
  	}
  
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+index 6acac7158444e21ef795c2ca4579ed5e5ac2fe9e..815eb68b42e965ca71f8b34cc88ef795e2a3c518 100644
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -334,7 +334,7 @@ bool susfs_is_current_zygote_next_domain(void)
+ 
+ bool susfs_is_current_ksu_domain(void)
+ {
+-	return unlikely(susfs_current_sid() == susfs_ksu_sid);
++	return is_ksu_domain();
+ }
+ 
+ bool susfs_is_current_init_domain(void)
+diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+index d171463335ae1823a93588fd05d14ce0f1969899..e26a060cf4977ed43a3216248f40827f33841808 100644
+--- a/kernel/selinux/sepolicy.c
++++ b/kernel/selinux/sepolicy.c
+@@ -345,9 +345,15 @@ static bool add_rule_raw(struct policydb *db, struct type_datum *src, struct typ
+ 		}
+ 
+ #ifdef CONFIG_KSU_SUSFS
+-		// track the allowed bits before inversion, SUSFS evades avc log
+-		// spoofing based on this per type/class bitmap
+-		susfs_add_sus_avd_allowed_by_type(src->value, tgt->value, cls->value, node->datum.u.data);
++		{
++			struct type_datum *ksu_domain_type =
++				symtab_search(&db->p_types, "ksu");
++			/* Record only KSU's own grants; do not rewind Zygisk Next rules. */
++			if (effect == AVTAB_ALLOWED && ksu_domain_type &&
++			    src->value == ksu_domain_type->value)
++				susfs_add_sus_avd_allowed_by_type(src->value, tgt->value,
++							  cls->value, node->datum.u.data);
++		}
+ #endif // CONFIG_KSU_SUSFS
+ 
+ 		if (invert) {
+diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
+index a6d606a9b2896373c8658ae66f1f6b2315a8a6cd..fabf279c587feb11fc7283c42e5411b78990795d 100644
+--- a/kernel/supercall/supercall.c
++++ b/kernel/supercall/supercall.c
+@@ -7,7 +7,7 @@ struct ksu_driver_context {
+ static int anon_ksu_release(struct inode *inode, struct file *filp)
+ {
+ 	kfree(filp->private_data);
+-	pr_info("ksu fd released\n");
++	pr_info_once("ksu fd released\n");
+ 	return 0;
+ }
+ 
+@@ -55,7 +55,7 @@ static int ksu_install_fd_with_permissions(unsigned int fd_flags, unsigned long
+ 	}
+ 
+ 	fd_install(fd, filp);
+-	pr_info("ksu fd installed: %d for pid %d\n", fd, current->pid);
++	pr_info_once("ksu fd installed: %d for pid %d\n", fd, current->pid);
+ 	return fd;
+ }
+ 
+@@ -179,9 +179,15 @@ int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user
+ 	void __user *arg4 = (void __user *)*arg;
+ 
+ 	if (magic2 == KSU_INSTALL_MAGIC2) {
+-		int fd = ksu_install_fd();
++		int fd;
++		if (current_uid().val != 0 && !is_uid_manager(current_uid().val)) {
++			pr_warn_ratelimited("sys_reboot: rejected KSU FD request from uid %u\n",
++					    current_uid().val);
++			return -EPERM;
++		}
++		fd = ksu_install_fd();
+ 
+-		pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
++		pr_info_once("[%d] install ksu fd: %d\n", current->pid, fd);
+ 		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
+ 			pr_err("install ksu fd reply err\n");
+ 			ksu_close_fd(fd);
