@@ -50,17 +50,23 @@ jobs:
 
           echo "Kernel source commit: $(git rev-parse HEAD)"
 
-          for patch_file in \
-            lemonadep.kernel-new.patch; do
-            patch_path="${GITHUB_WORKSPACE}/${patch_file}"
-            test -s "$patch_path"
-            echo "Strict dry-run: $patch_file"
-            patch --dry-run --batch --forward --fuzz=0 -p1 < "$patch_path"
-            echo "Apply: $patch_file"
-            patch --batch --forward --fuzz=0 -p1 < "$patch_path"
-          done
+          patch_path="${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
+          test -s "$patch_path"
 
-          echo "ALL_KERNEL_PATCHES_APPLY=PASS"
+          # The complete patch contains sequential diff sections for files
+          # that are intentionally modified more than once. GNU patch --dry-run
+          # does not persist the first section before checking the next one,
+          # so it reports false failures. Apply once to this disposable checkout
+          # with zero fuzz; this is the actual preflight application test.
+          patch --batch --forward --fuzz=0 -p1 < "$patch_path"
+
+          git -c core.whitespace=cr-at-eol diff --check
+          if find . -type f -name '*.rej' -print -quit | grep -q .; then
+            echo "::error::Patch application left reject files"
+            exit 1
+          fi
+
+          echo "KERNEL_PATCH_APPLY=PASS"
 
       - name: Fetch pinned SukiSU and strictly test/apply its patch
         run: |
