@@ -1,0 +1,30 @@
+From: OnePlus 9 Pro kernel review
+Subject: [PATCH] ipa: Don't log an optional PM callback as an error
+
+The rmnet_ctl IPA PM client is registered with a zeroed parameter structure
+and intentionally leaves callback unset. ipa_pm_register() stores this NULL
+callback, and activate_work_func() still activates the client, completes its
+state transition and performs clock scaling. A missing callback in this
+activation notification path is therefore expected for this client.
+
+The bugreport contains 105 occurrences of this exact activate_work_func()
+warning between 3017.996 and 4442.673 seconds uptime (about 50 to 74 minutes
+after boot), so it is not limited to early boot. Remove only this misleading
+log in activate_work_func(). Do not change the separate ipa_pm_handle_suspend()
+missing-callback WARN_ON path.
+
+This patch changes logging only; it does not change IPA activation, wake locks,
+clock votes, packet handling or network behaviour.
+
+---
+diff --git a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
+--- a/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
++++ b/techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c
+@@ -444,8 +444,6 @@
+ 	if (client->callback) {
+ 		client->callback(client->callback_params,
+ 			IPA_PM_CLIENT_ACTIVATED);
+-	} else {
+-		IPA_PM_ERR_RL("client has no callback");
+ 	}
+ 	mutex_unlock(&ipa_pm_ctx->client_mutex);
