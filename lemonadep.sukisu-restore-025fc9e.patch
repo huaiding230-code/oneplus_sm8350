@@ -1,0 +1,2961 @@
+# Restore the SukiSU builtin-new SELinux compatibility base to the source
+# captured from the successful 2026-11-27 build (025fc9e5609add390d7490c24d8a2afafaceff8e).
+# The upstream builtin-new ref later moved to 8014fc95df9df1703b2bdc7c6924b4402fb4fa7a,
+# which rewrote the SELinux compatibility files and made lemonadep.sukisu-new.patch fail.
+# Apply this patch in the SukiSU source root AFTER checkout and BEFORE
+# lemonadep.sukisu-new.patch. It only restores the seven captured files listed below;
+# it does not pin or change the upstream Git ref and does not replace the adaptation patch.
+#
+diff --git a/kernel/Makefile b/kernel/Makefile
+--- a/kernel/Makefile
++++ b/kernel/Makefile
+@@ -106,6 +106,27 @@
+ 
+ ifeq ($(shell grep -q "struct selinux_state " $(srctree)/security/selinux/include/security.h; echo $$?),0)
+ CFLAGS_ksu.o += -DKSU_COMPAT_HAS_SELINUX_STATE
++endif
++
++# 5.10+ selinux_policy (and vendor backports): policy is an RCU protected
++# immutable object guarded by policy_mutex. Probe for the struct itself, not
++# for policy_mutex alone: a tree can carry one without the other.
++KSU_HAVE_SELINUX_POLICY_STRUCT := $(shell grep -q "struct selinux_policy {" $(srctree)/security/selinux/ss/services.h 2>/dev/null && echo y)
++ifeq ($(KSU_HAVE_SELINUX_POLICY_STRUCT),)
++KSU_HAVE_SELINUX_POLICY_STRUCT := $(shell grep -q "struct mutex policy_mutex" $(srctree)/security/selinux/include/security.h 2>/dev/null && echo y)
++endif
++ifeq ($(KSU_HAVE_SELINUX_POLICY_STRUCT),y)
++CFLAGS_ksu.o += -DKSU_COMPAT_HAS_SELINUX_POLICY_STRUCT
++endif
++
++# very old trees define policy_rwlock as a global symbol, so a direct extern
++# reference links. Stock trees keep it file static, see the kallsyms fallback.
++ifeq ($(shell grep -q "^DEFINE_RWLOCK(policy_rwlock);" $(srctree)/security/selinux/ss/services.c 2>/dev/null; echo $$?),0)
++CFLAGS_ksu.o += -DKSU_COMPAT_HAS_EXPORTED_POLICY_RWLOCK
++endif
++
++ifeq ($(shell grep -q "^u32 latest_granting;" $(srctree)/security/selinux/ss/services.c 2>/dev/null; echo $$?),0)
++CFLAGS_ksu.o += -DKSU_COMPAT_HAS_GLOBAL_LATEST_GRANTING
+ endif
+ 
+ # UL, look for iterate_dir on ‎fs/readdir.c
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -28,199 +28,645 @@
+  *  our goal for this one is to be self contained as much as possible
+  *  with only one call from ksu's initcall.
+  *
++ *  The hidden type/rule list is immutable, RCU published and only replaced as
++ *  a whole. The previous hazard pointer implementation had to busy wait on
++ *  every CPU and even called kick_all_cpus_sync() in the read path, which is
++ *  both slow and broken on PREEMPT_RT / !SMP builds.
+  */
+ 
+-// enabled by default
+-static bool ksu_selinux_hide_enabled __read_mostly = true;
+-
+-// selinux_setprocattr handler
+-static __always_inline int ksu_hide_setprocattr_inline(const char *name, void *value, size_t size)
+-{
++/* enabled by default */
++bool ksu_selinux_hide_enabled __read_mostly = true;
++
++/* the page we serve to unprivileged readers of /sys/fs/selinux/status */
++struct page *ksu_fake_status_page __read_mostly = NULL;
++
++struct ksu_sepol_hide_set {
++	struct rcu_head rcu;
++	u32 count;
++	size_t len;
++	char data[];
++};
++
++static struct ksu_sepol_hide_set __rcu *ksu_hide_types __read_mostly;
++static struct ksu_sepol_hide_set __rcu *ksu_hide_rules __read_mostly;
++static DEFINE_MUTEX(ksu_hide_list_lock);
++
++/* selinuxfs nodes, resolved once before any hook is installed */
++static struct inode *ksu_sel_context_inode __read_mostly;
++static struct inode *ksu_sel_access_inode __read_mostly;
++static struct file_operations *ksu_sel_context_fops __read_mostly;
++static struct file_operations *ksu_sel_access_fops __read_mostly;
++
++static void ksu_maybe_resolve_selinuxfs_nodes(void);
++
++static void ksu_sepol_hide_free_rcu(struct rcu_head *head)
++{
++	kfree(container_of(head, struct ksu_sepol_hide_set, rcu));
++}
++
++static struct ksu_sepol_hide_set *ksu_sepol_hide_set_grow(const struct ksu_sepol_hide_set *cur,
++							  size_t add)
++{
++	struct ksu_sepol_hide_set *new_set;
++	size_t len = cur ? cur->len : 0;
++	size_t total;
++
++	if (add > (size_t)-1 - sizeof(*new_set) - len)
++		return NULL;
++
++	total = sizeof(*new_set) + len + add;
++	new_set = kmalloc(total, GFP_KERNEL);
++	if (!new_set)
++		return NULL;
++
++	new_set->count = cur ? cur->count : 0;
++	new_set->len = len + add;
++	if (cur && len)
++		memcpy(new_set->data, cur->data, len);
++
++	return new_set;
++}
++
++static bool ksu_sepol_hide_set_contains(const struct ksu_sepol_hide_set *set,
++					const char *name, size_t len)
++{
++	size_t off = 0;
++	u32 i;
++
++	if (!set || !len)
++		return false;
++
++	for (i = 0; i < set->count && off < set->len; i++) {
++		const char *cur = set->data + off;
++		size_t cur_len = strlen(cur);
++
++		if (cur_len == len && !memcmp(cur, name, len))
++			return true;
++
++		off += cur_len + 1;
++	}
++
++	return false;
++}
++
++static bool ksu_sepol_hide_rule_contains(const struct ksu_sepol_hide_set *set,
++					 const char *src, size_t src_len,
++					 const char *tgt, size_t tgt_len)
++{
++	size_t off = 0;
++	u32 i;
++
++	if (!set || !src_len || !tgt_len)
++		return false;
++
++	for (i = 0; i < set->count && off < set->len; i++) {
++		const char *cur_src = set->data + off;
++		size_t cur_src_len = strlen(cur_src);
++		const char *cur_tgt;
++		size_t cur_tgt_len;
++
++		off += cur_src_len + 1;
++		if (off >= set->len)
++			break;
++
++		cur_tgt = set->data + off;
++		cur_tgt_len = strlen(cur_tgt);
++		off += cur_tgt_len + 1;
++
++		if (cur_src_len == src_len && !memcmp(cur_src, src, src_len) &&
++		    cur_tgt_len == tgt_len && !memcmp(cur_tgt, tgt, tgt_len))
++			return true;
++	}
++
++	return false;
++}
++
++static void ksu_sepol_hide_publish(struct ksu_sepol_hide_set __rcu **slot,
++				   struct ksu_sepol_hide_set *new_set)
++{
++	struct ksu_sepol_hide_set *old;
++
++	old = rcu_dereference_protected(*slot, lockdep_is_held(&ksu_hide_list_lock));
++	rcu_assign_pointer(*slot, new_set);
++	if (old)
++		call_rcu(&old->rcu, ksu_sepol_hide_free_rcu);
++}
++
++void ksu_selinux_hide_add_type(const char *type)
++{
++	struct ksu_sepol_hide_set *cur, *new_set;
++	char *dst;
++	size_t len;
++
++	if (!type)
++		return;
++
++	len = strlen(type);
++	/* a type name is a single token: no ':' / whitespace allowed */
++	if (!len || len > 255 || memchr(type, ':', len) || memchr(type, ' ', len) ||
++	    memchr(type, '\t', len))
++		return;
++
++	mutex_lock(&ksu_hide_list_lock);
++
++	cur = rcu_dereference_protected(ksu_hide_types, lockdep_is_held(&ksu_hide_list_lock));
++	if (ksu_sepol_hide_set_contains(cur, type, len))
++		goto out_unlock;
++
++	new_set = ksu_sepol_hide_set_grow(cur, len + 1);
++	if (!new_set)
++		goto out_unlock;
++
++	dst = new_set->data + (cur ? cur->len : 0);
++	memcpy(dst, type, len);
++	dst[len] = '\0';
++	new_set->count++;
++
++	ksu_sepol_hide_publish(&ksu_hide_types, new_set);
++	pr_info("selinux_hide: tracking type %s\n", type);
++
++out_unlock:
++	mutex_unlock(&ksu_hide_list_lock);
++}
++
++void ksu_selinux_hide_add_rule(const char *src, const char *tgt)
++{
++	struct ksu_sepol_hide_set *cur, *new_set;
++	char *dst;
++	size_t src_len, tgt_len;
++
++	if (!src || !tgt)
++		return;
++
++	src_len = strlen(src);
++	tgt_len = strlen(tgt);
++	if (!src_len || !tgt_len || src_len > 255 || tgt_len > 255 ||
++	    memchr(src, ':', src_len) || memchr(tgt, ':', tgt_len))
++		return;
++
++	mutex_lock(&ksu_hide_list_lock);
++
++	cur = rcu_dereference_protected(ksu_hide_rules, lockdep_is_held(&ksu_hide_list_lock));
++	if (ksu_sepol_hide_rule_contains(cur, src, src_len, tgt, tgt_len))
++		goto out_unlock;
++
++	new_set = ksu_sepol_hide_set_grow(cur, src_len + 1 + tgt_len + 1);
++	if (!new_set)
++		goto out_unlock;
++
++	dst = new_set->data + (cur ? cur->len : 0);
++	memcpy(dst, src, src_len);
++	dst[src_len] = '\0';
++	memcpy(dst + src_len + 1, tgt, tgt_len);
++	dst[src_len + 1 + tgt_len] = '\0';
++	new_set->count++;
++
++	ksu_sepol_hide_publish(&ksu_hide_rules, new_set);
++	pr_info("selinux_hide: tracking rule %s %s\n", src, tgt);
++
++out_unlock:
++	mutex_unlock(&ksu_hide_list_lock);
++}
++
++/*
++ * Translates an applied sepolicy command into hide list entries.
++ *
++ * GENFSCON takes (name, path, context) - the second argument is a path, not a
++ * type, so it must not be turned into a rule pair (the old argc based code did
++ * exactly that and poisoned the rule list with garbage).
++ */
++void ksu_add_shit_to_list(u32 cmd, const char *const args[])
++{
++	if (!args || !args[0])
++		return;
++
++	switch (cmd) {
++	case KSU_SEPOLICY_CMD_TYPE:
++	case KSU_SEPOLICY_CMD_TYPE_ATTR:
++	case KSU_SEPOLICY_CMD_TYPE_STATE:
++	case KSU_SEPOLICY_CMD_ATTR:
++		ksu_selinux_hide_add_type(args[0]);
++		break;
++	case KSU_SEPOLICY_CMD_NORMAL_PERM:
++	case KSU_SEPOLICY_CMD_XPERM:
++	case KSU_SEPOLICY_CMD_TYPE_TRANSITION:
++	case KSU_SEPOLICY_CMD_TYPE_CHANGE:
++		if (args[1])
++			ksu_selinux_hide_add_rule(args[0], args[1]);
++		break;
++	default:
++		break;
++	}
++}
++
++/*
++ * SELinux context      : user:role:type[:mls]
++ * avc audit record      : ... scontext=user:role:type:mls tcontext=...
++ * selinuxfs access node : "scon tcon class perms"
++ * single context        : user:role:type:mls
++ *
++ * Return the type field and its length, NULL if this is not a context.
++ */
++static const char *ksu_sepol_ctx_type(const char *s, size_t len, size_t *type_len)
++{
++	const char *p = s;
++	const char *end = s + len;
++	const char *type = NULL;
++	int colons = 0;
++
++	while (p < end && *p) {
++		if (*p == ':') {
++			colons++;
++			if (colons == 2) {
++				type = p + 1;
++				break;
++			}
++		}
++		p++;
++	}
++
++	if (colons != 2)
++		return NULL;
++
++	p = type;
++	while (p < end && *p && *p != ':')
++		p++;
++
++	/* a context always has an MLS/level field after the type */
++	if (p >= end || *p != ':' || p == type)
++		return NULL;
++
++	*type_len = p - type;
++	return type;
++}
++
++static const char *ksu_sepol_find_value(const char *s, size_t len, const char *tag,
++					size_t *value_len)
++{
++	size_t tag_len = strlen(tag);
++	size_t i;
++
++	if (!s || len <= tag_len)
++		return NULL;
++
++	for (i = 0; i + tag_len < len; i++) {
++		const char *value;
++		size_t value_size = 0;
++
++		if (s[i] != tag[0] || memcmp(s + i, tag, tag_len))
++			continue;
++
++		value = s + i + tag_len;
++		while (i + tag_len + value_size < len && value[value_size] &&
++		       value[value_size] != ' ' && value[value_size] != '\t' &&
++		       value[value_size] != '\n' && value[value_size] != '\r')
++			value_size++;
++
++		if (!value_size)
++			return NULL;
++
++		*value_len = value_size;
++		return value;
++	}
++
++	return NULL;
++}
++
++static void ksu_sepol_extract_contexts(const char *str, size_t limit,
++				       const char **sctx, size_t *sctx_len,
++				       const char **tctx, size_t *tctx_len)
++{
++	const char *p, *end = str + limit;
++	size_t len;
++
++	*sctx = ksu_sepol_find_value(str, limit, "scontext=", sctx_len);
++	*tctx = ksu_sepol_find_value(str, limit, "tcontext=", tctx_len);
++	if (*sctx || *tctx)
++		return;
++
++	/* plain "scon tcon class perm" (selinuxfs access/relabel/user nodes) */
++	p = str;
++	while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
++		p++;
++
++	len = 0;
++	while (p + len < end && p[len] && p[len] != ' ' && p[len] != '\t' &&
++	       p[len] != '\n' && p[len] != '\r')
++		len++;
++	if (!len)
++		return;
++
++	*sctx = p;
++	*sctx_len = len;
++
++	p += len;
++	while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
++		p++;
++
++	len = 0;
++	while (p + len < end && p[len] && p[len] != ' ' && p[len] != '\t' &&
++	       p[len] != '\n' && p[len] != '\r')
++		len++;
++	if (!len)
++		return;
++
++	*tctx = p;
++	*tctx_len = len;
++}
++
++bool ksu_should_destroy_context(const char *str, size_t limit, bool types_only)
++{
++	const struct ksu_sepol_hide_set *types;
++	const struct ksu_sepol_hide_set *rules;
++	const char *sctx = NULL, *tctx = NULL;
++	const char *stype = NULL, *ttype = NULL;
++	size_t sctx_len = 0, tctx_len = 0;
++	size_t stype_len = 0, ttype_len = 0;
++	bool hit = false;
++
++	if (!str || !limit)
++		return false;
++
++	ksu_sepol_extract_contexts(str, limit, &sctx, &sctx_len, &tctx, &tctx_len);
++
++	if (sctx)
++		stype = ksu_sepol_ctx_type(sctx, sctx_len, &stype_len);
++	if (tctx)
++		ttype = ksu_sepol_ctx_type(tctx, tctx_len, &ttype_len);
++	if (!stype)
++		return false;
++
++	rcu_read_lock();
++
++	types = rcu_dereference(ksu_hide_types);
++	if (types && ksu_sepol_hide_set_contains(types, stype, stype_len)) {
++		hit = true;
++		goto out;
++	}
++
++	if (types_only)
++		goto out;
++
++	if (types && ttype && ksu_sepol_hide_set_contains(types, ttype, ttype_len)) {
++		hit = true;
++		goto out;
++	}
++
++	rules = rcu_dereference(ksu_hide_rules);
++	if (rules && ttype &&
++	    ksu_sepol_hide_rule_contains(rules, stype, stype_len, ttype, ttype_len))
++		hit = true;
++
++out:
++	rcu_read_unlock();
++	return hit;
++}
++
++bool ksu_selinux_hide_is_context_inode(const struct inode *inode)
++{
++	if (!inode)
++		return false;
++
++	if (unlikely(!READ_ONCE(ksu_sel_context_inode)))
++		ksu_maybe_resolve_selinuxfs_nodes();
++
++	return inode == READ_ONCE(ksu_sel_context_inode);
++}
++
++bool ksu_selinux_hide_is_access_inode(const struct inode *inode)
++{
++	if (!inode)
++		return false;
++
++	if (unlikely(!READ_ONCE(ksu_sel_access_inode)))
++		ksu_maybe_resolve_selinuxfs_nodes();
++
++	return inode == READ_ONCE(ksu_sel_access_inode);
++}
++
++/* selinux_setprocattr handler */
++int ksu_hide_setprocattr_inline(const char *name, const void *value, size_t size)
++{
++	const char *str = value;
++
+ 	if (unlikely(!ksu_selinux_hide_enabled))
+ 		return 0;
+ 
+-	// only hook when seccomp is enabled
++	/* only hook when seccomp is enabled */
+ 	if (!ksu_is_seccomp_enabled())
+ 		return 0;
+ 
+-	// only appuid
++	/* only appuid */
+ 	if (current_uid().val < 10000)
+ 		return 0;
+ 
+-	if (!size)
+-		return 0;
+-
+-	if (!name)
+-		return 0;
+-
+-	constexpr char c[] = "current";
+-	if (!!memcmp_inline(name, c, sizeof(c)))
+-		return 0;
+-
+-	char *str = (char *)value;
+-	if (!str || !str[0])
++	if (!size || !str || !str[0] || !name)
++		return 0;
++
++	if (memcmp(name, "current", sizeof("current")))
+ 		return 0;
+ 
+ 	if (!ksu_should_destroy_context(str, size, true))
+ 		return 0;
+-	
+-	pr_info_ratelimited("selinux_hide: setprocattr: destroy: %.*s\n", size, str);
+-	replace_after_second_colon((char *)str, size);
+-	do_useless_alloc(size);
+-	return 0;
+-}
+-
+-static __always_inline int ksu_hide_setxattr_inline(const char *name, void *value, size_t size)
+-{
++
++	pr_info_ratelimited("selinux_hide: setprocattr rejected: %.*s\n",
++			    (int)min_t(size_t, size, 128), str);
++	return -EINVAL;
++}
++
++int ksu_hide_setxattr_inline(const char *name, const void *value, size_t size)
++{
++	const char *str = value;
++
+ 	if (unlikely(!ksu_selinux_hide_enabled))
+ 		return 0;
+ 
+-	// only hook when seccomp is enabled
+ 	if (!ksu_is_seccomp_enabled())
+ 		return 0;
+ 
+-	// only appuid
+ 	if (current_uid().val < 10000)
+ 		return 0;
+ 
+-	if (!size)
+-		return 0;
+-
+-	if (!name)
+-		return 0;
+-
+-//	pr_info("%s: name: %s value: %s sz: %u \n", __func__, name, (char *)value, size);
+-	constexpr char c[] = "security.selinux";
+-	if (!!memcmp_inline(name, c, sizeof(c)))
+-		return 0;
+-
+-	char *str = (char *)value;
+-	if (!str || !str[0])
++	if (!size || !str || !str[0] || !name)
++		return 0;
++
++	if (memcmp(name, "security.selinux", sizeof("security.selinux")))
+ 		return 0;
+ 
+ 	if (!ksu_should_destroy_context(str, size, true))
+ 		return 0;
+ 
+- // this is wrong, this just fucks up ratelimit, rethink later, also better to catch in userspace
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 5, 0) && defined(CONFIG_AUDIT)
+-	for (int i = 0; i < 16; i++) {
+-		struct audit_buffer *ab = audit_log_start(audit_context(), GFP_ATOMIC, AUDIT_SELINUX_ERR);
+-		if (!i) {
+-			audit_log_format(ab, "op=setxattr invalid_context=");
+-			audit_log_n_untrustedstring(ab, str, size);
+-		} else
+-			audit_log_format(ab, "");
+-		audit_log_end(ab);
+-	}
+-#endif
+-	// destroy
+-	pr_info_ratelimited("selinux_hide: inode_setxattr: destroy: %.*s\n", size, str);
+-	replace_after_second_colon((char *)str, size);
+-	return 0;
+-}
+-
+-// selinux_transaction_write hijack
+-static ssize_t (*selinux_transaction_write_fn)(struct file *file, const char __user *buf, size_t size, loff_t *pos) __read_mostly = nullptr;
+-static __nocfi ssize_t ksu_selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
+-{
+-	if (unlikely(!ksu_selinux_hide_enabled))
+-		goto skip_destroy;
+-
+-	if (!ksu_is_seccomp_enabled())
+-		goto skip_destroy;
+-
+-	if (current_uid().val < 10000)
+-		goto skip_destroy;
+-
+-#define SEL_CONTEXT 5
+-#define SEL_ACCESS 6
+-	ino_t ino = file_inode(file)->i_ino;
+-	if (ino != SEL_CONTEXT && ino != SEL_ACCESS)
+-		goto skip_destroy;
+-
+-	// two cachelines
+-	char kbuf[128];
+-	size_t len = (size < 128) ? size : 127;
+-
+-	if (!!copy_from_user(kbuf, buf, len))
+-		goto skip_destroy;
+-
+-	kbuf[len] = '\0';
+-	if (ksu_should_destroy_context(kbuf, len, false)) {
+-		pr_info_ratelimited("selinux_hide: selinux_transaction_write: destroy: %s \n", kbuf);
+-		// buf = (const char __user *)current->mm->start_stack;
+-		do_useless_alloc(len);
+-		return -EINVAL;
+-	}
+-
+-	ssize_t ret = selinux_transaction_write_fn(file, buf, size, pos);
+-	if (!(ret > 0))
+-		return ret;
+-
+-	if (ino != SEL_ACCESS)
+-		return ret;
+-
+-	// simple_transaction_get()
++	pr_info_ratelimited("selinux_hide: inode_setxattr rejected: %.*s\n",
++			    (int)min_t(size_t, size, 128), str);
++	return -EINVAL;
++}
++
++/* selinux_transaction_write hijack */
++static ssize_t (*selinux_transaction_write_fn)(struct file *file, const char __user *buf,
++					       size_t size, loff_t *pos) __read_mostly = NULL;
++
++/*
++ * security_compute_av_user() stamps every /sys/fs/selinux/access reply with the
++ * current policy generation. Publish the boot time value instead so an app
++ * cannot tell that the policy has been patched by simply reading it back.
++ */
++static ssize_t ksu_selinux_hide_fake_access_seqno(struct file *file, ssize_t ret)
++{
+ 	struct simple_transaction_argresp *ar = file->private_data;
++	u32 allowed, ff, auditallow, auditdeny, seqno, flags;
++	int len;
++
+ 	if (!ar)
+ 		return ret;
+ 
+-	uint32_t avd_allowed, ff, avd_auditallow, avd_auditdeny, avd_seqno, avd_flags;
+-	if (sscanf(ar->data, "%x %x %x %x %u %x", &avd_allowed, &ff, &avd_auditallow, &avd_auditdeny, &avd_seqno, &avd_flags) != 6)
++	if (sscanf(ar->data, "%x %x %x %x %u %x", &allowed, &ff, &auditallow,
++		   &auditdeny, &seqno, &flags) != 6)
+ 		return ret;
+ 
+-	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+-		pr_info("ar->data: before: %s \n", ar->data);
+-
+-	avd_seqno = 1; // simple_transaction_set()
+-	ar->size = scnprintf(ar->data, SIMPLE_TRANSACTION_LIMIT, "%x %x %x %x %u %x", avd_allowed, ff, avd_auditallow, avd_auditdeny, avd_seqno, avd_flags);
+-
+-	if (IS_ENABLED(CONFIG_KSU_DEBUG))
+-		pr_info("ar->data: after: %s \n", ar->data);
++	if (seqno == KSU_SELINUX_FAKE_SEQNO)
++		return ret;
++
++	len = scnprintf(ar->data, SIMPLE_TRANSACTION_LIMIT, "%x %x %x %x %u %x",
++			allowed, ff, auditallow, auditdeny, KSU_SELINUX_FAKE_SEQNO, flags);
++
++	/* publish the payload before the size, same ordering as simple_transaction_set */
++	smp_wmb();
++	WRITE_ONCE(ar->size, len);
+ 
+ 	return ret;
+-
+-skip_destroy:
+-	return selinux_transaction_write_fn(file, buf, size, pos);
+-}
+-
+-static void ksu_init_hook_transaction_ops_write()
++}
++
++static __nocfi ssize_t ksu_selinux_transaction_write(struct file *file, const char __user *buf,
++						     size_t size, loff_t *pos)
++{
++	struct inode *inode = file_inode(file);
++	ssize_t ret;
++	char kbuf[128];
++	size_t len;
++
++	if (ksu_selinux_hide_enabled && ksu_is_seccomp_enabled() &&
++	    current_uid().val >= 10000 &&
++	    (ksu_selinux_hide_is_context_inode(inode) ||
++	     ksu_selinux_hide_is_access_inode(inode))) {
++		len = min(size, sizeof(kbuf) - 1);
++		if (!copy_from_user(kbuf, buf, len)) {
++			kbuf[len] = '\0';
++			if (ksu_should_destroy_context(kbuf, len, false)) {
++				pr_info_ratelimited("selinux_hide: transaction_write rejected: %s\n", kbuf);
++				return -EINVAL;
++			}
++		}
++	}
++
++	ret = selinux_transaction_write_fn(file, buf, size, pos);
++	if (ret <= 0 || !ksu_selinux_hide_is_access_inode(inode))
++		return ret;
++
++	return ksu_selinux_hide_fake_access_seqno(file, ret);
++}
++
++static int ksu_resolve_selinuxfs_node(const char *path_str, struct inode **out_inode,
++				      struct file_operations **out_fops)
+ {
+ 	struct path path;
+-	const char *selinux_context = "/sys/fs/selinux/context";
+-
+-	int error = kern_path(selinux_context, LOOKUP_FOLLOW, &path);
+-	if (error) {
+-		pr_info("selinux_hide: kern_path err: %d\n", error);
+-		return;
+-	}
+-
+-	pr_info("selinux_hide: kern_path %s ok!\n", selinux_context);
+-
+-	if (!path.dentry)
+-		goto bail_out;
+-
+-	if (!d_inode(path.dentry))
+-		goto bail_out;		
+-
+-	struct file_operations *fops = (struct file_operations *)d_inode(path.dentry)->i_fop;
+-	if (!fops)
+-		goto bail_out;
+-
+-	if (!fops->write)
+-		goto bail_out;
+-
+-	pr_info("selinux_hide: found transaction_ops->write at 0x%lx \n", (uintptr_t)fops->write);
+-	selinux_transaction_write_fn = fops->write;
+-
+-	int ret = patch_ro_slot((uintptr_t)&fops->write, (uintptr_t)ksu_selinux_transaction_write);
++	struct inode *inode;
++	int err;
++
++	err = kern_path(path_str, LOOKUP_FOLLOW, &path);
++	if (err)
++		return err;
++
++	if (!path.dentry || !d_inode(path.dentry)) {
++		path_put(&path);
++		return -ENOENT;
++	}
++
++	inode = d_inode(path.dentry);
++	if (!inode->i_fop) {
++		path_put(&path);
++		return -ENOENT;
++	}
++
++	*out_inode = inode;
++	if (out_fops)
++		*out_fops = (struct file_operations *)inode->i_fop;
++
++	path_put(&path);
++	return 0;
++}
++
++/*
++ * selinuxfs is mounted by userspace init, which runs after us, so this can
++ * legitimately fail early. Both fops patching and the inode identity checks
++ * depend on it, so the init thread waits for it and the hot path re-tries on
++ * demand (only until the first success).
++ */
++static DEFINE_MUTEX(ksu_sel_nodes_lock);
++
++static int ksu_resolve_selinuxfs_nodes(void)
++{
++	int err, err2;
++
++	err = ksu_resolve_selinuxfs_node("/sys/fs/selinux/context", &ksu_sel_context_inode,
++					 &ksu_sel_context_fops);
++	err2 = ksu_resolve_selinuxfs_node("/sys/fs/selinux/access", &ksu_sel_access_inode,
++					  &ksu_sel_access_fops);
++
++	if (err || err2)
++		return err ? err : err2;
++
++	return 0;
++}
++
++static void ksu_maybe_resolve_selinuxfs_nodes(void)
++{
++	if (READ_ONCE(ksu_sel_context_inode) && READ_ONCE(ksu_sel_access_inode))
++		return;
++
++	/* never block a write while another task is already resolving */
++	if (!mutex_trylock(&ksu_sel_nodes_lock))
++		return;
++
++	if (!ksu_sel_context_inode || !ksu_sel_access_inode)
++		ksu_resolve_selinuxfs_nodes();
++
++	mutex_unlock(&ksu_sel_nodes_lock);
++}
++
++static int ksu_patch_transaction_write(struct file_operations *fops)
++{
++	int ret;
++
++	if (!fops || !fops->write)
++		return -ENOENT;
++
++	if (fops->write == ksu_selinux_transaction_write)
++		return 0;
++
++	if (!selinux_transaction_write_fn) {
++		selinux_transaction_write_fn = fops->write;
++		pr_info("selinux_hide: found transaction_ops->write at 0x%lx\n",
++			(uintptr_t)fops->write);
++	}
++
++	ret = patch_ro_slot((uintptr_t)&fops->write, (uintptr_t)ksu_selinux_transaction_write);
+ 	pr_info("selinux_hide: transaction_ops->write hijack ret: %d\n", ret);
+-
+-bail_out:
+-	path_put(&path);
+-}
+-
+-// sel_open_handle_status hijack
++	return ret;
++}
++
++static void ksu_init_hook_transaction_ops_write(void)
++{
++	bool context_ok;
++	bool access_ok;
++
++	context_ok = ksu_patch_transaction_write(ksu_sel_context_fops) == 0;
++	access_ok = ksu_patch_transaction_write(ksu_sel_access_fops) == 0;
++
++	if (!context_ok && !access_ok)
++		pr_info("selinux_hide: transaction write hook not installed\n");
++}
++
++/* sel_open_handle_status hijack */
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0) && defined(KSU_COMPAT_HAS_SELINUX_STATE)
+ extern struct selinux_state selinux_state;
+ #define ksu_selinux_kernel_status_page() selinux_kernel_status_page(&selinux_state)
+@@ -228,24 +674,28 @@
+ #define ksu_selinux_kernel_status_page() selinux_kernel_status_page()
+ #endif
+ 
+-static struct page *ksu_fake_status_page __read_mostly = nullptr;
+-static int ksu_prepare_fake_status_page()
+-{
+-	struct page *real_page = ksu_selinux_kernel_status_page();
++static int ksu_prepare_fake_status_page(void)
++{
++	struct selinux_kernel_status *real_status;
++	struct selinux_kernel_status *fake_status;
++	struct page *real_page;
++	struct page *new_page;
++
++	if (ksu_fake_status_page)
++		return 0;
++
++	real_page = ksu_selinux_kernel_status_page();
+ 	if (!real_page)
+-		return -ENOMEM;
+-
+-	// this is the page we present
+-	struct page *new_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
++		return -EAGAIN;
++
++	/* we will leak this page, but it is used for the whole uptime */
++	new_page = alloc_page(GFP_KERNEL | __GFP_ZERO);
+ 	if (!new_page)
+ 		return -ENOMEM;
+ 
+-	// we will leak one page but thats fine
+-	// not a leak when it is used forever :)
+-	struct selinux_kernel_status *real_status = page_address(real_page);
+-	struct selinux_kernel_status *fake_status = page_address(new_page);
+-    
+-	memcpy(fake_status, real_status, sizeof(*real_status));
++	real_status = page_address(real_page);
++	fake_status = page_address(new_page);
++	memcpy(fake_status, real_status, sizeof(*fake_status));
+ 
+ 	fake_status->enforcing = 1;
+ #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+@@ -257,9 +707,8 @@
+ #endif
+ 
+ 	ksu_fake_status_page = new_page;
+-    
+-	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%d\n", fake_status->sequence);
+-            
++	pr_info("selinux_hide: ksu_fake_status_page ready! seq=%u\n", fake_status->sequence);
++
+ 	return 0;
+ }
+ 
+@@ -298,107 +747,91 @@
+ 	if (!ksu_prepare_fake_status_page())
+ 		fake_status = ksu_fake_status_page;
+ }
+-#endif // CONFIG_KSU_SUSFS
+-
+-static int (*sel_open_handle_status_fn)(struct inode *inode, struct file *filp) __read_mostly = nullptr;
++#endif /* CONFIG_KSU_SUSFS */
++
++static int (*sel_open_handle_status_fn)(struct inode *inode, struct file *filp) __read_mostly = NULL;
++
+ static __nocfi int ksu_sel_open_handle_status(struct inode *inode, struct file *filp)
+ {
+-	if (unlikely(!ksu_selinux_hide_enabled))
+-		goto orig_page;
+-
+-	if (!ksu_is_seccomp_enabled())
+-		goto orig_page;
+-
+-	if (current_uid().val < 10000)
+-		goto orig_page;
+-
+-	assume(!!ksu_fake_status_page);
+-	if (unlikely(!ksu_fake_status_page))
+-		goto orig_page;
+-
+-	filp->private_data = ksu_fake_status_page;
+-
+-	pr_info("selinux_hide: sel_open_handle_status: served fake_page\n");
+-	return 0;
+-
+-orig_page:
++	if (ksu_selinux_hide_enabled && ksu_is_seccomp_enabled() &&
++	    current_uid().val >= 10000 && ksu_fake_status_page) {
++		/* the page is never freed and selinuxfs has no release op for it */
++		filp->private_data = ksu_fake_status_page;
++		pr_info_ratelimited("selinux_hide: served fake status page\n");
++		return 0;
++	}
++
+ 	return sel_open_handle_status_fn(inode, filp);
+ }
+ 
+-static void ksu_init_hook_sel_handle_status_ops_open()
+-{
+-	struct path path;
+-	const char *selinux_status = "/sys/fs/selinux/status";
+-
+-	int error = kern_path(selinux_status, LOOKUP_FOLLOW, &path);
+-	if (error) {
+-		pr_info("selinux_hide: kern_path err: %d\n", error);
+-		return;
+-	}
+-	
+-	pr_info("selinux_hide: kern_path %s ok!\n", selinux_status);
+-
+-	if (!path.dentry)
+-		goto bail_out;
+-
+-	if (!d_inode(path.dentry))
+-		goto bail_out;	
+-
+-	struct file_operations *fops = (struct file_operations *)d_inode(path.dentry)->i_fop;
+-	if (!fops)
+-		goto bail_out;
++static void ksu_init_hook_sel_handle_status_ops_open(void)
++{
++	struct file_operations *fops = NULL;
++	struct inode *inode = NULL;
++	int ret;
++
++	if (ksu_resolve_selinuxfs_node("/sys/fs/selinux/status", &inode, &fops)) {
++		pr_info("selinux_hide: unable to resolve selinuxfs status node\n");
++		return;
++	}
+ 
+ 	if (!fops->open)
+-		goto bail_out;
+-
+-	pr_info("selinux_hide: found sel_handle_status_ops->open at 0x%lx\n", (uintptr_t)fops->open);
++		return;
+ 
+ 	sel_open_handle_status_fn = fops->open;
+ 
+-	int ret = patch_ro_slot((uintptr_t)&fops->open, (uintptr_t)ksu_sel_open_handle_status);
++	ret = patch_ro_slot((uintptr_t)&fops->open, (uintptr_t)ksu_sel_open_handle_status);
+ 	pr_info("selinux_hide: sel_handle_status_ops->open hijack ret: %d\n", ret);
+-
+-bail_out:
+-	path_put(&path);
+-}
+-
+-// init kthread
++}
++
++/* init kthread */
+ static int ksu_selinux_hide_init_thread(void *data)
+ {
+-	set_user_nice(current, 19); // low prio
++	int tries = 0;
++
++	set_user_nice(current, 19); /* low prio */
+ 
+ 	if (*(volatile bool *)&ksu_vfs_read_hook) 		msleep(1000);
+ 
+-	const char *ksu_domain_args[] = { KERNEL_SU_DOMAIN, NULL };
+-	ksu_add_shit_to_list(KSU_SEPOLICY_CMD_TYPE, ksu_domain_args);
+-
+-	const char *ksu_file_args[] = { KERNEL_SU_FILE, NULL };
+-	ksu_add_shit_to_list(KSU_SEPOLICY_CMD_TYPE, ksu_file_args);
+-
+-	const char *init_adb_args[] = { "init", "adb_data_file", NULL };
+-	ksu_add_shit_to_list(KSU_SEPOLICY_CMD_NORMAL_PERM, init_adb_args);
+-
+-	// we move this to a module instead
+-	// const char *adbroot_args[] = { "adbroot", NULL };
+-	// ksu_add_shit_to_list(KSU_SEPOLICY_CMD_TYPE, adbroot_args);
+-
+-	int tries = 0;
+-try_again:
+-	if (!ksu_prepare_fake_status_page())
+-		goto page_ok;
+-		
+-	msleep(1000);
+-	tries = tries + 1;
+-	if (tries > 10)
+-		return 0;
+-
+-	goto try_again;
+-
+-page_ok:
++	/* resolve legacy policy_rwlock/latest_granting while we may scan kallsyms */
++	ksu_selinux_policy_init();
++
++	/* the base types and rules we always create ourselves */
++	ksu_selinux_hide_add_type(KERNEL_SU_DOMAIN);
++	ksu_selinux_hide_add_type(KERNEL_SU_FILE);
++	ksu_selinux_hide_add_rule("init", "adb_data_file");
++
++	/*
++	 * The status page is allocated by selinux_init()/security_load_policy().
++	 * If it never shows up we still install every other hook, only the status
++	 * spoof is unavailable then.
++	 */
++	tries = 0;
++	while (ksu_prepare_fake_status_page()) {
++		if (++tries > 10) {
++			pr_warn("selinux_hide: status page never appeared, status spoof disabled\n");
++			break;
++		}
++		msleep(1000);
++	}
++
++	/*
++	 * Needed by both the fops fallback and the arm64 branch hooks. selinuxfs
++	 * is mounted by userspace init, so give it some time to show up.
++	 */
++	tries = 0;
++	while (ksu_resolve_selinuxfs_nodes()) {
++		if (++tries > 30)
++			break;
++		msleep(500);
++	}
++	if (tries > 30)
++		pr_info("selinux_hide: selinuxfs never appeared, transaction hooks skipped\n");
++
+ #if defined(KSU_HAS_ARM64_SELINUX_HIDE)
+ #ifdef CONFIG_KSU_SUSFS
+-	// the kernel patch serves fake_status itself, no fops hijack needed
++	/* the kernel patch serves fake_status itself, no fops hijack needed */
+ 	initialize_fake_status();
+ 	if (fake_status) {
+ 		if (ksu_fake_status_init_pending())
+@@ -416,9 +849,9 @@
+ 	ksu_init_hook_transaction_ops_write();
+ #endif
+ 
+-	// selinux_setprocattr hook init is on lsm.
+-	
+-	// downstream/slow_avc_audit_defs.h
++	/* selinux_setprocattr hook init is on lsm. */
++
++	/* downstream/slow_avc_audit_defs.h */
+ 	ksu_init_slow_avc_audit_hook();
+ 
+ 	return 0;
+@@ -433,24 +866,19 @@
+ static int selinux_hide_feature_set(u64 value)
+ {
+ 	bool enable = value != 0;
+-	int ret = 0;
+ 
+ 	if (enable == ksu_selinux_hide_enabled)
+ 		return 0;
+ 
+ 	pr_info("selinux_hide: set to %d\n", enable);
+-
+-	if (enable)
+-		ksu_selinux_hide_enabled = true;
+-	else
+-		ksu_selinux_hide_enabled = false;
++	WRITE_ONCE(ksu_selinux_hide_enabled, enable);
+ 
+ #ifdef CONFIG_KSU_SUSFS
+-	// kernel-side status/context/access spoof follows this flag
++	/* kernel-side status/context/access spoof follows this flag */
+ 	ksu_selinux_hide_running = ksu_selinux_hide_enabled && !!fake_status;
+ #endif
+ 
+-	return ret;
++	return 0;
+ }
+ 
+ static const struct ksu_feature_handler selinux_hide_handler = {
+@@ -460,28 +888,24 @@
+ 	.set_handler = selinux_hide_feature_set,
+ };
+ 
+-void __init ksu_selinux_hide_init()
+-{
+-	ksu_selinux_hide_alloc_hazptr_slot();
+-
++void __init ksu_selinux_hide_init(void)
++{
+ #ifdef CONFIG_KSU_SUSFS
+-	// allow selinuxfs.c to lazily build the fake status page on first open
++	/* allow selinuxfs.c to lazily build the fake status page on first open */
+ 	ksu_fake_status_init_start();
+ #endif
+ 
+-	// we init this on a kthread
+-	kthread_run(ksu_selinux_hide_init_thread, NULL, "kthread");
+-
+-	if (ksu_register_feature_handler(&selinux_hide_handler)) {
++	/* we init this on a kthread */
++	kthread_run(ksu_selinux_hide_init_thread, NULL, "ksu_selinux_hide");
++
++	if (ksu_register_feature_handler(&selinux_hide_handler))
+ 		pr_err("Failed to register selinux_hide feature handler\n");
+-	}
+-}
+-
+-void __exit ksu_selinux_hide_exit()
++}
++
++void __exit ksu_selinux_hide_exit(void)
+ {
+ #ifdef CONFIG_KSU_SUSFS
+ 	ksu_selinux_hide_running = false;
+ #endif
+ 	ksu_unregister_feature_handler(KSU_FEATURE_SELINUX_HIDE);
+ }
+-
+diff --git a/kernel/feature/selinux_hide.h b/kernel/feature/selinux_hide.h
+--- a/kernel/feature/selinux_hide.h
++++ b/kernel/feature/selinux_hide.h
+@@ -11,289 +11,53 @@
+  *
+  */
+ 
+-// selinux_hide's list, hand-rolled hazard pointers via C11 atomics
+-
+ #ifndef __KSU_H_SELINUX_HIDE
+ #define __KSU_H_SELINUX_HIDE
+ 
+-void ksu_selinux_hide_init();
+-void ksu_selinux_hide_exit();
++#include <linux/types.h>
+ 
+-static int sepol_expected_argc(u32 cmd);
++struct inode;
++struct page;
+ 
+-// flex array
+-struct ksu_hide_buf {
+-	size_t len;
+-	char data[];
+-} __attribute__((aligned(sizeof(size_t))));
++/*
++ * selinux_hide keeps a small, immutable, RCU published list of SELinux type
++ * names and (src, tgt) type pairs that must not be visible to unprivileged
++ * apps. Readers are on hot paths (setxattr, setprocattr, context lookup) and
++ * may run in atomic context, so everything is lock free on the read side and
++ * writers publish complete new snapshots through rcu_assign_pointer() /
++ * call_rcu().
++ */
+ 
+-// types
+-// :type1:\0:type2:\0:type3:\0
+-static struct ksu_hide_buf *ksu_hide_type_list __read_mostly = nullptr;
++void ksu_selinux_hide_init(void);
++void ksu_selinux_hide_exit(void);
+ 
+-// rules
+-// :src1:\0:tgt1:\0:src2:\0:tgt2:\0:src3:\0:tgt3:\0
+-static struct ksu_hide_buf *ksu_hide_rule_list __read_mostly = nullptr;
++extern bool ksu_selinux_hide_enabled;
++extern struct page *ksu_fake_status_page;
+ 
+-static DEFINE_MUTEX(selinux_hide_list_mutex);
++/* policy generation reported to unprivileged readers */
++#define KSU_SELINUX_FAKE_SEQNO 1
+ 
+-static struct ksu_hide_buf *__percpu *ksu_selinux_hide_hazptr_slot __read_mostly = nullptr;
++/* selinuxfs node identity, resolved once at init */
++bool ksu_selinux_hide_is_context_inode(const struct inode *inode);
++bool ksu_selinux_hide_is_access_inode(const struct inode *inode);
+ 
+-static inline void ksu_selinux_hide_alloc_hazptr_slot(void)
+-{
+-	ksu_selinux_hide_hazptr_slot = alloc_percpu(struct ksu_hide_buf *);
++/* list management */
++void ksu_add_shit_to_list(u32 cmd, const char *const args[]);
++void ksu_selinux_hide_add_type(const char *type);
++void ksu_selinux_hide_add_rule(const char *src, const char *tgt);
+ 
+-	// asshole assert nofail.
+-	if (!ksu_selinux_hide_hazptr_slot) {
+-		__builtin_trap();
+-		__builtin_unreachable();
+-	}
++/*
++ * True when the given string (a context, a "scon tcon class perm" access
++ * request, or an avc audit record) refers to a hidden type or rule.
++ * Safe to call from atomic context.
++ */
++bool ksu_should_destroy_context(const char *str, size_t limit, bool types_only);
+ 
+-	unsigned int cpu;
+-	for_each_possible_cpu(cpu) {
+-		struct ksu_hide_buf **slot = per_cpu_ptr(ksu_selinux_hide_hazptr_slot, cpu);
+-		pr_info("selinux_hide: hazptr_slot: 0x%lx cpu: %u \n", (uintptr_t)slot, cpu );
+-	}
+-}
+-
+-// NOTE: can ret null on uninitialized state
+-static inline struct ksu_hide_buf *ksu_selinux_hide_get_buf(struct ksu_hide_buf **g_buf)
+-{
+-	// reader has to pin its own slot
+-	preempt_disable();
+-	struct ksu_hide_buf **slot = this_cpu_ptr(ksu_selinux_hide_hazptr_slot);
+-	struct ksu_hide_buf *buf;
+-
+-check_buf:
+-	buf = __atomic_load_n(g_buf, __ATOMIC_ACQUIRE);
+-	__atomic_store_n(slot, buf, __ATOMIC_RELEASE);
+-
+-	if (buf != __atomic_load_n(g_buf, __ATOMIC_ACQUIRE))
+-		goto check_buf;
+-
+-	return buf;
+-}
+-
+-static inline void ksu_selinux_hide_put_buf(struct ksu_hide_buf **unused)
+-{
+-	struct ksu_hide_buf **slot = this_cpu_ptr(ksu_selinux_hide_hazptr_slot);
+-	__atomic_store_n(slot, NULL, __ATOMIC_RELEASE);
+-	
+-	preempt_enable();
+-}
+-
+-static inline void ksu_selinux_hide_hazptr_free(struct ksu_hide_buf *old_ptr)
+-{
+-	if (!old_ptr)
+-		return;
+-
+-	// acquire it on ALL cpus!
+-	// only free it once ALL slots say that their slot no longer contains old ptr
+-	unsigned int cpu;
+-	for_each_possible_cpu(cpu) {
+-		struct ksu_hide_buf **slot = per_cpu_ptr(ksu_selinux_hide_hazptr_slot, cpu);
+-		while (__atomic_load_n(slot, __ATOMIC_ACQUIRE) == old_ptr)
+-			cpu_relax();
+-	}
+-
+-	kfree(old_ptr);
+-}
+-
+-static noinline void ksu_add_shit_to_list(u32 cmd, const char *args[])
+-{
+-	if (!args || !args[0])
+-		return;
+-
+-	guarded_mutex_lock(&selinux_hide_list_mutex);
+-
+-	int argc = sepol_expected_argc(cmd);
+-
+-	if (cmd == KSU_SEPOLICY_CMD_TYPE || cmd == KSU_SEPOLICY_CMD_TYPE_ATTR || cmd == KSU_SEPOLICY_CMD_TYPE_STATE || cmd == KSU_SEPOLICY_CMD_ATTR) {
+-		
+-		const char *name = args[0];
+-		size_t needed_len = strlen(name) + 3; // :type:\0
+-
+-		if (!ksu_hide_type_list)
+-			goto skip_type_dup_check;
+-
+-		// anti duplicate
+-		size_t offset = 0;
+-		while (ksu_hide_type_list->len > offset) {
+-			const char *current_type = ksu_hide_type_list->data + offset;
+-
+-			char tmp_buf[64];
+-			snprintf(tmp_buf, sizeof(tmp_buf), ":%s:", name);
+-
+-			if (!strcmp(current_type, tmp_buf))
+-				return;
+-
+-			offset = offset + strlen(current_type) + 1;
+-		}
+-
+-	skip_type_dup_check:;
+-		size_t old_len = (ksu_hide_type_list) ? ksu_hide_type_list->len : 0;
+-		size_t new_total_len = old_len + needed_len;
+-
+-		struct ksu_hide_buf *new_ptr = kmalloc(sizeof(*new_ptr) + new_total_len, GFP_KERNEL | __GFP_NOFAIL);
+-		new_ptr->len = new_total_len;
+-
+-		if (ksu_hide_type_list && old_len > 0)
+-			memcpy(new_ptr->data, ksu_hide_type_list->data, old_len);
+-
+-		char *w_ptr = new_ptr->data + old_len;
+-		sprintf(w_ptr, ":%s:", name);
+-
+-		struct ksu_hide_buf *old_ptr = __atomic_exchange_n(&ksu_hide_type_list, new_ptr, __ATOMIC_ACQ_REL);
+-		ksu_selinux_hide_hazptr_free(old_ptr);
+-
+-		pr_info("selinux_hide: tracking type: %s\n", w_ptr);
+-
+-
+-	} else if (argc >= 2) {
+-
+-		if (!args[1])
+-			return;
+-
+-		const char *src = args[0];
+-		const char *tgt = args[1];
+-
+-		size_t src_needed = strlen(src) + 3; // :src:\0
+-		size_t tgt_needed = strlen(tgt) + 3; // :tgt:\0
+-		size_t needed_len = src_needed + tgt_needed;
+-
+-		if (!ksu_hide_rule_list)
+-			goto skip_rule_dup_check;
+-
+-		// anti duplicate
+-		size_t offset = 0;
+-		while (ksu_hide_rule_list->len > offset) {
+-			const char *src_chk = ksu_hide_rule_list->data + offset;
+-			size_t src_sz = strlen(src_chk) + 1; // for \0
+-
+-			const char *tgt_chk = src_chk + src_sz;
+-			size_t tgt_sz = strlen(tgt_chk) + 1; // for \0
+-
+-			char src_buf[64], tgt_buf[64];
+-			snprintf(src_buf, sizeof(src_buf), ":%s:", src);
+-			snprintf(tgt_buf, sizeof(tgt_buf), ":%s:", tgt);
+-
+-			if (!strcmp(src_chk, src_buf) && !strcmp(tgt_chk, tgt_buf))
+-				return;
+-
+-			offset = offset + src_sz + tgt_sz;
+-		}
+-
+-	skip_rule_dup_check:;
+-		size_t old_len = (ksu_hide_rule_list) ? ksu_hide_rule_list->len : 0;
+-		size_t new_total_len = old_len + needed_len;
+-
+-		struct ksu_hide_buf *new_ptr = kmalloc(sizeof(*new_ptr) + new_total_len, GFP_KERNEL | __GFP_NOFAIL);
+-		new_ptr->len = new_total_len;
+-
+-		if (ksu_hide_rule_list && old_len > 0)
+-			memcpy(new_ptr->data, ksu_hide_rule_list->data, old_len);
+-
+-		char *w_ptr_src = new_ptr->data + old_len;
+-		sprintf(w_ptr_src, ":%s:", src);
+-
+-		char *w_ptr_tgt = w_ptr_src + strlen(w_ptr_src) + 1;
+-		sprintf(w_ptr_tgt, ":%s:", tgt);
+-
+-		struct ksu_hide_buf *old_ptr = __atomic_exchange_n(&ksu_hide_rule_list, new_ptr, __ATOMIC_ACQ_REL);
+-		ksu_selinux_hide_hazptr_free(old_ptr);
+-
+-		pr_info("selinux_hide: tracking rule: %s %s\n", w_ptr_src, w_ptr_tgt);
+-
+-	}
+-
+-	return;
+-}
+-
+-static __always_inline bool ksu_should_destroy_context(char *str, size_t limit, const bool types_only)
+-{
+-	if (!str)
+-		return false;
+-
+-	kick_all_cpus_sync();
+-{ // scope++
+-	struct ksu_hide_buf *type_buf __cleanup(ksu_selinux_hide_put_buf) = ksu_selinux_hide_get_buf(&ksu_hide_type_list);
+-	if (unlikely(!type_buf))
+-		goto check_rule;
+-
+-	size_t offset = 0;
+-	while (type_buf->len > offset) {
+-		const char *current_entry = type_buf->data + offset;
+-
+-		if (strnstr(str, current_entry, limit))
+-			return true;
+-
+-		offset = offset + strlen(current_entry) + 1;
+-	}
+-} // scope--
+-
+-check_rule:
+-	if (types_only)
+-		return false;
+-
+-	// double strstr
+-	const char *str2 = strnchr(str, limit, ' ');
+-	if (!str2)
+-		return false;
+-
+-{ // scope++
+-	struct ksu_hide_buf *rule_buf __cleanup(ksu_selinux_hide_put_buf) = ksu_selinux_hide_get_buf(&ksu_hide_rule_list);
+-	if (unlikely(!rule_buf))
+-		return false;
+-	
+-	size_t offset = 0;
+-	while (rule_buf->len > offset) {
+-		const char *src_rule = rule_buf->data + offset;
+-		size_t src_sz = strlen(src_rule) + 1;
+-
+-		const char *tgt_rule = src_rule + src_sz;
+-		size_t tgt_sz = strlen(tgt_rule) + 1;
+-
+-		if (strnstr(str, src_rule, str2 - str) && strnstr(str2, tgt_rule, limit - (str2 - str)))
+-			return true;
+-
+-		offset = offset + src_sz + tgt_sz;
+-	}
+-} // scope--
+-	return false;
+-}
+-
+-static __always_inline void replace_after_second_colon(char *str, size_t bound)
+-{
+-	if (!str)
+-		return;
+-
+-	const char *first = __builtin_memchr(str, ':', bound);
+-	if (!first)
+-		return;
+-
+-	char *second = __builtin_memchr(first, ':', bound - (first - str));
+-	if (!second || !second[1] || !second[2])
+-		return;
+-
+-	if (second[2] != '6')
+-		second[2] = '6';
+-	else
+-		second[2] = '7';
+-}
+-
+-static noinline void do_useless_alloc(size_t sz)
+-{
+-	volatile uint32_t random = get_random_u32();
+-	volatile uint8_t *s = (volatile uint8_t *)&random;
+-	volatile int n = ((s[0] ?: 64) + (s[1] ?: 32) + (s[2] ?: 16) + (s[3] ?: 8)) / 2;
+-	volatile char *stack = __builtin_alloca(n);
+-
+-	if (sz > 256)
+-		sz = 256;
+-
+-	volatile char *heap __zoffstack(sz * 4 + n);
+-	memset_explicit(heap, s[0], sz * 4 + n);
+-	memset_explicit(stack, s[1], n);
+-}
++/*
++ * LSM reachable filters. Return 0 to let the operation continue, -EINVAL to
++ * reject it with the same error SELinux would use for an unknown context.
++ */
++int ksu_hide_setprocattr_inline(const char *name, const void *value, size_t size);
++int ksu_hide_setxattr_inline(const char *name, const void *value, size_t size);
+ 
+ #endif
+diff --git a/kernel/selinux/rules.c b/kernel/selinux/rules.c
+--- a/kernel/selinux/rules.c
++++ b/kernel/selinux/rules.c
+@@ -1,15 +1,44 @@
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+-#define SELINUX_POLICY_INSTEAD_SELINUX_SS
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * SELinux policy patching for KernelSU.
++ *
++ * Two completely different installation paths exist:
++ *
++ *  - 5.10+ (or vendor kernels that backported struct selinux_policy):
++ *    the policy is an RCU protected, immutable object. We clone it, patch the
++ *    clone and swap the pointer. No locking tricks needed.
++ *
++ *  - Older kernels: the policy is a single mutable struct policydb that every
++ *    reader protects with policy_rwlock. We clone it *outside* of the lock,
++ *    then swap the whole struct in place while holding policy_rwlock for
++ *    writing. Every allocation happens before the lock is taken, so nothing
++ *    can sleep in atomic context, and the swap is atomic for all readers.
++ *
++ * The old implementation patched the live policydb either under a raw rwlock
++ * (which is illegal, the policy helpers allocate) or with stop_machine()
++ * (which stops every other CPU). Both are gone now.
++ */
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_SELINUX_POLICY_STRUCT)
++/* struct selinux_policy, selinux_state.policy_mutex and RCU based policy */
++#define KSU_SELINUX_POLICY_V2 1
+ #endif
+ 
+ #define ALL NULL
++
++#if defined(CONFIG_KALLSYMS)
++#define ksu_lookup_symbol(name) ((uintptr_t)kallsyms_lookup_retry(name))
++#else
++#define ksu_lookup_symbol(name) 0UL
++#endif
+ 
+ #if ((!defined(KSU_COMPAT_USE_SELINUX_STATE)) || LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
+ extern int avc_ss_reset(u32 seqno);
+ #else
+ extern int avc_ss_reset(struct selinux_avc *avc, u32 seqno);
+ #endif
+-// reset avc cache table, otherwise the new rules will not take effect if already denied
++
++/* reset avc cache table, otherwise the new rules will not take effect if already denied */
+ static void reset_avc_cache(u32 seqno)
+ {
+ #if ((!defined(KSU_COMPAT_USE_SELINUX_STATE)) || LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
+@@ -25,73 +54,256 @@
+ 	selinux_xfrm_notify_policyload();
+ 
+ #ifdef CONFIG_KSU_SUSFS
+-	// refresh the SID cache after every policy load/update, SUSFS' avc spoof
+-	// and our setresuid hook both compare against these
++	/* refresh the SID cache after every policy load/update, SUSFS' avc spoof
++	 * and our setresuid hook both compare against these */
+ 	susfs_set_batch_sid();
+ #endif
+ }
+ 
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
+-
++#ifndef KSU_SELINUX_POLICY_V2
++
++/*
++ * Legacy policy accessors.
++ *
++ * Latest Android kernels (5.10+) are handled by the other branch, so this
++ * only ever runs on 3.x/4.x/5.4 style trees. There are three variants:
++ *
++ *   - CONFIG_KSU_COMPAT_HAS_SELINUX_STATE (4.19 - 5.9): state is wrapped in
++ *     struct selinux_state, everything is reachable through ->ss.
++ *   - pre-4.19 trees that define policy_rwlock as a global symbol: a direct
++ *     extern works (detected by the Makefile).
++ *   - anything else: resolve the pointer through kallsyms. Those symbols
++ *     belong to the policy core, they never move, so caching them is safe.
++ */
+ #if defined(KSU_COMPAT_USE_SELINUX_STATE)
+-static struct policydb *get_policydb(void) { return &selinux_state.ss->policydb; }
+-static rwlock_t *get_policy_rwlock(void) { return &selinux_state.ss->policy_rwlock; }
+-static u32 get_latest_granting_inc(void)
+-{
+-	selinux_state.ss->latest_granting++;
+-	return selinux_state.ss->latest_granting;
+-}
+-#else /* ! KSU_COMPAT_USE_SELINUX_STATE */
+-static struct policydb *get_policydb(void) { return &policydb; }
+-static rwlock_t *get_policy_rwlock(void)
+-{
+-	extern rwlock_t policy_rwlock __weak;
+-	return &policy_rwlock;
+-}
+-static u32 get_latest_granting_inc(void)
+-{
+-	extern u32 latest_granting __weak;
+-	if (!&latest_granting)
+-		return 0;	
+-	latest_granting++;
+-	return latest_granting;
+-}
+-#endif /* ! KSU_COMPAT_USE_SELINUX_STATE */
+-
+-// override if kallsyms_all
+-#if !defined(KSU_COMPAT_USE_SELINUX_STATE) && defined(CONFIG_KALLSYMS_ALL)
+-static noinline rwlock_t *ksym_get_policy_rwlock(void)
+-{
+-	static bool initialized = false;
+-	static rwlock_t *lock = nullptr;
+-	if (!initialized) {
+-		lock = (rwlock_t *)kallsyms_lookup_name("policy_rwlock");
+-		initialized = true;
+-	}
+-
+-	return lock;
+-}
+-#define get_policy_rwlock ksym_get_policy_rwlock
+-
+-static noinline u32 ksym_get_latest_granting_inc(void)
+-{
+-	static bool initialized = false;
+-	static u32 *granting = nullptr;
+-	if (!initialized) {
+-		granting = (u32 *)kallsyms_lookup_name("latest_granting");
+-		initialized = true;
+-	}
+-
+-	if (!granting)
+-		return 0;
+-
+-	(*granting)++;
+-	return *granting;
+-}
+-#define get_latest_granting_inc ksym_get_latest_granting_inc
++
++static struct policydb *ksu_get_policydb(void)
++{
++	return &selinux_state.ss->policydb;
++}
++
++static rwlock_t *ksu_get_policy_rwlock(void)
++{
++	return &selinux_state.ss->policy_rwlock;
++}
++
++static u32 *ksu_get_latest_granting(void)
++{
++	return &selinux_state.ss->latest_granting;
++}
++
++#else /* !KSU_COMPAT_USE_SELINUX_STATE */
++
++static struct policydb *ksu_get_policydb(void)
++{
++	return &policydb;
++}
++
++static rwlock_t *ksu_legacy_policy_rwlock;
++static u32 *ksu_legacy_latest_granting;
++
++static rwlock_t *ksu_get_policy_rwlock(void)
++{
++	return READ_ONCE(ksu_legacy_policy_rwlock);
++}
++
++static u32 *ksu_get_latest_granting(void)
++{
++	return READ_ONCE(ksu_legacy_latest_granting);
++}
++
++/*
++ * Must be called from process context. When called early from our init
++ * kthread kallsyms can build its cache, later calls only do a lookup.
++ *
++ * The direct extern references are only used when the Makefile proved the
++ * symbols are global on this tree; a mangled link is much worse than a
++ * missing symbol at runtime.
++ */
++static int ksu_resolve_legacy_policy_symbols(void)
++{
++#if defined(KSU_COMPAT_HAS_EXPORTED_POLICY_RWLOCK)
++	if (!ksu_legacy_policy_rwlock) {
++		extern rwlock_t policy_rwlock;
++
++		ksu_legacy_policy_rwlock = &policy_rwlock;
++	}
+ #endif
+-
+-#endif // < 5.10
++#if defined(KSU_COMPAT_HAS_GLOBAL_LATEST_GRANTING)
++	if (!ksu_legacy_latest_granting) {
++		extern u32 latest_granting;
++
++		ksu_legacy_latest_granting = &latest_granting;
++	}
++#endif
++
++	if (!ksu_legacy_policy_rwlock)
++		ksu_legacy_policy_rwlock = (rwlock_t *)ksu_lookup_symbol("policy_rwlock");
++	if (!ksu_legacy_latest_granting)
++		ksu_legacy_latest_granting = (u32 *)ksu_lookup_symbol("latest_granting");
++
++	if (!ksu_legacy_policy_rwlock || !ksu_legacy_latest_granting) {
++		pr_err("kernelsu: unable to resolve legacy selinux policy symbols, sepolicy patching disabled\n");
++		return -ENOENT;
++	}
++
++	return 0;
++}
++
++#endif /* !KSU_COMPAT_USE_SELINUX_STATE */
++
++#define KSU_POLICY_SWAP_RETRIES 16
++
++typedef int (*ksu_policydb_mutator)(struct policydb *db, void *arg);
++
++static void ksu_policydb_reset(struct policydb *db)
++{
++	ksu_policydb_destroy(db);
++	memset(db, 0, sizeof(*db));
++}
++
++/*
++ * Take an immutable snapshot of the live policy.
++ *
++ * policy_rwlock disables preemption, so everything that can sleep (the
++ * serialization buffer, policydb_read) happens outside of it: the buffer is
++ * allocated first, then serialized under the read lock, and only afterwards
++ * parsed into the private copy. If the snapshot grew past the buffer the whole
++ * thing is retried with a bigger one.
++ */
++static int ksu_policydb_snapshot(struct policydb *live, rwlock_t *lock,
++				 struct policydb *next, u32 *generation)
++{
++	ssize_t serialized;
++	size_t cap;
++	void *buf;
++	int grow, ret;
++
++	cap = ksu_policydb_size_hint(live);
++
++	for (grow = 0; grow < 4; grow++) {
++		buf = kvmalloc(cap, GFP_KERNEL);
++		if (!buf)
++			return -ENOMEM;
++
++		read_lock(lock);
++		*generation = READ_ONCE(*ksu_get_latest_granting());
++		serialized = ksu_policydb_serialize(live, buf, cap);
++		read_unlock(lock);
++
++		if (serialized >= 0) {
++			ret = ksu_policydb_parse(next, buf, (size_t)serialized);
++			kvfree(buf);
++			return ret;
++		}
++
++		kvfree(buf);
++
++		/* buffer too small, try again with twice the room */
++		if (cap > (32U * 1024U * 1024U) / 2)
++			break;
++		cap *= 2;
++	}
++
++	pr_err("kernelsu: unable to snapshot the running policy\n");
++
++	return -EINVAL;
++}
++
++/*
++ * Clone -> mutate -> swap. The clone is taken with the read lock held so it
++ * can never observe a half swapped table, the mutation runs on private memory
++ * and the (tiny, allocation free) struct swap happens under the write lock.
++ *
++ * If userspace managed to load a policy between our clone and the swap, the
++ * generation number moved and we simply retry with a fresh clone.
++ */
++static int ksu_replace_policy_legacy(ksu_policydb_mutator mutate, void *arg)
++{
++	struct policydb *live = ksu_get_policydb();
++	rwlock_t *lock;
++	struct policydb *next, *old;
++	u32 generation = 0;
++	bool next_loaded = false;
++	int attempt;
++	int ret;
++
++#if !defined(KSU_COMPAT_USE_SELINUX_STATE)
++	if (!ksu_get_policy_rwlock() || !ksu_get_latest_granting()) {
++		if (ksu_resolve_legacy_policy_symbols())
++			return -EOPNOTSUPP;
++	}
++#endif
++
++	lock = ksu_get_policy_rwlock();
++	if (!lock || !ksu_get_latest_granting())
++		return -EOPNOTSUPP;
++
++	/* no policy loaded yet, nothing to patch */
++	if (!READ_ONCE(live->len))
++		return -EAGAIN;
++
++	next = kzalloc(sizeof(*next), GFP_KERNEL);
++	old = kmalloc(sizeof(*old), GFP_KERNEL);
++	if (!next || !old) {
++		ret = -ENOMEM;
++		goto out;
++	}
++
++	ret = -EAGAIN;
++	for (attempt = 0; attempt < KSU_POLICY_SWAP_RETRIES; attempt++) {
++		ret = ksu_policydb_snapshot(live, lock, next, &generation);
++		if (ret < 0)
++			goto out;
++
++		next_loaded = true;
++
++		ret = mutate(next, arg);
++		if (ret < 0) {
++			ksu_policydb_reset(next);
++			next_loaded = false;
++			goto out;
++		}
++
++		write_lock_irq(lock);
++		if (READ_ONCE(*ksu_get_latest_granting()) != generation) {
++			write_unlock_irq(lock);
++			ksu_policydb_reset(next);
++			next_loaded = false;
++			cond_resched();
++			continue;
++		}
++
++		/* The readers only ever see the whole struct, never a mix. */
++		memcpy(old, live, sizeof(*old));
++		memcpy(live, next, sizeof(*next));
++		memset(next, 0, sizeof(*next));
++		next_loaded = false;
++		WRITE_ONCE(*ksu_get_latest_granting(), generation + 1);
++		write_unlock_irq(lock);
++
++		/* tables that belonged to the old policy, safe to free unlocked */
++		ksu_policydb_reset(old);
++
++		/* flush the avc so the freshly added rules are actually used */
++		reset_avc_cache(generation + 1);
++		ret = 0;
++		goto out;
++	}
++
++	pr_err("kernelsu: policy is being reloaded concurrently, giving up after %d attempts\n",
++	       KSU_POLICY_SWAP_RETRIES);
++	ret = -EAGAIN;
++
++out:
++	if (next_loaded)
++		ksu_policydb_reset(next);
++	kfree(next);
++	kfree(old);
++	return ret;
++}
++
++#endif /* !KSU_SELINUX_POLICY_V2 */
+ 
+ static int apply_kernelsu_rules_fn(void *ptr)
+ {
+@@ -103,15 +315,15 @@
+ 	ksu_typeattribute(db, KERNEL_SU_DOMAIN, "netdomain");
+ 	ksu_typeattribute(db, KERNEL_SU_DOMAIN, "bluetoothdomain");
+ 
+-	// Create unconstrained file type
++	/* Create unconstrained file type */
+ 	ksu_type(db, KERNEL_SU_FILE, "file_type");
+ 	ksu_typeattribute(db, KERNEL_SU_FILE, "mlstrustedobject");
+ 	ksu_allow(db, "domain", KERNEL_SU_FILE, ALL, ALL);
+ 
+-	// allow all!
++	/* allow all! */
+ 	ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL);
+ 
+-	// allow us do any ioctl
++	/* allow us do any ioctl */
+ 	if (db->policyvers >= POLICYDB_VERSION_XPERMS_IOCTL) {
+ 		ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "blk_file", ALL);
+ 		ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "fifo_file", ALL);
+@@ -119,15 +331,15 @@
+ 		ksu_allowxperm(db, KERNEL_SU_DOMAIN, ALL, "file", ALL);
+ 	}
+ 
+-	// our ksud triggered by init
++	/* our ksud triggered by init */
+ 	ksu_allow(db, "init", KERNEL_SU_DOMAIN, ALL, ALL);
+ 
+-	// restored from https://github.com/tiann/KernelSU/pull/3031 
++	/* restored from https://github.com/tiann/KernelSU/pull/3031 */
+ 	ksu_allow(db, "init", "adb_data_file", "file", ALL);
+-	ksu_allow(db, "init", "adb_data_file", "dir", ALL); // #1289
+-
+-	// copied from Magisk rules
+-	// suRights
++	ksu_allow(db, "init", "adb_data_file", "dir", ALL); /* #1289 */
++
++	/* copied from Magisk rules */
++	/* suRights */
+ 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+ 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "dir", "read");
+ 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "file", "open");
+@@ -135,39 +347,39 @@
+ 	ksu_allow(db, "servicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "process", "sigchld");
+ 
+-	// allowLog
++	/* allowLog */
+ 	ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "dir", "search");
+ 	ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "file", "read");
+ 	ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "file", "open");
+ 	ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "file", "getattr");
+ 
+-	// dumpsys, send fd
++	/* dumpsys, send fd */
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fd", "use");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "write");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "read");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "open");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "fifo_file", "getattr");
+ 
+-	// use memfd created by su domain
++	/* use memfd created by su domain */
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "execute");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "getattr");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "map");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "read");
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "memfd_file", "write");
+ 
+-	// bootctl
++	/* bootctl */
+ 	ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "dir", "search");
+ 	ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "read");
+ 	ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "file", "open");
+ 	ksu_allow(db, "hwservicemanager", KERNEL_SU_DOMAIN, "process", "getattr");
+ 
+-	// Allow all binder transactions
++	/* Allow all binder transactions */
+ 	ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "binder", ALL);
+ 
+-	// Let logd get root process attr
++	/* Let logd get root process attr */
+ 	ksu_allow(db, "logd", KERNEL_SU_DOMAIN, "process", "getattr");
+ 
+-	// Allow system server kill su process
++	/* Allow system server kill su process */
+ 	ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
+ 	ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
+ 
+@@ -180,70 +392,69 @@
+ 	return 0;
+ }
+ 
+-void apply_kernelsu_rules()
+-{
+-	struct policydb *db;
+-
+-	if (!getenforce()) {
++#ifdef KSU_SELINUX_POLICY_V2
++
++void apply_kernelsu_rules(void)
++{
++	struct selinux_policy *pol, *old_pol;
++	int ret;
++
++	if (!getenforce())
+ 		pr_info("SELinux permissive or disabled, apply rules!\n");
+-	}
+-
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+-	struct selinux_policy *pol, *old_pol;
++
+ 	mutex_lock(&selinux_state.policy_mutex);
+-	old_pol = rcu_dereference_protected(selinux_state.policy, lockdep_is_held(&selinux_state.policy_mutex));
++
++	old_pol = rcu_dereference_protected(selinux_state.policy,
++					    lockdep_is_held(&selinux_state.policy_mutex));
++	if (!old_pol) {
++		pr_err("failed to apply kernelsu rules: no policy loaded yet\n");
++		mutex_unlock(&selinux_state.policy_mutex);
++		return;
++	}
+ 	pol = ksu_dup_sepolicy(old_pol);
+ 	if (IS_ERR(pol)) {
+ 		pr_err("failed to dup selinux_policy: %ld\n", PTR_ERR(pol));
+-		goto out_unlock;
+-	}
+-	db = &pol->policydb;
+-
+-	apply_kernelsu_rules_fn((void *)db);
++		mutex_unlock(&selinux_state.policy_mutex);
++		return;
++	}
++
++	ret = apply_kernelsu_rules_fn(&pol->policydb);
++	if (ret < 0) {
++		pr_err("failed to apply kernelsu rules: %d\n", ret);
++		ksu_destroy_sepolicy(pol);
++		mutex_unlock(&selinux_state.policy_mutex);
++		return;
++	}
+ 
+ 	pol->latest_granting = old_pol->latest_granting + 1;
+ 	rcu_assign_pointer(selinux_state.policy, pol);
+ 	synchronize_rcu();
+ 	ksu_destroy_sepolicy(old_pol);
+ 
++	mutex_unlock(&selinux_state.policy_mutex);
++
+ 	reset_avc_cache(pol->latest_granting);
+-out_unlock:
+-	mutex_unlock(&selinux_state.policy_mutex);
+-#else-
+-	db = get_policydb();
+-
+-	rwlock_t *lock = get_policy_rwlock();
+-	if (!lock)
+-		goto do_stop_machine;
+-
+-	/*
+-	 * HACK: write_lock() is held with preempt enabled. DO NOT let the
+-	 * task be migrated to any other CPU than the current CPU. And since
+-	 * set_cpus_allowed_ptr() can sleep, use raw_smp_processor_id() to get
+-	 * current CPU and bypass preemption checks.
+-	 */
+-	pr_info("%s: type: policy_rwlock \n", __func__);
+-	set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
+-	write_lock(lock);
+-	preempt_enable();
+-
+-	apply_kernelsu_rules_fn((void *)db);
+-
+-	preempt_disable();
+-	write_unlock(lock);
+-	set_cpus_allowed_ptr(current, cpu_online_mask);
+-	goto out_flush;
+-
+-do_stop_machine:
+-	pr_info("%s: type: stop_machine()\n", __func__);
+-	stop_machine(apply_kernelsu_rules_fn, (void *)db, NULL);
+-
+-out_flush:
+-	smp_mb();
+-	reset_avc_cache(get_latest_granting_inc());
+-#endif
+-}
++}
++
++#else /* KSU_SELINUX_POLICY_V2 */
++
++static int ksu_mutate_default_rules(struct policydb *db, void *arg)
++{
++	(void)arg;
++
++	return apply_kernelsu_rules_fn(db);
++}
++
++void apply_kernelsu_rules(void)
++{
++	if (!getenforce())
++		pr_info("SELinux permissive or disabled, apply rules!\n");
++
++	if (ksu_replace_policy_legacy(ksu_mutate_default_rules, ALL) < 0)
++		pr_err("failed to apply kernelsu rules to the running policy\n");
++}
++
++#endif /* KSU_SELINUX_POLICY_V2 */
+ 
+ #define KSU_SEPOLICY_MAX_BATCH_SIZE (8U * 1024U * 1024U)
+ #define KSU_SEPOLICY_MAX_ARGS 5
+@@ -265,9 +476,8 @@
+ 
+ static int sepol_read_cmd_header(struct sepol_batch_cursor *cursor, struct sepol_data *header)
+ {
+-	if (sepol_remaining(cursor) < sizeof(*header)) {
++	if (sepol_remaining(cursor) < sizeof(*header))
+ 		return -EINVAL;
+-	}
+ 
+ 	memcpy(header, cursor->cur, sizeof(*header));
+ 	cursor->cur += sizeof(*header);
+@@ -280,21 +490,18 @@
+ 	u32 len;
+ 	const char *str;
+ 
+-	if (sepol_remaining(cursor) < sizeof(len)) {
++	if (sepol_remaining(cursor) < sizeof(len))
+ 		return -EINVAL;
+-	}
+ 
+ 	memcpy(&len, cursor->cur, sizeof(len));
+ 	cursor->cur += sizeof(len);
+ 
+-	if (len >= sepol_remaining(cursor)) {
++	if (len >= sepol_remaining(cursor))
+ 		return -EINVAL;
+-	}
+ 
+ 	str = (const char *)cursor->cur;
+-	if (memchr(str, '\0', len) != NULL || str[len] != '\0') {
++	if (memchr(str, '\0', len) != NULL || str[len] != '\0')
+ 		return -EINVAL;
+-	}
+ 
+ 	cursor->cur += len + 1;
+ 	if (len == 0) {
+@@ -308,9 +515,8 @@
+ 
+ static int sepol_require_not_all(const char *value, const char *name)
+ {
+-	if (value != ALL) {
++	if (value != ALL)
+ 		return 0;
+-	}
+ 
+ 	pr_err("sepol: %s cannot be ALL.\n", name);
+ 	return -EINVAL;
+@@ -363,13 +569,11 @@
+ 
+ 	case KSU_SEPOLICY_CMD_XPERM:
+ 		ret = sepol_require_not_all(args[3], "operation");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[4], "perm_set");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 
+ 		if (header->subcmd == KSU_SEPOLICY_SUBCMD_XPERM_ALLOW) {
+ 			success = ksu_allowxperm(db, args[0], args[1], args[2], args[4]);
+@@ -384,9 +588,8 @@
+ 
+ 	case KSU_SEPOLICY_CMD_TYPE_STATE:
+ 		ret = sepol_require_not_all(args[0], "type");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 
+ 		if (header->subcmd == KSU_SEPOLICY_SUBCMD_TYPE_STATE_PERMISSIVE) {
+ 			success = ksu_permissive(db, args[0]);
+@@ -400,19 +603,17 @@
+ 	case KSU_SEPOLICY_CMD_TYPE:
+ 	case KSU_SEPOLICY_CMD_TYPE_ATTR:
+ 		ret = sepol_require_not_all(args[0], "type");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[1], "attribute");
+-		if (ret < 0) {
+-			return ret;
+-		}
+-
+-		if (header->cmd == KSU_SEPOLICY_CMD_TYPE) {
++		if (ret < 0)
++			return ret;
++
++		if (header->cmd == KSU_SEPOLICY_CMD_TYPE)
+ 			success = ksu_type(db, args[0], args[1]);
+-		} else {
++		else
+ 			success = ksu_typeattribute(db, args[0], args[1]);
+-		}
++
+ 		if (!success) {
+ 			pr_err("sepol: %d failed.\n", header->cmd);
+ 			return -EINVAL;
+@@ -421,9 +622,8 @@
+ 
+ 	case KSU_SEPOLICY_CMD_ATTR:
+ 		ret = sepol_require_not_all(args[0], "attribute");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 
+ 		if (!ksu_attribute(db, args[0])) {
+ 			pr_err("sepol: %d failed.\n", header->cmd);
+@@ -435,21 +635,17 @@
+ 		const char *object = ALL;
+ 
+ 		ret = sepol_require_not_all(args[0], "src");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[1], "tgt");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[2], "cls");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[3], "default_type");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 
+ 		object = args[4];
+ 
+@@ -459,21 +655,17 @@
+ 
+ 	case KSU_SEPOLICY_CMD_TYPE_CHANGE:
+ 		ret = sepol_require_not_all(args[0], "src");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[1], "tgt");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[2], "cls");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[3], "default_type");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 
+ 		if (header->subcmd == KSU_SEPOLICY_SUBCMD_TYPE_CHANGE_CHANGE) {
+ 			success = ksu_type_change(db, args[0], args[1], args[2], args[3]);
+@@ -486,17 +678,14 @@
+ 
+ 	case KSU_SEPOLICY_CMD_GENFSCON:
+ 		ret = sepol_require_not_all(args[0], "name");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[1], "path");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 		ret = sepol_require_not_all(args[2], "context");
+-		if (ret < 0) {
+-			return ret;
+-		}
++		if (ret < 0)
++			return ret;
+ 
+ 		if (!ksu_genfscon(db, args[0], args[1], args[2])) {
+ 			pr_err("sepol: %d failed.\n", header->cmd);
+@@ -510,80 +699,52 @@
+ 	}
+ }
+ 
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+-int handle_sepolicy(void __user *user_data, u64 data_len)
+-{
+-	struct selinux_policy *pol, *old_pol;
+-	struct policydb *db;
+-	struct sepol_batch_cursor cursor;
+-	u8 *payload;
+-	int ret;
++struct sepol_batch_ctx {
++	const u8 *payload;
++	size_t len;
+ 	int success_cmd_count;
+-	u32 cmd_index;
+-
+-	if (!user_data || !data_len) {
+-		return -EINVAL;
+-	}
+-
+-	if (data_len > KSU_SEPOLICY_MAX_BATCH_SIZE) {
+-		return -E2BIG;
+-	}
+-
+-	payload = kvmalloc((size_t)data_len, GFP_KERNEL);
+-	if (!payload) {
+-		return -ENOMEM;
+-	}
+-
+-	if (copy_from_user(payload, user_data, (size_t)data_len)) {
+-		ret = -EFAULT;
+-		goto out_free;
+-	}
+-
+-	if (!getenforce()) {
+-		pr_info("SELinux permissive or disabled when handle policy!\n");
+-	}
+-
+-	mutex_lock(&selinux_state.policy_mutex);
+-
+-	old_pol = rcu_dereference_protected(selinux_state.policy, lockdep_is_held(&selinux_state.policy_mutex));
+-	pol = ksu_dup_sepolicy(old_pol);
+-	if (IS_ERR(pol)) {
+-		ret = PTR_ERR(pol);
+-		pr_err("ksu_dup_sepolicy err: %d\n", ret);
+-		goto out_unlock;
+-	}
+-	db = &pol->policydb;
+-
+-	cursor.cur = payload;
+-	cursor.end = payload + (size_t)data_len;
+-
+-	ret = 0;
+-	success_cmd_count = 0;
+-	cmd_index = 0;
++};
++
++/*
++ * Applies every command of a batch to the (private) policy copy. A malformed
++ * stream aborts the whole batch, a single failing command is only logged and
++ * skipped. Every successfully applied command is fed to the SELinux hide list.
++ */
++static int ksu_apply_sepolicy_batch(struct policydb *db, void *arg)
++{
++	struct sepol_batch_ctx *ctx = arg;
++	struct sepol_batch_cursor cursor = {
++		.cur = ctx->payload,
++		.end = ctx->payload + ctx->len,
++	};
++	u32 cmd_index = 0;
++
++	ctx->success_cmd_count = 0;
++
+ 	while (cursor.cur < cursor.end) {
+ 		struct sepol_data header;
+ 		const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
+ 		int expected_argc;
+ 		u32 arg_index;
++		int ret;
+ 
+ 		ret = sepol_read_cmd_header(&cursor, &header);
+ 		if (ret < 0) {
+ 			pr_err("sepol: failed to read cmd header #%u.\n", cmd_index);
+-			goto out_drop_new_policy;
++			return ret;
+ 		}
+ 
+ 		expected_argc = sepol_expected_argc(header.cmd);
+ 		if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS) {
+-			ret = -EINVAL;
+ 			pr_err("sepol: invalid cmd header #%u.\n", cmd_index);
+-			goto out_drop_new_policy;
++			return -EINVAL;
+ 		}
+ 
+ 		for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
+ 			ret = sepol_read_string(&cursor, &args[arg_index]);
+ 			if (ret < 0) {
+ 				pr_err("sepol: failed to read cmd #%u arg #%u.\n", cmd_index, arg_index);
+-				goto out_drop_new_policy;
++				return ret;
+ 			}
+ 		}
+ 
+@@ -591,105 +752,101 @@
+ 		if (ret < 0) {
+ 			pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+ 		} else {
+-			success_cmd_count++;
++			ctx->success_cmd_count++;
+ 			ksu_add_shit_to_list(header.cmd, args);
+ 		}
++
+ 		cmd_index++;
++		if (!(cmd_index & 0x3ff))
++			cond_resched();
++	}
++
++	return 0;
++}
++
++#ifdef KSU_SELINUX_POLICY_V2
++
++int handle_sepolicy(void __user *user_data, u64 data_len)
++{
++	struct selinux_policy *pol, *old_pol;
++	struct sepol_batch_ctx ctx;
++	u8 *payload;
++	u32 seqno;
++	int ret;
++
++	if (!user_data || !data_len)
++		return -EINVAL;
++
++	if (data_len > KSU_SEPOLICY_MAX_BATCH_SIZE)
++		return -E2BIG;
++
++	payload = kvmalloc((size_t)data_len, GFP_KERNEL);
++	if (!payload)
++		return -ENOMEM;
++
++	if (copy_from_user(payload, user_data, (size_t)data_len)) {
++		ret = -EFAULT;
++		goto out_free;
++	}
++
++	if (!getenforce())
++		pr_info("SELinux permissive or disabled when handle policy!\n");
++
++	ctx.payload = payload;
++	ctx.len = (size_t)data_len;
++	ctx.success_cmd_count = 0;
++
++	mutex_lock(&selinux_state.policy_mutex);
++
++	old_pol = rcu_dereference_protected(selinux_state.policy,
++					    lockdep_is_held(&selinux_state.policy_mutex));
++	if (!old_pol) {
++		ret = -EAGAIN;
++		pr_err("handle_sepolicy: no policy loaded yet\n");
++		mutex_unlock(&selinux_state.policy_mutex);
++		goto out_free;
++	}
++	pol = ksu_dup_sepolicy(old_pol);
++	if (IS_ERR(pol)) {
++		ret = PTR_ERR(pol);
++		pr_err("ksu_dup_sepolicy err: %d\n", ret);
++		mutex_unlock(&selinux_state.policy_mutex);
++		goto out_free;
++	}
++
++	ret = ksu_apply_sepolicy_batch(&pol->policydb, &ctx);
++	if (ret < 0) {
++		ksu_destroy_sepolicy(pol);
++		mutex_unlock(&selinux_state.policy_mutex);
++		goto out_free;
+ 	}
+ 
+ 	pol->latest_granting = old_pol->latest_granting + 1;
++	seqno = pol->latest_granting;
+ 	rcu_assign_pointer(selinux_state.policy, pol);
+ 	synchronize_rcu();
+ 	ksu_destroy_sepolicy(old_pol);
+ 
+-	reset_avc_cache(pol->latest_granting);
+-	ret = success_cmd_count;
+-	goto out_unlock;
+-
+-out_drop_new_policy:
+-	ksu_destroy_sepolicy(pol);
+-out_unlock:
+ 	mutex_unlock(&selinux_state.policy_mutex);
++
++	reset_avc_cache(seqno);
++	ret = ctx.success_cmd_count;
++
+ out_free:
+ 	kvfree(payload);
+-
+ 	return ret;
+ }
+-#else
+-
+-struct handle_sepolicy_args {
+-	void *ctx_success_cmd_count;
+-	void *ctx_payload;
+-	u64 ctx_data_len;
+-};
+-
+-static int handle_sepolicy_fn(void *data)
+-{
+-	struct sepol_batch_cursor cursor;
+-	int ret = 0;
+-	u32 cmd_index = 0;
+-	int success_cmd_count = 0;
+-
+-	struct policydb *db = get_policydb();
+-	struct handle_sepolicy_args *ctx = (struct handle_sepolicy_args *)data;
+-	u8 *payload = (u8 *)ctx->ctx_payload;
+-	u64 data_len = ctx->ctx_data_len;
+-
+-	cursor.cur = payload;
+-	cursor.end = payload + (size_t)data_len;
+-
+-	while (cursor.cur < cursor.end) {
+-		struct sepol_data header;
+-		const char *args[KSU_SEPOLICY_MAX_ARGS] = { 0 };
+-		int expected_argc;
+-		u32 arg_index;
+-
+-		ret = sepol_read_cmd_header(&cursor, &header);
+-		if (ret < 0) {
+-			pr_err("sepol: failed to read cmd header #%u.\n", cmd_index);
+-			goto out;
+-		}
+-
+-		expected_argc = sepol_expected_argc(header.cmd);
+-		if (expected_argc < 0 || expected_argc > KSU_SEPOLICY_MAX_ARGS) {
+-			ret = -EINVAL;
+-			pr_err("sepol: invalid cmd header #%u.\n", cmd_index);
+-			goto out;
+-		}
+-
+-		for (arg_index = 0; arg_index < (u32)expected_argc; arg_index++) {
+-			ret = sepol_read_string(&cursor, &args[arg_index]);
+-			if (ret < 0) {
+-				pr_err("sepol: failed to read cmd #%u arg #%u.\n", cmd_index, arg_index);
+-				goto out;
+-			}
+-		}
+-
+-		ret = apply_one_sepolicy_cmd(db, &header, args);
+-		if (ret < 0)
+-			pr_err("sepol: cmd #%u failed, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+-		else {
+-			pr_info("sepol: cmd #%u success, cmd=%u subcmd=%u.\n", cmd_index, header.cmd, header.subcmd);
+-			success_cmd_count++;
+-			ksu_add_shit_to_list(header.cmd, args);
+-		}
+-
+-		cmd_index++;
+-	}
+-
+-out:
+-	*(int *)(ctx->ctx_success_cmd_count) = success_cmd_count;
+-	return ret;
+-}
++
++#else /* KSU_SELINUX_POLICY_V2 */
+ 
+ int handle_sepolicy(void __user *user_data, u64 data_len)
+ {
++	struct sepol_batch_ctx ctx;
+ 	u8 *payload;
+-	int ret = 0;
+-	int success_cmd_count = 0;
++	int ret;
+ 
+ 	if (!user_data || !data_len)
+-    		return -EINVAL;
++		return -EINVAL;
+ 
+ 	if (data_len > KSU_SEPOLICY_MAX_BATCH_SIZE)
+ 		return -E2BIG;
+@@ -703,45 +860,28 @@
+ 		goto out_free;
+ 	}
+ 
+-	if (!getenforce()) {
++	if (!getenforce())
+ 		pr_info("SELinux permissive or disabled when handle policy!\n");
+-	}
+-
+-	struct handle_sepolicy_args ctx = { 0 };
+-	ctx.ctx_success_cmd_count = (void *)&success_cmd_count;
+-	ctx.ctx_payload = (void *)payload;
+-	ctx.ctx_data_len = (u64)data_len;
+-
+-	// HACK: lock is held with preempt enabled!
+-	rwlock_t *lock = get_policy_rwlock();
+-	if (!lock)
+-		goto do_stop_machine;
+-
+-	set_cpus_allowed_ptr(current, cpumask_of(raw_smp_processor_id()));
+-	write_lock(lock);
+-	preempt_enable();
+-
+-	ret = handle_sepolicy_fn((void *)&ctx);
+-
+-	preempt_disable();
+-	write_unlock(lock);
+-	set_cpus_allowed_ptr(current, cpu_online_mask);
+-	goto out_done;
+-
+-do_stop_machine:
+-	ret = stop_machine(handle_sepolicy_fn, (void *)&ctx, NULL);
+-
+-out_done:
+-	if (ret)
+-		goto out_free;
+-
+-	smp_mb();
+-	reset_avc_cache(get_latest_granting_inc());
+-	ret = success_cmd_count;
++
++	ctx.payload = payload;
++	ctx.len = (size_t)data_len;
++	ctx.success_cmd_count = 0;
++
++	ret = ksu_replace_policy_legacy(ksu_apply_sepolicy_batch, &ctx);
++	if (ret == 0)
++		ret = ctx.success_cmd_count;
+ 
+ out_free:
+ 	kvfree(payload);
+-
+ 	return ret;
+ }
++
++#endif /* KSU_SELINUX_POLICY_V2 */
++
++/* Called once from our init kthread, before any supercall can apply rules. */
++void ksu_selinux_policy_init(void)
++{
++#if !defined(KSU_COMPAT_USE_SELINUX_STATE) && !defined(KSU_SELINUX_POLICY_V2)
++	ksu_resolve_legacy_policy_symbols();
+ #endif
++}
+diff --git a/kernel/selinux/selinux.c b/kernel/selinux/selinux.c
+--- a/kernel/selinux/selinux.c
++++ b/kernel/selinux/selinux.c
+@@ -10,7 +10,7 @@
+  * string-based comparison path; this degrades performance only and
+  * does not cause a functional failure.
+  */
+-static u32 cached_su_sid __read_mostly = 0;
++u32 ksu_su_sid __read_mostly = 0;
+ static u32 cached_zygote_sid __read_mostly = 0;
+ static u32 cached_init_sid __read_mostly = 0;
+ static u32 cached_adbd_sid __read_mostly = 0;
+@@ -18,7 +18,7 @@
+ 
+ static int transive_to_domain(const char *domain, struct cred *cred, bool clear_exec_sid)
+ {
+-	u32 sid;
++	u32 sid = 0;
+ 	int error;
+ #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+ 	struct task_security_struct *tsec;
+@@ -31,11 +31,9 @@
+ 		return -1;
+ 	}
+ 	error = security_secctx_to_secid(domain, strlen(domain), &sid);
+-	if (error) {
+-		pr_info("security_secctx_to_secid %s -> sid: %d, error: %d\n", domain,
+-				sid, error);
+-	}
+-	if (!error) {
++	if (error)
++		pr_err("security_secctx_to_secid %s -> sid: %d, error: %d\n", domain, sid, error);
++	else {
+ 		tsec->sid = sid;
+ 		tsec->create_sid = 0;
+ 		tsec->keycreate_sid = 0;
+@@ -126,12 +124,12 @@
+ {
+ 	int err;
+ 
+-	err = security_secctx_to_secid(KERNEL_SU_CONTEXT, strlen(KERNEL_SU_CONTEXT), &cached_su_sid);
++	err = security_secctx_to_secid(KERNEL_SU_CONTEXT, strlen(KERNEL_SU_CONTEXT), &ksu_su_sid);
+ 	if (err) {
+ 		pr_warn("Failed to cache kernel su domain SID: %d\n", err);
+-		cached_su_sid = 0;
+-	} else {
+-		pr_info("Cached su SID: %u\n", cached_su_sid);
++		ksu_su_sid = 0;
++	} else {
++		pr_info("Cached su SID: %u\n", ksu_su_sid);
+ 	}
+ 
+ 	err = security_secctx_to_secid(ZYGOTE_CONTEXT, strlen(ZYGOTE_CONTEXT), &cached_zygote_sid);
+@@ -196,14 +194,19 @@
+ 	if (__security_secid_to_secctx(tsec->sid, &ctx)) {
+ 		return false;
+ 	}
+-	result = strncmp(fallback_context, ctx.context, ctx.len) == 0;
++	if (!ctx.context || !ctx.len) {
++		__security_release_secctx(&ctx);
++		return false;
++	}
++	result = ctx.len == strlen(fallback_context) &&
++		 strncmp(fallback_context, ctx.context, ctx.len) == 0;
+ 	__security_release_secctx(&ctx);
+ 	return result;
+ }
+ 
+ bool is_task_ksu_domain(const struct cred *cred)
+ {
+-	return is_sid_match(cred, cached_su_sid, KERNEL_SU_CONTEXT);
++	return is_sid_match(cred, ksu_su_sid, KERNEL_SU_CONTEXT);
+ }
+ 
+ bool is_ksu_domain(void)
+diff --git a/kernel/selinux/selinux.h b/kernel/selinux/selinux.h
+--- a/kernel/selinux/selinux.h
++++ b/kernel/selinux/selinux.h
+@@ -41,6 +41,10 @@
+ void escape_to_root_for_adb_root();
+ 
+ extern u32 ksu_file_sid;
++extern u32 ksu_su_sid;
++
++/* Resolves legacy policy_rwlock/latest_granting symbols (no-op on 5.10+). */
++void ksu_selinux_policy_init(void);
+ 
+ #ifdef CONFIG_KSU_SUSFS
+ extern u32 susfs_ksu_sid;
+diff --git a/kernel/selinux/sepolicy.c b/kernel/selinux/sepolicy.c
+--- a/kernel/selinux/sepolicy.c
++++ b/kernel/selinux/sepolicy.c
+@@ -1248,7 +1248,6 @@
+ 	return add_genfscon(db, fs_name, path, ctx);
+ }
+ 
+-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)
+ #include "ss/avtab.h"
+ #include "ss/constraint.h"
+ #include "ss/ebitmap.h"
+@@ -1256,6 +1255,155 @@
+ #include "ss/policydb.h"
+ #include "ss/services.h"
+ 
++void ksu_policydb_destroy(struct policydb *db)
++{
++	policydb_destroy(db);
++}
++
++/*
++ * Policy file header layout:
++ *   u32 magic, u32 strlen("SE Linux"), char[8] "SE Linux", u32 policyvers,
++ *   u32 config.
++ * so the config word lives at byte 8 + 8 + 4 = 20.
++ */
++#define KSU_POLICY_CONFIG_OFFSET	20
++#define KSU_POLICY_MIN_SIZE		(4U * 1024U)
++#define KSU_POLICY_MAX_SIZE		(32U * 1024U * 1024U)
++#define KSU_POLICY_GROW_RETRIES		4
++
++#if defined(POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE) || defined(POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH)
++/*
++ * https://android.googlesource.com/kernel/common/+/35a7845718734ae638b85b420534cb859498dab6%5E%21
++ * https://android-review.googlesource.com/c/kernel/common/+/3009995/11/security/selinux/ss/policydb.c
++ *
++ * These kernels do not round trip the android specific config bits through
++ * policydb_write(), so restore the ones the live policy had.
++ */
++static void ksu_policydb_fixup_config(struct policydb *db, void *data, size_t serialized)
++{
++	u32 *config;
++
++	if (serialized < KSU_POLICY_CONFIG_OFFSET + sizeof(u32))
++		return;
++
++	config = (u32 *)((unsigned long)data + KSU_POLICY_CONFIG_OFFSET);
++
++#ifdef POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE
++	if (db->android_netlink_route)
++		*config |= POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE;
++#endif
++#ifdef POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH
++	if (db->android_netlink_getneigh)
++		*config |= POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH;
++#endif
++}
++#else
++static void ksu_policydb_fixup_config(struct policydb *db, void *data, size_t serialized)
++{
++}
++#endif
++
++size_t ksu_policydb_size_hint(const struct policydb *db)
++{
++	size_t len;
++
++	/*
++	 * Some device policy db seems not marking type itself in
++	 * type_attr_map_array: policydb_read() adds each type to its own
++	 * attribute map, so db->len can be smaller than what re-serializing
++	 * the policy needs. Keep one ebitmap entry per type as slack.
++	 */
++	len = (size_t)db->len + (size_t)db->p_types.nprim * (sizeof(u32) + sizeof(u64));
++
++	if (len < KSU_POLICY_MIN_SIZE)
++		len = KSU_POLICY_MIN_SIZE;
++
++	return len;
++}
++
++/*
++ * Serialize db into a caller provided buffer.
++ *
++ * Deliberately allocation free: the legacy install path runs this with
++ * policy_rwlock held for reading, where sleeping (kvmalloc/policydb_read) is
++ * illegal. Returns the number of bytes written, or -EINVAL if the buffer is
++ * too small.
++ */
++ssize_t ksu_policydb_serialize(struct policydb *db, void *buf, size_t buflen)
++{
++	struct policy_file fp;
++	size_t serialized;
++
++	fp.data = buf;
++	fp.len = buflen;
++
++	if (policydb_write(db, &fp))
++		return -EINVAL;
++
++	serialized = buflen - fp.len;
++	ksu_policydb_fixup_config(db, buf, serialized);
++
++	return (ssize_t)serialized;
++}
++
++/*
++ * Parse a serialized policy into an already zeroed policydb. Allocates the
++ * policy tables, so it must run in process context without any lock held.
++ */
++int ksu_policydb_parse(struct policydb *db, void *buf, size_t len)
++{
++	struct policy_file fp;
++
++	fp.data = buf;
++	fp.len = len;
++
++	if (policydb_read(db, &fp))
++		return -EINVAL;
++
++	db->len = (unsigned int)len;
++
++	return 0;
++}
++
++/*
++ * Deep copy for callers that can guarantee the source db cannot be swapped
++ * while it is read (5.10+ keeps the policy alive through RCU).
++ */
++int ksu_policydb_dup(struct policydb *old_db, struct policydb *new_db)
++{
++	ssize_t serialized;
++	size_t cap;
++	void *data;
++	int grow, ret;
++
++	cap = ksu_policydb_size_hint(old_db);
++
++	for (grow = 0; grow < KSU_POLICY_GROW_RETRIES; grow++) {
++		data = kvmalloc(cap, GFP_KERNEL);
++		if (!data)
++			return -ENOMEM;
++
++		serialized = ksu_policydb_serialize(old_db, data, cap);
++		if (serialized >= 0) {
++			ret = ksu_policydb_parse(new_db, data, (size_t)serialized);
++			kvfree(data);
++			return ret;
++		}
++
++		kvfree(data);
++
++		if (cap > KSU_POLICY_MAX_SIZE / 2)
++			break;
++		cap *= 2;
++	}
++
++	pr_err("sepolicy: policydb_write: buffer too small\n");
++
++	return -EINVAL;
++}
++
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0) || defined(KSU_COMPAT_HAS_SELINUX_POLICY_STRUCT)
++
+ void ksu_destroy_sepolicy(struct selinux_policy *pol)
+ {
+ 	policydb_destroy(&pol->policydb);
+@@ -1264,85 +1412,21 @@
+ 
+ struct selinux_policy *ksu_dup_sepolicy(struct selinux_policy *old_pol)
+ {
++	struct selinux_policy *new_pol;
+ 	int ret;
+-	size_t len;
+-	struct selinux_policy *new_pol;
+-	void *data;
+-	struct policy_file fp;
+-
+-	// Some device policy db seems not marking type itself in type_attr_map_array
+-	// policydb_read() adds each type to its own attribute map, so old_pol->policydb.len may be smaller
+-	// preserve one ebitmap entry for this condition to avoid trigger -EINVAL
+-	len = old_pol->policydb.len + (size_t)old_pol->policydb.p_types.nprim * (sizeof(u32) + sizeof(u64));
+-
+-	data = vmalloc(len);
+-	if (!data) {
+-		pr_err("alloc policy buffer len %zu\n", len);
+-		ret = -ENOMEM;
+-		goto out_free_data;
+-	}
+-
+-	fp.data = data;
+-	fp.len = len;
+-
+-	ret = policydb_write(&old_pol->policydb, &fp);
+-	if (ret) {
+-		pr_err("sepolicy: policydb_write: %d\n", ret);
+-		goto out_free_data;
+-	}
+-	len -= fp.len;
+-	// https://android.googlesource.com/kernel/common/+/35a7845718734ae638b85b420534cb859498dab6%5E%21
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
+-	// https://android-review.googlesource.com/c/kernel/common/+/3009995/11/security/selinux/ss/policydb.c
+-	// fixup config
+-	// 4*2+8+4
+-	static const size_t kConfigOff = 20;
+-	if (len >= kConfigOff + sizeof(u32)) {
+-		u32 *config_ptr = (u32 *)((unsigned long)data + kConfigOff);
+-		pr_info("old config: %u\n", *config_ptr);
+-	#ifdef POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE
+-		if (old_pol->policydb.android_netlink_route) {
+-			pr_info("adding POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE\n");
+-			*config_ptr |= POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE;
+-		}
+-	#endif
+-	#ifdef POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH
+-		if (old_pol->policydb.android_netlink_getneigh) {
+-			pr_info("adding POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH\n");
+-			*config_ptr |= POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH;
+-		}
+-	#endif
+-		pr_info("new config: %u\n", *config_ptr);
+-	}
+-#endif
++
+ 	new_pol = kmemdup(old_pol, sizeof(*old_pol), GFP_KERNEL);
+-	if (!new_pol) {
+-		ret = -ENOMEM;
+-		pr_err("sepolicy: dup old pol\n");
+-		goto out_free_data;
+-	}
++	if (!new_pol)
++		return ERR_PTR(-ENOMEM);
++
+ 	memset(&new_pol->policydb, 0, sizeof(new_pol->policydb));
+ 
+-	// rewind fp
+-	fp.data = data;
+-	fp.len = len;
+-
+-	ret = policydb_read(&new_pol->policydb, &fp);
+-	if (ret) {
+-		pr_err("sepolicy: policydb_read: %d\n", ret);
+-		goto out_free_policydb;
+-	}
+-	new_pol->policydb.len = len;
+-	kvfree(data);
++	ret = ksu_policydb_dup(&old_pol->policydb, &new_pol->policydb);
++	if (ret < 0) {
++		kfree(new_pol);
++		return ERR_PTR(ret);
++	}
+ 
+ 	return new_pol;
+-
+-out_free_policydb:
+-	kfree(new_pol);
+-
+-out_free_data:
+-	kvfree(data);
+-
+-	return ERR_PTR(ret);
+-}
+-#endif
++}
++#endif
