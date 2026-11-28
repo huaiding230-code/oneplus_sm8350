@@ -1,0 +1,78 @@
+diff --git a/kernel/extension/dynamic_sig_fallback.c b/kernel/extension/dynamic_sig_fallback.c
+index 6c673a8..30af204 100644
+--- a/kernel/extension/dynamic_sig_fallback.c
++++ b/kernel/extension/dynamic_sig_fallback.c
+@@ -73,8 +73,9 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
+     struct fb_dir_ctx *c = container_of(ctx, struct fb_dir_ctx, ctx);
+     char dirpath[DATA_PATH_LEN];
+ 
+-    if (!strncmp(name, "..", namelen) || !strncmp(name, ".", namelen))
+-        return FILLDIR_ACTOR_CONTINUE; // Skip "." and ".."
++    if ((namelen == 1 && name[0] == '.') ||
++        (namelen == 2 && name[0] == '.' && name[1] == '.'))
++        return FILLDIR_ACTOR_CONTINUE; // Skip exactly "." and ".."
+ 
+     if (d_type == DT_DIR && namelen >= 8 && !strncmp(name, "vmdl", 4) && !strncmp(name + namelen - 4, ".tmp", 4)) {
+         pr_info("sig_fallback: skipping staging dir: %.*s\n", namelen, name);
+@@ -86,13 +87,13 @@ static FILLDIR_RETURN_TYPE fb_actor(FB_ACTOR_CTX_ARG, const char *name, int name
+         return FILLDIR_ACTOR_CONTINUE;
+     }
+ 
+-    if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
++    if (namelen == 8 && !memcmp(name, "base.apk", 8)) {
+         if (!c->matched && is_manager_apk(dirpath))
+             c->matched = true;
+         return FILLDIR_ACTOR_CONTINUE;
+     }
+ 
+-    if (d_type == DT_DIR && c->depth > 0) {
++    if ((d_type == DT_DIR || d_type == DT_UNKNOWN) && c->depth > 0) {
+         struct fb_path *p = kzalloc(sizeof(*p), GFP_KERNEL);
+ 
+         if (!p) {
+diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
+index eeabb73..2d9de88 100644
+--- a/kernel/feature/selinux_hide.c
++++ b/kernel/feature/selinux_hide.c
+@@ -332,6 +332,129 @@ extern struct selinux_state selinux_state;
+ #endif
+ 
+ static struct page *ksu_fake_status_page __read_mostly = nullptr;
++#ifdef CONFIG_KSU_SUSFS
++bool ksu_selinux_hide_running __read_mostly = false;
++struct page *fake_status __read_mostly = NULL;
++
++#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
++/*
++ * Linux 5.4 keeps SELinux policy state in selinux_state.ss.  The OnePlus
++ * kernel patch redirects app-UID selinuxfs reads to this immutable view,
++ * while policy updates continue against the live state.
++ */
++#include <linux/user_namespace.h>
++#include <linux/vmalloc.h>
++#include <security.h>
++#include <ss/policydb.h>
++#include <ss/services.h>
++
++struct selinux_state fake_state;
++static struct selinux_ss fake_ss;
++static bool legacy_snapshot_ready;
++static DEFINE_MUTEX(legacy_snapshot_mutex);
++
++static void ksu_legacy_update_running(void)
++{
++    bool ready = smp_load_acquire(&legacy_snapshot_ready) &&
++        READ_ONCE(fake_ss.status_page);
++
++    WRITE_ONCE(ksu_selinux_hide_running,
++        ready && READ_ONCE(ksu_selinux_hide_enabled));
++}
++
++int ksu_selinux_hide_snapshot_legacy(void)
++{
++    struct selinux_ss *live_ss;
++    struct policy_file fp;
++    void *data = NULL;
++    size_t len = 0;
++    u32 generation;
++    int attempt
