@@ -5551,31 +5551,6 @@ index 0000000000000000000000000000000000000000..6bdd94cff4e2ae3e0d7da9d98fc96caf
 +
 +#endif
 
-diff --git a/include/linux/ksu_selinux_hide.h b/include/linux/ksu_selinux_hide.h
-new file mode 100644
-index 0000000000000000000000000000000000000000..974f90edd3e099377e9cd1a170cc497e67a3e3bb
---- /dev/null
-+++ b/include/linux/ksu_selinux_hide.h
-@@ -0,0 +1,18 @@
-+#ifndef _LINUX_KSU_SELINUX_HIDE_H
-+#define _LINUX_KSU_SELINUX_HIDE_H
-+
-+#include <linux/version.h>
-+
-+struct selinux_state;
-+
-+#if defined(CONFIG_KSU) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+struct selinux_state *ksu_selinux_hide_select_state(struct selinux_state *state);
-+#else
-+static inline struct selinux_state *
-+ksu_selinux_hide_select_state(struct selinux_state *state)
-+{
-+	return state;
-+}
-+#endif
-+
-+#endif /* _LINUX_KSU_SELINUX_HIDE_H */
-
 diff --git a/include/linux/susfs.h b/include/linux/susfs.h
 new file mode 100644
 --- /dev/null
@@ -7658,12 +7633,11 @@ diff --git a/security/selinux/hooks.c b/security/selinux/hooks.c
 index e31b72a674e0e3663e7fdb26b7b33313595de7b3..aade57b265123be5b4e793442ce49b64b82efb8c 100644
 --- a/security/selinux/hooks.c
 +++ b/security/selinux/hooks.c
-@@ -109,6 +109,12 @@ struct selinux_state selinux_state __rticdata;
+@@ -109,6 +109,11 @@ struct selinux_state selinux_state __rticdata;
  struct selinux_state selinux_state;
  #endif
  
 +#ifdef CONFIG_KSU_SUSFS
-+extern struct selinux_state fake_state;
 +extern bool ksu_selinux_hide_running __read_mostly;
 +extern int susfs_security_context_to_sid(struct selinux_state *, const char *, u32, u32 *, gfp_t);
 +#endif
@@ -7671,7 +7645,7 @@ index e31b72a674e0e3663e7fdb26b7b33313595de7b3..aade57b265123be5b4e793442ce49b64
  /* SECMARK reference count */
  static atomic_t selinux_secmark_refcount = ATOMIC_INIT(0);
  
-@@ -6474,6 +6480,11 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
+@@ -6474,6 +6479,11 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
  	u32 mysid = current_sid(), sid = 0, ptsid;
  	int error;
  	char *str = value;
@@ -7683,20 +7657,15 @@ index e31b72a674e0e3663e7fdb26b7b33313595de7b3..aade57b265123be5b4e793442ce49b64
  
  	/*
  	 * Basic control over ability to set these attributes at all.
-@@ -6509,6 +6520,17 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
+@@ -6509,6 +6519,12 @@ static int selinux_setprocattr(const char *name, void *value, size_t size)
  			str[size-1] = 0;
  			size--;
  		}
 +#ifdef CONFIG_KSU_SUSFS
-+		if (should_check_current) {
-+			u32 tmp_sid = 0;
-+			int fake_error = security_context_to_sid(&fake_state, value, size,
-+							 &tmp_sid, GFP_KERNEL);
-+			if (fake_error)
-+				return fake_error;
++		if (should_check_current)
 +			error = susfs_security_context_to_sid(&selinux_state, value,
 +							     size, &sid, GFP_KERNEL);
-+		} else
++		else
 +#endif
  		error = security_context_to_sid(&selinux_state, value, size,
  						&sid, GFP_KERNEL);
@@ -7706,15 +7675,7 @@ diff --git a/security/selinux/selinuxfs.c b/security/selinux/selinuxfs.c
 index ee2bcca111005d643202d0855896984eaf41a63e..189405bf31ba5adbb7e7a230d3afa5fba59fba44 100644
 --- a/security/selinux/selinuxfs.c
 +++ b/security/selinux/selinuxfs.c
-@@ -13,6 +13,7 @@
-  */
- 
- #include <linux/kernel.h>
-+#include <linux/ksu_selinux_hide.h>
- #include <linux/pagemap.h>
- #include <linux/slab.h>
- #include <linux/vmalloc.h>
-@@ -41,6 +42,15 @@
+@@ -41,6 +41,15 @@
  #include "objsec.h"
  #include "conditional.h"
  
@@ -7730,79 +7691,7 @@ index ee2bcca111005d643202d0855896984eaf41a63e..189405bf31ba5adbb7e7a230d3afa5fb
  enum sel_inos {
  	SEL_ROOT_INO = 2,
  	SEL_LOAD,	/* load policy */
-@@ -126,7 +136,7 @@ static ssize_t sel_read_enforce(struct file *filp, char __user *buf,
- 	ssize_t length;
- 
- 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d",
--			   enforcing_enabled(fsi->state));
-+			   enforcing_enabled(ksu_selinux_hide_select_state(fsi->state)));
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
- }
- 
-@@ -136,7 +146,7 @@ static ssize_t sel_write_enforce(struct file *file, const char __user *buf,
- 
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *page = NULL;
- 	ssize_t length;
- 	int old_value, new_value;
-@@ -199,7 +209,7 @@ static ssize_t sel_read_handle_unknown(struct file *filp, char __user *buf,
- 					size_t count, loff_t *ppos)
- {
- 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char tmpbuf[TMPBUFLEN];
- 	ssize_t length;
- 	ino_t ino = file_inode(filp)->i_ino;
-@@ -219,7 +229,7 @@ static const struct file_operations sel_handle_unknown_ops = {
- static int sel_open_handle_status(struct inode *inode, struct file *filp)
- {
- 	struct selinux_fs_info *fsi = file_inode(filp)->i_sb->s_fs_info;
--	struct page    *status = selinux_kernel_status_page(fsi->state);
-+	struct page    *status = selinux_kernel_status_page(ksu_selinux_hide_select_state(fsi->state));
- 
- 	if (!status)
- 		return -ENOMEM;
-@@ -304,7 +314,7 @@ static ssize_t sel_write_disable(struct file *file, const char __user *buf,
- 		goto out;
- 
- 	if (new_value) {
--		enforcing = enforcing_enabled(fsi->state);
-+		enforcing = enforcing_enabled(ksu_selinux_hide_select_state(fsi->state));
- 		length = selinux_disable(fsi->state);
- 		if (length)
- 			goto out;
-@@ -362,7 +372,7 @@ static ssize_t sel_read_mls(struct file *filp, char __user *buf,
- 	ssize_t length;
- 
- 	length = scnprintf(tmpbuf, TMPBUFLEN, "%d",
--			   security_mls_enabled(fsi->state));
-+			   security_mls_enabled(ksu_selinux_hide_select_state(fsi->state)));
- 	return simple_read_from_buffer(buf, count, ppos, tmpbuf, length);
- }
- 
-@@ -379,7 +389,7 @@ struct policy_load_memory {
- static int sel_open_policy(struct inode *inode, struct file *filp)
- {
- 	struct selinux_fs_info *fsi = inode->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	struct policy_load_memory *plm = NULL;
- 	int rc;
- 
-@@ -601,7 +611,7 @@ static const struct file_operations sel_load_ops = {
- static ssize_t sel_write_context(struct file *file, char *buf, size_t size)
- {
- 	struct selinux_fs_info *fsi = file_inode(file)->i_sb->s_fs_info;
--	struct selinux_state *state = fsi->state;
-+	struct selinux_state *state = ksu_selinux_hide_select_state(fsi->state);
- 	char *canon = NULL;
- 	u32 sid, len;
- 	ssize_t length;
-@@ -634,6 +644,43 @@ out:
+@@ -634,6 +643,43 @@ out:
  	return length;
  }
  
@@ -7846,7 +7735,7 @@ index ee2bcca111005d643202d0855896984eaf41a63e..189405bf31ba5adbb7e7a230d3afa5fb
  static ssize_t sel_read_checkreqprot(struct file *filp, char __user *buf,
  				     size_t count, loff_t *ppos)
  {
-@@ -776,12 +823,20 @@ static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
+@@ -776,12 +822,20 @@ static ssize_t sel_write_user(struct file *file, char *buf, size_t size);
  static ssize_t sel_write_member(struct file *file, char *buf, size_t size);
  
  static ssize_t (*const write_op[])(struct file *, char *, size_t) = {
@@ -7867,7 +7756,7 @@ index ee2bcca111005d643202d0855896984eaf41a63e..189405bf31ba5adbb7e7a230d3afa5fb
  };
  
  static ssize_t selinux_transaction_write(struct file *file, const char __user *buf, size_t size, loff_t *pos)
-@@ -869,6 +924,54 @@ out:
+@@ -869,6 +923,54 @@ out:
  	return length;
  }
  
@@ -7927,15 +7816,7 @@ diff --git a/security/selinux/ss/services.c b/security/selinux/ss/services.c
 index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f0732dd78a9 100644
 --- a/security/selinux/ss/services.c
 +++ b/security/selinux/ss/services.c
-@@ -47,6 +47,7 @@
- #include <linux/sched.h>
- #include <linux/audit.h>
- #include <linux/mutex.h>
-+#include <linux/version.h>
- #include <linux/vmalloc.h>
- #include <net/netlabel.h>
- 
-@@ -66,6 +67,16 @@
+@@ -66,6 +66,12 @@
  #include "ebitmap.h"
  #include "audit.h"
  
@@ -7943,16 +7824,12 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
 +extern bool susfs_is_current_ksu_domain(void);
 +extern bool susfs_is_sus_type_rcu(u32 type_value);
 +extern void susfs_spoof_avd_allowed_rcu(u32 s_type, u32 t_type, u32 c_type, u32 *avd_allowed);
-+#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+/* SukiSU's Linux 5.4 SELinux-hide snapshot owns its original sidtab/map. */
-+extern struct selinux_state fake_state;
-+#endif
 +#endif
 +
  /* Policy capability names */
  const char *selinux_policycap_names[__POLICYDB_CAPABILITY_MAX] = {
  	"network_peer_controls",
-@@ -1195,4 +1206,8 @@ void security_compute_av_user(struct selinux_state *state,
+@@ -1195,4 +1201,8 @@ void security_compute_av_user(struct selinux_state *state,
  	context_struct_compute_av(policydb, scontext, tcontext, tclass, avd,
  				  NULL);
 +#ifdef CONFIG_KSU_SUSFS
@@ -7961,7 +7838,7 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
 +#endif
   out:
  	read_unlock(&state->ss->policy_rwlock);
-@@ -1506,6 +1521,88 @@ static int context_struct_to_sid(struct selinux_state *state,
+@@ -1506,6 +1516,88 @@ static int context_struct_to_sid(struct selinux_state *state,
  	return sidtab_context_to_sid(sidtab, context, sid);
  }
  
@@ -8050,7 +7927,7 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
  static int security_context_to_sid_core(struct selinux_state *state,
  					const char *scontext, u32 scontext_len,
  					u32 *sid, u32 def_sid, gfp_t gfp_flags,
-@@ -2276,14 +2373,41 @@ int security_load_policy(struct selinux_state *state, void *data, size_t len)
+@@ -2276,12 +2368,17 @@ int security_load_policy(struct selinux_state *state, void *data, size_t len)
  	oldmapping = state->ss->map.mapping;
  	state->ss->map.mapping = newmap.mapping;
  	state->ss->map.size = newmap.size;
@@ -8062,34 +7939,10 @@ index 2d41602b60d835218f1544987d4d0d00ef6e578e..5512fd2537fa048b1af7cf19e8668f07
  	seqno = ++state->ss->latest_granting;
  	write_unlock_irq(&state->ss->policy_rwlock);
  
--	/* Free the old policydb and SID table. */
-+	/* Free the old policydb and release old policy resources. */
  	policydb_destroy(oldpolicydb);
-+#if defined(CONFIG_KSU_SUSFS) && LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)
-+	if (fake_state.ss && fake_state.ss->sidtab == oldsidtab) {
-+		unsigned long flags;
-+
-+		/*
-+		 * The 5.4 SukiSU SELinux-hide view keeps this old SID table.
-+		 * sidtab_convert() leaves ->convert pointing to the caller's
-+		 * stack convert_params, so detach that live-conversion hook
-+		 * before security_load_policy() returns.
-+		 */
-+		spin_lock_irqsave(&oldsidtab->lock, flags);
-+		oldsidtab->convert = NULL;
-+		spin_unlock_irqrestore(&oldsidtab->lock, flags);
-+	} else {
-+		sidtab_destroy(oldsidtab);
-+		kfree(oldsidtab);
-+	}
-+	/* fake_ss.map is a shallow copy and still needs the old mapping. */
-+	if (!fake_state.ss || fake_state.ss->map.mapping != oldmapping)
-+		kfree(oldmapping);
-+#else
  	sidtab_destroy(oldsidtab);
  	kfree(oldsidtab);
- 	kfree(oldmapping);
-+#endif
+
  
  	avc_ss_reset(state->avc, seqno);
  	selnl_notify_policyload(seqno);
