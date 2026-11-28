@@ -8,8 +8,6 @@ on:
     paths:
       - 'lemonadep.kernel-new.patch'
       - 'lemonadep.sukisu-new.patch'
-      - 'lemonadep-ipa-pm-optional-callback.patch'
-      - 'lemonadep-glink-qrtr-wake-diagnostic.patch'
       - '.github/workflows/lemonadep.builtin.full.new.yml'
       - '.github/workflows/preflight-builtin-new.yml'
 
@@ -57,14 +55,10 @@ jobs:
 
           KERNEL_PATCH="${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
           SUKISU_PATCH="${GITHUB_WORKSPACE}/lemonadep.sukisu-new.patch"
-          IPA_PM_PATCH="${GITHUB_WORKSPACE}/lemonadep-ipa-pm-optional-callback.patch"
-          GLINK_QRTR_PATCH="${GITHUB_WORKSPACE}/lemonadep-glink-qrtr-wake-diagnostic.patch"
           BUILD_WORKFLOW="${GITHUB_WORKSPACE}/.github/workflows/lemonadep.builtin.full.new.yml"
 
           test -s "$KERNEL_PATCH"
           test -s "$SUKISU_PATCH"
-          test -s "$IPA_PM_PATCH"
-          test -s "$GLINK_QRTR_PATCH"
           test -s "$BUILD_WORKFLOW"
           test -f "${GITHUB_WORKSPACE}/kernel_source/arch/arm64/configs/vendor/lahaina-qgki_defconfig"
 
@@ -134,12 +128,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          for name in (
-              "lemonadep.kernel-new.patch",
-              "lemonadep.sukisu-new.patch",
-              "lemonadep-ipa-pm-optional-callback.patch",
-              "lemonadep-glink-qrtr-wake-diagnostic.patch",
-          ):
+          for name in ("lemonadep.kernel-new.patch", "lemonadep.sukisu-new.patch"):
               data = Path(name).read_bytes()
               if not data:
                   raise SystemExit(f"ERROR: {name} is empty")
@@ -164,33 +153,6 @@ jobs:
           git -c core.whitespace=cr-at-eol diff --check
           grep -Fqx 'obj-$(CONFIG_KSU) += kernelsu/' drivers/Makefile
           echo "KERNEL_PATCH_PREFLIGHT=PASS"
-
-      - name: Strictly dry-run and apply the two standalone kernel patches
-        run: |
-          set -euo pipefail
-          cd "${GITHUB_WORKSPACE}/kernel_source"
-
-          for patch_file in \
-            lemonadep-ipa-pm-optional-callback.patch \
-            lemonadep-glink-qrtr-wake-diagnostic.patch; do
-            test -s "${GITHUB_WORKSPACE}/${patch_file}"
-            echo "Strict dry-run: ${patch_file}"
-            patch --dry-run --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/${patch_file}"
-            echo "Apply: ${patch_file}"
-            patch --batch --forward --fuzz=0 -p1 < "${GITHUB_WORKSPACE}/${patch_file}"
-          done
-
-          git -c core.whitespace=cr-at-eol diff --check
-          if grep -Fq 'IPA_PM_ERR_RL("client has no callback")' techpack/dataipa/drivers/platform/msm/ipa/ipa_v3/ipa_pm.c; then
-            echo "::error::Optional IPA PM callback warning remains after patch application."
-            exit 1
-          fi
-          grep -Fq 'GLINK_IRQ_TRACE' drivers/rpmsg/qcom_glink_native.c
-          grep -Fq 'GLINK_RX_TRACE' drivers/rpmsg/qcom_glink_native.c
-          grep -Fq 'QRTR_WAKE_TRACE' net/qrtr/qrtr.c
-          grep -Fq 'pm_record_wakeup_irq' drivers/base/power/wakeup.c
-          echo "IPA_PM_PATCH_PREFLIGHT=PASS"
-          echo "GLINK_QRTR_DIAGNOSTIC_PATCH_PREFLIGHT=PASS"
 
       - name: Wire SukiSU exactly as the full build workflow does
         run: |
