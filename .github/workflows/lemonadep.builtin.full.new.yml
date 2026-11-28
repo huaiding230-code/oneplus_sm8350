@@ -54,8 +54,6 @@ jobs:
         run: |
           cd kernel_source
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep.kernel-new.patch"
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep-ipa-pm-optional-callback.patch"
-          patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep-glink-qrtr-wake-diagnostic.patch"
       # 6. 使用固定的 SukiSU builtin 提交，避免上游分支移动导致补丁失配。
       #    预检与正式构建都固定到 caa5113efbdc4aa56eb65bdde2aeabd83cd43a52。
       - name: "6. Integrate SukiSU"
