@@ -458,3 +458,106 @@ index a6d606a..0cc4695 100644
  		if (copy_to_user((void __user *)arg4, &fd, sizeof(fd))) {
  			pr_err("install ksu fd reply err\n");
  			ksu_close_fd(fd);
+
+diff --git a/kernel/include/util.h b/kernel/include/util.h
+index cb3a4900..b60f2a3d 100644
+--- a/kernel/include/util.h
++++ b/kernel/include/util.h
+@@ -147,4 +147,15 @@ static inline struct file *ksu_filp_open_nonotify(const char *path, int flags)
+ 	return f;
+ }
+ 
++/*
++ * avc_has_perm() carried a struct selinux_state argument from 4.17 until 6.4.
++ * KSU_COMPAT_HAS_SELINUX_STATE is probed from the target kernel's security.h,
++ * so vendor trees that kept the state struct keep the old signature as well.
++ */
++#if defined(KSU_COMPAT_HAS_SELINUX_STATE)
++#define ksu_avc_has_perm_compat(...) avc_has_perm(&selinux_state, __VA_ARGS__)
++#else
++#define ksu_avc_has_perm_compat(...) avc_has_perm(__VA_ARGS__)
++#endif
++
+ #endif // __KSU_H_UTIL
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index 9276ff86..2deed37d 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -855,7 +855,7 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
+ 	{ .cmd = KSU_IOCTL_GET_INFO, .name = "GET_INFO", .handler = do_get_info, .perm_check = always_allow },
+ 	{ .cmd = KSU_IOCTL_GET_INFO_LEGACY, .name = "GET_INFO_LEGACY", .handler = do_get_info_legacy, .perm_check = always_allow },
+ 	{ .cmd = KSU_IOCTL_REPORT_EVENT, .name = "REPORT_EVENT", .handler = do_report_event, .perm_check = only_root },
+-	{ .cmd = KSU_IOCTL_SET_SEPOLICY, .name = "SET_SEPOLICY", .handler = do_set_sepolicy, .perm_check = only_root },
++	{ .cmd = KSU_IOCTL_SET_SEPOLICY, .name = "SET_SEPOLICY", .handler = do_set_sepolicy, .perm_check = require_load_policy_perm },
+ 	{ .cmd = KSU_IOCTL_CHECK_SAFEMODE, .name = "CHECK_SAFEMODE", .handler = do_check_safemode, .perm_check = always_allow },
+ 	{ .cmd = KSU_IOCTL_GET_ALLOW_LIST, .name = "GET_ALLOW_LIST", .handler = do_get_allow_list, .perm_check = manager_or_root },
+ 	{ .cmd = KSU_IOCTL_GET_DENY_LIST, .name = "GET_DENY_LIST", .handler = do_get_deny_list, .perm_check = manager_or_root },
+diff --git a/kernel/supercall/internal.h b/kernel/supercall/internal.h
+index d5f2655b..25449c3c 100644
+--- a/kernel/supercall/internal.h
++++ b/kernel/supercall/internal.h
+@@ -3,6 +3,7 @@
+ 
+ bool only_manager(void);
+ bool only_root(void);
++bool require_load_policy_perm(void);
+ bool manager_or_root(void);
+ bool always_allow(void);
+ bool allowed_for_su(void);
+diff --git a/kernel/supercall/perm.c b/kernel/supercall/perm.c
+index 89b67488..c10c67eb 100644
+--- a/kernel/supercall/perm.c
++++ b/kernel/supercall/perm.c
+@@ -1,3 +1,11 @@
++#include <linux/types.h>
++
++#include "supercall/internal.h"
++#include "manager/manager_identity.h"
++#include "policy/allowlist.h"
++#include "util.h"
++#include "objsec.h"
++
+ bool only_manager(void)
+ {
+ 	return is_manager();
+@@ -8,6 +16,40 @@ bool only_root(void)
+ 	return current_uid().val == 0;
+ }
+ 
++#if defined(KSU_COMPAT_HAS_SELINUX_STATE)
++extern struct selinux_state selinux_state;
++#endif
++
++/* Older objsec.h has no current_sid(); mirror selinux/selinux.c's fallback. */
++static inline u32 ksu_current_sid(void)
++{
++#ifdef KSU_COMPAT_HAS_CURRENT_SID
++	return current_sid();
++#else
++	const struct cred *cred = current_cred();
++#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 18, 0)
++	const struct task_security_struct *tsec = selinux_cred(cred);
++#else
++	const struct cred_security_struct *tsec = selinux_cred(cred);
++#endif
++
++	return tsec ? tsec->sid : 0;
++#endif
++}
++
++bool require_load_policy_perm(void)
++{
++	u32 sid = ksu_current_sid();
++
++	/* Unknown subject SID must not pass a security check. */
++	if (!sid)
++		return false;
++
++	return ksu_avc_has_perm_compat(sid, SECINITSID_SECURITY,
++				       SECCLASS_SECURITY, SECURITY__LOAD_POLICY,
++				       NULL) == 0;
++}
++
+ bool manager_or_root(void)
+ {
+ 	return current_uid().val == 0 || is_manager();
