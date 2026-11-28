@@ -57,12 +57,12 @@ jobs:
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep-ipa-pm-optional-callback.patch"
           patch -p1 --fuzz=0 < "${GITHUB_WORKSPACE}/lemonadep-glink-qrtr-wake-diagnostic.patch"
       # 6. 使用固定的 SukiSU builtin 提交，避免上游分支移动导致补丁失配。
-      #    预检与正式构建都固定到 844782fef3d4502e1c4712720bcc44ca18237043。
+      #    预检与正式构建都固定到 caa5113efbdc4aa56eb65bdde2aeabd83cd43a52。
       - name: "6. Integrate pinned SukiSU builtin"
         run: |
           set -euo pipefail
           KSU="${GITHUB_WORKSPACE}/kernel_source/KernelSU"
-          SUKISU_COMMIT="844782fef3d4502e1c4712720bcc44ca18237043"
+          SUKISU_COMMIT="caa5113efbdc4aa56eb65bdde2aeabd83cd43a52"
 
           git init "$KSU"
           git -C "$KSU" fetch --depth=1 https://git.zako.shirkneko.top:20004/shirkneko/SukiSU.git "$SUKISU_COMMIT"
